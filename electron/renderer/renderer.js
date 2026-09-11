@@ -345,6 +345,15 @@ function appendLog(text) {
   if (atBottom) view.scrollTop = view.scrollHeight;
 }
 
+const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "fetchPassed", "runSelfTest"];
+
+function setActionsEnabled(enabled) {
+  for (const id of ACTION_BUTTON_IDS) {
+    const button = $(id);
+    if (button) button.disabled = !enabled;
+  }
+}
+
 function updateProgress(progress) {
   const wrap = $("progressWrap");
   if (!progress) {
@@ -355,7 +364,9 @@ function updateProgress(progress) {
   wrap.hidden = false;
   $("progressText").textContent = `${progress.done} / ${progress.total || "?"}（${statusText(progress.status)}）`;
   $("progressFill").style.width = progress.total ? `${Math.min(100, Math.round((progress.done / progress.total) * 100))}%` : "0%";
-  $("stopTask").disabled = progress.status === "done" || progress.status === "stopped";
+  const finished = progress.status === "done" || progress.status === "stopped";
+  $("stopTask").disabled = finished;
+  setActionsEnabled(finished);
 }
 
 function statusText(status) {
