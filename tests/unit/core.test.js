@@ -342,6 +342,41 @@ test("Store：损坏的 bank.json 被备份而不是静默清空", () => {
   assert.ok(fs.readdirSync(dir).some((name) => name.startsWith("bank.json.损坏备份_")));
 });
 
+test("生成任务：日预算用尽即暂停（不调用 LLM）", async () => {
+  const { runGenerateTask } = require("../../electron/src/tasks/generate");
+  const dir = tempDir();
+  const store = new Store(dir);
+  const today = new Date().toLocaleDateString("zh-CN");
+  store.addUsage({ model: "m", promptTokens: 800, completionTokens: 200, at: `${today} 09:00:00` }); // 今日已用 1000
+
+  let llmCalls = 0;
+  const llm = new LlmClient({
+    apiKey: "k",
+    concurrency: 1,
+    fetchImpl: async () => {
+      llmCalls += 1;
+      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: "回答内容" } }] }) };
+    },
+    onUsage: (entry) => store.addUsage(entry),
+  });
+
+  const rows = [1, 2, 3].map((i) => ({ title: `题${i}`, questionUrl: `https://x/${i}` }));
+  const logs = [];
+  const ctx = {
+    payload: { results: rows, aiDailyTokenBudget: 1000 },
+    shouldStop: () => false,
+    livePayload() { return this.payload; },
+    delay: async () => {},
+    report: () => {},
+    emitItem: () => {},
+  };
+  const result = await runGenerateTask(ctx, { store, llm, log: (m) => logs.push(m) });
+  assert.equal(llmCalls, 0, "预算已用尽时不应发起任何 LLM 调用");
+  assert.equal(result.count, 0);
+  assert.ok(result.stopped, "应标记为暂停");
+  assert.ok(logs.some((line) => line.includes("预算上限")), `应有预算告警：\n${logs.join("\n")}`);
+});
+
 test("excel：导出表格保留题库分类且可回读", () => {
   const excel = require("../../electron/src/storage/excel");
   assert.ok(excel.ANSWER_HEADERS.includes("题库分类"), "表头应含题库分类");
