@@ -54,7 +54,7 @@ class TaskManager {
 }
 
 function randomDelayFactory(shouldStop) {
-  return async function delay(minSeconds, maxSeconds, label = "") {
+  return async function delay(minSeconds, maxSeconds) {
     const min = Math.max(0, Number(minSeconds) || 0);
     const max = Math.max(min, Number(maxSeconds) || min);
     const seconds = min + Math.random() * (max - min);
@@ -65,7 +65,6 @@ function randomDelayFactory(shouldStop) {
       if (shouldStop()) return;
       await new Promise((resolve) => setTimeout(resolve, Math.min(500, deadline - Date.now())));
     }
-    void label;
   };
 }
 

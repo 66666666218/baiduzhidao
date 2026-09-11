@@ -247,7 +247,7 @@ async function clickPageNumber(page, pageNumber) {
 // ---------- 活动页：打开题目 ----------
 
 /** 逐个点击“去答题”；跳过已用过的题。返回 {questionPage, listTitle} 或 null。 */
-async function openNextQuestion(page, usedKeys, hooks = {}, { newTabPattern } = {}) {
+async function openNextQuestion(page, usedKeys, hooks = {}) {
   await page.waitForLoadState("domcontentloaded", { timeout: 20000 }).catch(() => {});
   const cards = page.locator(SEL.zone.cards);
   const hasCards = await cards.first().waitFor({ state: "visible", timeout: 30000 }).then(() => true).catch(() => false);
