@@ -18,8 +18,9 @@ npm install                # 已配 npmmirror + Electron 镜像
 npm run mock               # 可选：启动本地模拟站（无账号体验/调试）
 npm start                  # 启动桌面应用
 npm run smoke              # 冒烟模式：启动 3 秒后自动退出（验证环境）
-npm test                   # 单元测试（22 个）
-npm run test:e2e           # 全链路 E2E（需本机有 Edge，无需账号）
+npm test                   # 单元测试（29 个）
+npm run test:e2e           # 全链路 E2E（7 项，需本机有 Edge，无需账号）
+npm run selftest           # 一键自检 CLI（不开应用验证整条链路）
 ```
 
 ## 功能视图（与 v1 对应）

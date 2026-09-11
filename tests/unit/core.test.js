@@ -294,6 +294,15 @@ test("Store：getUsageToday 只统计当天", () => {
   assert.equal(store.getUsage().completionTokens, 70, "总量不受影响");
 });
 
+test("excel：导出表格保留题库分类且可回读", () => {
+  const excel = require("../../electron/src/storage/excel");
+  assert.ok(excel.ANSWER_HEADERS.includes("题库分类"), "表头应含题库分类");
+  const row = excel.answerToRow({ category: "情感类", title: "T", answer: "A", questionUrl: "https://x/1", status: "已提交" });
+  assert.equal(row["题库分类"], "情感类");
+  const back = excel.importRowToAnswer(row);
+  assert.equal(back.category, "情感类", "导出→导入往返分类不丢");
+});
+
 test("Logger：日志账号自动打码（开关生效）", () => {
   const { Logger } = require("../../electron/src/log");
   const logger = new Logger("");
