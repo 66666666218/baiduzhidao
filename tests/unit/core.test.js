@@ -329,6 +329,19 @@ test("Store：getUsageToday 只统计当天", () => {
   assert.equal(store.getUsage().completionTokens, 70, "总量不受影响");
 });
 
+test("Store：损坏的 bank.json 被备份而不是静默清空", () => {
+  const dir = tempDir();
+  const bankPath = path.join(dir, "bank.json");
+  fs.writeFileSync(bankPath, "{ 这不是合法 JSON");
+  const store = new Store(dir);
+  assert.equal(store.bankSize(), 0, "损坏文件按空题库处理");
+  const files = fs.readdirSync(dir);
+  assert.ok(files.some((name) => name.startsWith("bank.json.损坏备份_")), `应有损坏备份：${files.join(",")}`);
+  // 备份存在时，新入库不会再覆盖损坏数据
+  store.addBankQuestion({ title: "新题", questionUrl: "https://x/new" });
+  assert.ok(fs.readdirSync(dir).some((name) => name.startsWith("bank.json.损坏备份_")));
+});
+
 test("excel：导出表格保留题库分类且可回读", () => {
   const excel = require("../../electron/src/storage/excel");
   assert.ok(excel.ANSWER_HEADERS.includes("题库分类"), "表头应含题库分类");

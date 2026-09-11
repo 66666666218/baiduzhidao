@@ -280,22 +280,33 @@ class Store {
 
   // ---------- 底层 ----------
 
-  readArray(filePath) {
+  /** 读 JSON；解析失败时把损坏文件改名备份（防下次写入把原有数据永久覆盖），并返回空结构 */
+  readJsonSafe(filePath, fallback) {
     try {
-      const raw = JSON.parse(fs.readFileSync(filePath, "utf8") || "[]");
-      return Array.isArray(raw) ? raw : [];
-    } catch {
-      return [];
+      if (!fs.existsSync(filePath)) return fallback;
+      const text = fs.readFileSync(filePath, "utf8") || "";
+      if (!text.trim()) return fallback;
+      return JSON.parse(text);
+    } catch (error) {
+      try {
+        const backupPath = `${filePath}.损坏备份_${Date.now()}`;
+        fs.renameSync(filePath, backupPath);
+        console.error(`[store] ${filePath} 解析失败已备份为 ${backupPath}：${error.message}`);
+      } catch {
+        // 备份失败也不阻塞启动
+      }
+      return fallback;
     }
   }
 
+  readArray(filePath) {
+    const raw = this.readJsonSafe(filePath, []);
+    return Array.isArray(raw) ? raw : [];
+  }
+
   readObject(filePath) {
-    try {
-      const raw = JSON.parse(fs.readFileSync(filePath, "utf8") || "{}");
-      return raw && typeof raw === "object" ? raw : {};
-    } catch {
-      return {};
-    }
+    const raw = this.readJsonSafe(filePath, {});
+    return raw && typeof raw === "object" ? raw : {};
   }
 
   scheduleSave(name, delayMs = 500) {
