@@ -334,8 +334,15 @@ function appendLog(text) {
   logLines.push(line);
   if (logLines.length > 2000) logLines.splice(0, 500);
   const view = $("logView");
-  view.textContent += (view.textContent ? "\n" : "") + line;
-  view.scrollTop = view.scrollHeight;
+  // 节点追加代替整段 textContent 重渲染（长任务日志量大时避免 O(n²) 卡顿）
+  const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 30;
+  const div = document.createElement("div");
+  div.textContent = line;
+  view.appendChild(div);
+  while (view.childElementCount > 2000) {
+    view.removeChild(view.firstChild);
+  }
+  if (atBottom) view.scrollTop = view.scrollHeight;
 }
 
 function updateProgress(progress) {
@@ -514,9 +521,16 @@ function renderLinks() {
     renderLinks();
     refreshBankStats();
     const recent = await rpc.invoke("logs:recent");
-    for (const line of recent) {
+    if (recent.length) {
       const view = $("logView");
-      view.textContent += (view.textContent ? "\n" : "") + line;
+      const fragment = document.createDocumentFragment();
+      for (const line of recent) {
+        const div = document.createElement("div");
+        div.textContent = line;
+        fragment.appendChild(div);
+      }
+      view.appendChild(fragment);
+      view.scrollTop = view.scrollHeight;
     }
     $("stopTask").disabled = true;
   } catch (error) {
