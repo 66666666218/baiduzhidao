@@ -140,3 +140,5 @@ td.title-cell { max-width: 380px; overflow: hidden; text-overflow: ellipsis; whi
 .link-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--border); }
 .link-row .name { min-width: 160px; font-weight: 600; }
 .link-row a { color: var(--primary); text-decoration: none; word-break: break-all; }
+
+.empty-hint { text-align: center; color: var(--muted); padding: 24px 0 !important; }

@@ -396,6 +396,17 @@ async function renderBank() {
   bankTotal = result.total;
   const tbody = $("bankBody");
   tbody.innerHTML = "";
+  if (!result.rows.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.className = "empty-hint";
+    td.textContent = bankTotal === 0 ? "题库为空：先到「题目爬取」采集，或导入题库表格。" : "没有匹配的题目：换个关键字或分类试试。";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    $("bankPageInfo").textContent = "共 0 条";
+    return;
+  }
   for (const item of result.rows) {
     const tr = document.createElement("tr");
     const titleCell = document.createElement("td");
@@ -451,6 +462,17 @@ async function refreshResults() {
   const mask = $("maskAccounts").checked;
   const tbody = $("resultsBody");
   tbody.innerHTML = "";
+  if (!results.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.className = "empty-hint";
+    td.textContent = resultsTotal === 0 ? "还没有答案记录：先完成「生成答案」。" : "没有匹配的记录：换个关键字试试。";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    $("resultsPageInfo").textContent = "共 0 条";
+    return;
+  }
   for (const item of results) {
     const tr = document.createElement("tr");
     const titleCell = document.createElement("td");
