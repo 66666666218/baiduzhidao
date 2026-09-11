@@ -87,6 +87,11 @@ async function runSubmitTask(ctx, deps) {
   const totalPlanned = allocation.reduce((sum, slot) => sum + slot.rows.length, 0);
 
   log(`准备自动提交 ${totalPlanned}/${allRows.length} 条答案。`);
+  // 容量不足时显式告警，绝不静默丢弃
+  if (totalPlanned < rows.length) {
+    const dropped = rows.length - totalPlanned;
+    log(`⚠️ 本轮账号容量（${activeEnvs.length} 个账号 × 每账号上限）只放行 ${totalPlanned} 条，剩余 ${dropped} 条本轮不提交。请提高「每账号单轮条数/每账号每日限额」或增加账号后再跑一次。`);
+  }
   log(`提交逻辑：每账号提交 ${accountDailyLimit > 0 ? accountDailyLimit : "不限"} 条后轮换；打开题目链接、填入回答、点击提交。`);
 
   await browserPool.adapter.checkConnection();

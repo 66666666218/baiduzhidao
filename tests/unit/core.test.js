@@ -222,6 +222,41 @@ test("提交任务：全部已提交时直接返回（防重复提交）", async
   assert.equal(result.total, 0, "已提交的行不应再次提交");
 });
 
+test("提交任务：容量不足时告警且不静默丢弃（日志断言）", async () => {
+  const { runSubmitTask } = require("../../electron/src/tasks/submit");
+  const logs = [];
+  const rows = Array.from({ length: 15 }, (_v, i) => ({
+    questionUrl: `https://x/${i}`,
+    answer: "这是用于验证容量告警的回答内容，长度超过二十个字符。",
+  }));
+  const noopCtx = {
+    payload: {
+      bitEnvs: [{ label: "A" }, { label: "B" }],
+      results: rows,
+      accountDailyLimit: 5,
+      maxQuestionsPerEnv: 5,
+      checkCompletedEnvs: false, // 跳过达标检测（E2E 覆盖）
+    },
+    shouldStop: () => false,
+    livePayload() { return this.payload; },
+    delay: async () => {},
+    report: () => {},
+    emitItem: () => {},
+  };
+  const deps = {
+    log: (message) => logs.push(message),
+    config: { closeAfter: false },
+    browserPool: {
+      adapter: { checkConnection: async () => ({ ok: true, status: 200 }) },
+      acquire: async () => { throw new Error("测试桩：不真正打开浏览器"); },
+      release: async () => true,
+    },
+  };
+  const result = await runSubmitTask(noopCtx, deps);
+  assert.equal(result.total, 10, "2 账号 × 5 条容量");
+  assert.ok(logs.some((line) => line.includes("剩余 5 条本轮不提交")), `应有容量告警：\n${logs.join("\n")}`);
+});
+
 // ---------- 纯函数 ----------
 
 test("applyTemplate 支持中文占位符", () => {
