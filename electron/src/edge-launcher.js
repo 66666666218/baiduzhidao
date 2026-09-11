@@ -19,8 +19,19 @@ const EDGE_CANDIDATES = [
   "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
 ];
 
+// Edge 缺失时回退 Chromium 系浏览器（同为 CDP 协议，自检/E2E 逻辑不变）
+const FALLBACK_CANDIDATES = [
+  "C:/Program Files/Google/Chrome/Application/chrome.exe",
+  "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+  "C:/Program Files/Chromium/Application/chrome.exe",
+];
+
 function findEdge() {
   for (const candidate of EDGE_CANDIDATES) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  // 回退：任何 Chromium 系浏览器都可用于自检/E2E（不影响正常答题使用的比特浏览器）
+  for (const candidate of FALLBACK_CANDIDATES) {
     if (fs.existsSync(candidate)) return candidate;
   }
   return "";
