@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <title>百度知道答题助手 v2</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-title">答题助手 <span class="badge">v2</span></div>
+        <div class="brand-sub">百度知道活动页</div>
+      </div>
+      <nav>
+        <button class="nav-item active" data-view="accounts">⚙️ 比特环境</button>
+        <button class="nav-item" data-view="crawl">📥 题目爬取</button>
+        <button class="nav-item" data-view="bank">📚 题库浏览</button>
+        <button class="nav-item" data-view="random">🎲 随机抽题</button>
+        <button class="nav-item" data-view="generate">🤖 生成答案</button>
+        <button class="nav-item" data-view="results">📋 复制答案</button>
+        <button class="nav-item" data-view="submit">🚀 自动提交</button>
+        <button class="nav-item" data-view="links">🔗 常用网址</button>
+        <button class="nav-item" data-view="logs">📜 运行日志</button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="progress-wrap" id="progressWrap" hidden>
+          <div class="progress-text" id="progressText">0 / 0</div>
+          <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        </div>
+        <button class="btn danger outline full" id="stopTask" disabled>停止当前任务</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <!-- 比特环境 / 全局设置 -->
+      <section class="view active" data-view="accounts">
+        <h2>比特环境与全局设置</h2>
+        <div class="card">
+          <div class="field-row">
+            <label>比特 API 地址</label>
+            <input type="text" id="apiUrl" placeholder="http://127.0.0.1:54345" />
+            <button class="btn soft" id="checkBit">测试连接</button>
+          </div>
+          <div class="field-row">
+            <label>活动页地址（留空=默认 21 周年活动）</label>
+            <input type="text" id="activityUrl" placeholder="https://zhidao.baidu.com/hd/21th_activity/" />
+          </div>
+          <div class="field-row">
+            <label>比特环境名称（每行一个账号）</label>
+            <textarea id="bitEnvs" rows="4" placeholder="账号1&#10;账号2"></textarea>
+          </div>
+          <div class="field-grid">
+            <div class="field"><label>分类</label>
+              <select id="category">
+                <option value="情感类">情感类</option>
+                <option value="教育类">教育类</option>
+                <option value="综合类">综合类</option>
+              </select>
+            </div>
+            <div class="field"><label>页面超时（毫秒）</label><input type="number" id="timeoutMs" /></div>
+            <div class="field"><label>验证等待（秒）</label><input type="number" id="verifyWaitSeconds" /></div>
+            <div class="field"><label>操作间隔（秒）</label>
+              <div class="pair"><input type="number" id="delayMin" /><span>~</span><input type="number" id="delayMax" /></div>
+            </div>
+            <div class="field"><label>任务总量上限</label><input type="number" id="maxQuestions" /></div>
+            <div class="field"><label>每账号单轮条数</label><input type="number" id="maxQuestionsPerEnv" /></div>
+            <div class="field"><label>完成后关闭环境</label>
+              <select id="closeAfter"><option value="true">是</option><option value="false">否</option></select>
+            </div>
+          </div>
+          <div class="card-actions">
+            <button class="btn primary" id="saveSettings">保存设置</button>
+            <button class="btn soft" id="runSelfTest">一键自检（模拟站跑通全链路）</button>
+            <button class="btn soft" id="openDataDir">打开数据目录</button>
+            <span class="hint" id="settingsHint"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 题目爬取 -->
+      <section class="view" data-view="crawl">
+        <h2>题目爬取</h2>
+        <div class="card">
+          <p class="hint">进入活动页答题区 → 锁定分类 → 从起始页逐题打开并记录标题+链接，直到最后一页。</p>
+          <div class="field-grid">
+            <div class="field"><label>爬取起始页</label><input type="number" id="crawlStartPage" min="1" /></div>
+            <div class="field"><label>翻页间隔（毫秒）</label><input type="number" id="pageDelayMs" min="0" step="100" /></div>
+            <div class="field"><label>爬取结果文件夹（可选）</label>
+              <div class="pair">
+                <input type="text" id="crawlOutputDir" placeholder="默认存入题库" readonly />
+                <button class="btn soft" id="pickCrawlDir">选择</button>
+              </div>
+            </div>
+          </div>
+          <div class="card-actions">
+            <button class="btn primary" id="startCrawl">开始爬取</button>
+            <label class="check"><input type="checkbox" id="resumeCrawl" /> 断点续爬（从上次页继续）</label>
+            <span class="hint" id="bankStats"></span>
+          </div>
+        </div>
+        <div class="card">
+          <h3>题库管理</h3>
+          <div class="card-actions">
+            <button class="btn soft" id="importBank">导入题库表格/文件夹</button>
+            <button class="btn soft" id="exportBank">导出完整题库</button>
+            <button class="btn soft" id="refreshStats">刷新统计</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 题库浏览 -->
+      <section class="view" data-view="bank">
+        <h2>题库浏览</h2>
+        <div class="card">
+          <div class="field-row">
+            <input type="text" id="bankSearch" placeholder="搜索标题/内容/链接关键字" style="max-width:320px" />
+            <select id="bankCategory" style="max-width:140px">
+              <option value="">全部分类</option>
+              <option value="情感类">情感类</option>
+              <option value="教育类">教育类</option>
+              <option value="综合类">综合类</option>
+            </select>
+            <button class="btn soft" id="bankSearchBtn">搜索</button>
+            <span class="hint" id="bankPageInfo"></span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>标题</th><th>分类</th><th>状态</th><th>链接</th></tr></thead>
+              <tbody id="bankBody"></tbody>
+            </table>
+          </div>
+          <div class="card-actions">
+            <button class="btn soft" id="bankPrev">上一页</button>
+            <button class="btn soft" id="bankNext">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 随机抽题 -->
+      <section class="view" data-view="random">
+        <h2>随机抽题</h2>
+        <div class="card">
+          <div class="field-grid">
+            <div class="field"><label>抽取数量</label><input type="number" id="randomCount" min="1" /></div>
+            <div class="field"><label>保存路径（留空弹窗选择）</label>
+              <div class="pair">
+                <input type="text" id="randomOutputPath" placeholder="文件夹或 xlsx 路径" />
+                <button class="btn soft" id="pickRandomPath">选择</button>
+              </div>
+            </div>
+          </div>
+          <div class="card-actions">
+            <button class="btn primary" id="randomPick">随机生成表格</button>
+            <span class="hint">跨轮次自动去重；全部抽完自动重开一轮。</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 生成答案 -->
+      <section class="view" data-view="generate">
+        <h2>AI 生成答案</h2>
+        <div class="card">
+          <div class="field-grid">
+            <div class="field"><label>API 地址（OpenAI 兼容）</label><input type="text" id="aiBaseUrl" /></div>
+            <div class="field"><label>API Key</label><input type="password" id="aiApiKey" placeholder="sk-..." /></div>
+            <div class="field"><label>模型</label><input type="text" id="aiModel" /></div>
+            <div class="field"><label>并发数</label><input type="number" id="aiConcurrency" min="1" max="8" /></div>
+            <div class="field"><label>今日 token 预算上限（0=不限）</label><input type="number" id="aiDailyTokenBudget" min="0" /></div>
+          </div>
+          <div class="field"><label>回答来源表格（留空则自动使用最近一次抽题表格）</label>
+            <div class="pair">
+              <input type="text" id="generateExcelPath" readonly placeholder="选择包含 标题/问题内容/题目地址 的表格" />
+              <button class="btn soft" id="pickGenerateExcel">选择</button>
+            </div>
+          </div>
+          <div class="card-actions">
+            <button class="btn primary" id="startGenerate">开始生成</button>
+            <span class="hint" id="usageHint"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 复制答案 -->
+      <section class="view" data-view="results">
+        <h2>复制答案</h2>
+        <div class="card">
+          <div class="card-actions">
+            <button class="btn soft" id="refreshResults">刷新</button>
+            <button class="btn soft" id="exportResults">导出表格</button>
+            <button class="btn danger outline" id="clearUsed">清空已提交</button>
+            <button class="btn danger outline" id="clearAll">清空全部</button>
+            <label class="check"><input type="checkbox" id="maskAccounts" /> 账号打码</label>
+            <input type="text" id="resultsSearch" placeholder="搜索标题/链接/回答" style="max-width:240px" />
+            <button class="btn soft" id="resultsSearchBtn">搜索</button>
+            <span class="hint" id="resultsPageInfo"></span>
+          </div>
+          <div class="table-wrap">
+            <table id="resultsTable">
+              <thead><tr><th>标题</th><th>账号</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="resultsBody"></tbody>
+            </table>
+          </div>
+          <div class="card-actions">
+            <button class="btn soft" id="resultsPrev">上一页</button>
+            <button class="btn soft" id="resultsNext">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 自动提交 -->
+      <section class="view" data-view="submit">
+        <h2>自动提交</h2>
+        <div class="card">
+          <p class="hint warning">⚠️ 自动提交会真实发布回答，有触发平台风控/封号的风险，请自行评估并控制额度。</p>
+          <div class="field-grid">
+            <div class="field"><label>提交数量上限（0=全部）</label><input type="number" id="submitLimit" min="0" /></div>
+            <div class="field"><label>每账号每日限额</label><input type="number" id="accountDailyLimit" min="0" /></div>
+          </div>
+          <div class="field"><label>来源表格（含 回答内容 + 题目地址；留空则自动使用最近一次抽题表格）</label>
+            <div class="pair">
+              <input type="text" id="submitExcelPath" readonly placeholder="选择生成好的答案表格" />
+              <button class="btn soft" id="pickSubmitExcel">选择</button>
+            </div>
+          </div>
+          <div class="card-actions">
+            <button class="btn primary" id="startSubmit">开始自动提交</button>
+            <button class="btn soft" id="fetchPassed">获取当天答题通过数</button>
+            <label class="check"><input type="checkbox" id="forceResubmit" /> 强制重交已提交</label>
+            <label class="check"><input type="checkbox" id="checkCompletedEnvs" checked /> 提交前检测账号是否已达标</label>
+          </div>
+        </div>
+      </section>
+
+      <!-- 常用网址 -->
+      <section class="view" data-view="links">
+        <h2>常用网址</h2>
+        <div class="card">
+          <div id="linkList"></div>
+        </div>
+      </section>
+
+      <!-- 运行日志 -->
+      <section class="view" data-view="logs">
+        <h2>运行日志</h2>
+        <div class="card log-card">
+          <div class="card-actions">
+            <button class="btn soft" id="copyLog">复制日志</button>
+            <button class="btn soft" id="clearLog">清空显示</button>
+            <label class="check"><input type="checkbox" id="maskLog" checked /> 账号打码</label>
+          </div>
+          <div class="log-view" id="logView"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="renderer.js"></script>
+</body>
+</html>

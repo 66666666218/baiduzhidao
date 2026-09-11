@@ -1,0 +1,4 @@
+node_modules/
+dist/
+运行缓存/
+*.log
