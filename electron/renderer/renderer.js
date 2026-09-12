@@ -319,7 +319,8 @@ async function refreshBankStats() {
   const stats = await rpc.invoke("bank:stats");
   const counts = stats.counts || {};
   const detail = Object.entries(counts).map(([name, count]) => `${name} ${count}`).join(" · ");
-  $("bankStats").textContent = `内置题库：${stats.total} 条${detail ? `（${detail}）` : ""}`;
+  const pickInfo = stats.total ? ` · 可抽 ${stats.remainingCount} / 已抽 ${stats.usedCount}` : "";
+  $("bankStats").textContent = `内置题库：${stats.total} 条${detail ? `（${detail}）` : ""}${pickInfo}`;
 }
 
 async function refreshUsage() {

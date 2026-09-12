@@ -237,12 +237,20 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
 
   // 题库管理
   ipcMain.handle("bank:stats", () => {
+    const bank = store.loadBank();
     const counts = {};
-    for (const item of store.loadBank()) {
+    for (const item of bank) {
       const key = item.category || "未分类";
       counts[key] = (counts[key] || 0) + 1;
     }
-    return { total: store.bankSize(), dir: dataDir, counts };
+    // 随机抽题视角：已抽过（usedKeys 命中题库）与剩余可抽
+    const usedKeys = new Set(store.loadUsedKeys());
+    const keyOf = (item) => {
+      const url = String(item.questionUrl || "").trim().toLowerCase();
+      return url ? `url:${url}` : `title:${String(item.title || "").replace(/s+/g, "").toLowerCase()}`;
+    };
+    const usedCount = bank.filter((item) => usedKeys.has(keyOf(item))).length;
+    return { total: bank.length, dir: dataDir, counts, usedCount, remainingCount: Math.max(0, bank.length - usedCount) };
   });
   ipcMain.handle("bank:import", async (_event, payload) => {
     let targetPath = String((payload && payload.filePath) || "").trim().replace(/^"|"$/g, "");
