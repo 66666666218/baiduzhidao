@@ -142,6 +142,12 @@
       <section class="view" data-view="random">
         <h2>随机抽题</h2>
         <div class="card">
+          <div class="field-row">
+            <label>抽题分类（不选=全部）</label>
+            <label class="check"><input type="checkbox" class="pick-cat" value="情感类" checked /> 情感类</label>
+            <label class="check"><input type="checkbox" class="pick-cat" value="教育类" /> 教育类</label>
+            <label class="check"><input type="checkbox" class="pick-cat" value="综合类" /> 综合类</label>
+          </div>
           <div class="field-grid">
             <div class="field"><label>抽取数量</label><input type="number" id="randomCount" min="1" /></div>
             <div class="field"><label>保存路径（留空弹窗选择）</label>

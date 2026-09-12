@@ -114,8 +114,9 @@ $("refreshStats").addEventListener("click", refreshBankStats);
 
 $("randomPick").addEventListener("click", async () => {
   try {
+    const checked = Array.from(document.querySelectorAll(".pick-cat:checked")).map((box) => box.value);
     const result = await rpc.invoke("questions:random-pick", {
-      categories: [$("category").value],
+      categories: checked.length ? checked : ["三类一起"],
       count: Number($("randomCount").value) || 20,
       outputPath: $("randomOutputPath").value,
     });
