@@ -135,8 +135,8 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       count: (payload && payload.count) || config.load().randomCount,
     });
     if (!result.picked.length) throw new Error("当前分类下没有可抽的题目。");
-    store.addUsedKeys(result.usedKeys);
 
+    // 先确定输出路径（用户取消则直接返回，不消耗去重额度）
     let outputPath = String((payload && payload.outputPath) || config.load().randomOutputPath || "").trim().replace(/^"|"$/g, "");
     if (outputPath && fs.existsSync(outputPath) && fs.statSync(outputPath).isDirectory()) {
       outputPath = excel.uniqueFilePath(path.join(outputPath, `随机抽题_${result.picked.length}条_${stamp()}.xlsx`));
@@ -152,6 +152,9 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       if (choice.canceled || !choice.filePath) return { canceled: true };
       outputPath = choice.filePath;
     }
+
+    // 表格成功落盘后才记去重额度：取消/写失败都不会白白消耗题目
+    store.addUsedKeys(result.usedKeys);
     const savedPath = excel.writeWorkbookSafe(
       outputPath,
       result.picked.map(excel.answerToRow),
