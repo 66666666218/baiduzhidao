@@ -309,7 +309,9 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   });
   ipcMain.handle("link:open", async (_event, url) => {
     const target = String(url || "").trim();
-    if (!/^https?:\/\//i.test(target)) throw new Error("只支持 http/https 链接。");
+    if (!/^https?:\/\/[^\s]+$/i.test(target)) {
+      throw new Error("只支持不含空白字符的 http/https 链接。");
+    }
     await shell.openExternal(target);
     return { ok: true };
   });
