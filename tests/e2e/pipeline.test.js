@@ -219,6 +219,29 @@ test("E2E：分类参数化（教育类爬取）", { timeout: 120000, retry: 1 }
   assert.ok(bank.every((item) => item.category === "教育类"), "入库分类应为教育类");
 });
 
+test("E2E：通过数任务（账号轮换 + 状态分类）", { timeout: 120000, retry: 1 }, async (t) => {
+  const rig = await createTestRig();
+  t.after(async () => { await rig.cleanup(); });
+
+  const { runPassedCountTask } = require("../../electron/src/tasks/passed-count");
+  const noopCtx = {
+    payload: { bitEnvs: [{ label: "账号1" }] },
+    shouldStop: () => false,
+    livePayload() { return this.payload; },
+    updateLiveSettings: () => {},
+    delay: async () => {},
+    report: () => {},
+    emitItem: () => {},
+  };
+  const result = await runPassedCountTask(noopCtx, rig.deps);
+  assert.equal(result.accounts.length, 1);
+  const account = result.accounts[0];
+  assert.equal(account.bitEnv, "账号1");
+  assert.ok(["completed", "partial", "unknown"].includes(account.status), `状态应合法：${account.status}`);
+  assert.equal(account.done, 2, "应解析出 2/5");
+  assert.equal(account.total, 5);
+});
+
 test("E2E：验证码页检测（waitForBaiduReady）", { timeout: 120000, retry: 1 }, async (t) => {
   const { chromium } = require("playwright-core");
   const rig = await createTestRig();
