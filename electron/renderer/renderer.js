@@ -17,6 +17,7 @@ document.querySelectorAll(".nav-item").forEach((button) => {
     if (button.dataset.view === "crawl") refreshBankStats();
     if (button.dataset.view === "generate") refreshUsage();
     if (button.dataset.view === "bank") renderBank();
+    if (button.dataset.view === "random") refreshPickStats();
   });
 });
 
@@ -122,6 +123,7 @@ $("randomPick").addEventListener("click", async () => {
     });
     if (result && !result.canceled) {
       appendLog(`已抽题 ${result.count} 条 → ${result.filePath}（题库剩余可用 ${result.remainingAfter} 条${result.resetRound ? "，已重开新一轮" : ""}）`);
+      refreshPickStats();
     }
   } catch (error) {
     appendLog(`抽题失败：${error.message}`);
@@ -313,6 +315,13 @@ async function loadSettings() {
   const lastPick = settings.lastPickFilePath || "";
   if (!$("generateExcelPath").value && lastPick) $("generateExcelPath").value = lastPick;
   if (!$("submitExcelPath").value && lastPick) $("submitExcelPath").value = lastPick;
+}
+
+async function refreshPickStats() {
+  const stats = await rpc.invoke("bank:stats");
+  $("pickStats").textContent = stats.total
+    ? `题库 ${stats.total} 条 · 可抽 ${stats.remainingCount} / 已抽 ${stats.usedCount}`
+    : "题库为空，请先爬题或导入";
 }
 
 async function refreshBankStats() {
