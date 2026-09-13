@@ -64,6 +64,12 @@ async function runCrawlTask(ctx, deps) {
       }
       let totalPages = await zhidao.getTotalListPages(page);
       while (!ctx.shouldStop()) {
+        // 自愈：被甩到登录/验证页时回到活动页（连续快速导航偶发触发风控软校验）
+        if (/passport\.baidu\.com|wappass/i.test(page.url())) {
+          log("检测到登录重定向，回到活动页继续。");
+          await zhidao.safeGoto(page, config.resolveActivityUrl());
+          await zhidao.waitForBaiduReady(page, config.verifyWaitSeconds, { onLog: log });
+        }
         await zhidao.enterAnswerZone(page, { onLog: log });
         await zhidao.ensureListPage(page, currentPage, { onLog: log });
 
@@ -79,8 +85,15 @@ async function runCrawlTask(ctx, deps) {
           const title = zhidao.normalizeTitle(pageTitle || opened.listTitle);
           const questionUrl = questionPage.url();
 
-          // 脏数据防护：弹窗被拦时会停留在活动页，此时标题/链接都不是题目，跳过不入库
-          const isActivityUrl = /\/hd\/|activity/i.test(questionUrl);
+          // 脏数据防护：只看 pathname（真实题目 URL 带 ?activity=21th 参数，按整个 URL 判断会误杀）
+          // 有效题目页 = zhidao.baidu.com/question/ 路径；活动页 = /hd/ 路径
+          let isActivityUrl = false;
+          try {
+            const parsed = new URL(questionUrl);
+            isActivityUrl = !/\/question\//.test(parsed.pathname) || /\/hd\//.test(parsed.pathname);
+          } catch {
+            isActivityUrl = true;
+          }
           if (!title || isActivityUrl || !zhidao.titlesMatch(opened.listTitle, title)) {
             duplicateSkipped += 1;
             log(`跳过无效题目页（${!title ? "无标题" : isActivityUrl ? "仍在活动页，弹窗可能被拦截" : "标题不匹配"}）：${opened.listTitle}`);
