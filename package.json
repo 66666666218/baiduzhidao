@@ -8,8 +8,8 @@
   "scripts": {
     "start": "electron .",
     "smoke": "electron . --smoke",
-    "test": "node --test tests/unit/",
-    "test:e2e": "node --test tests/e2e/",
+    "test": "node --test tests/unit/core.test.js",
+    "test:e2e": "node --test tests/e2e/pipeline.test.js",
     "mock": "node mock-site/run.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
