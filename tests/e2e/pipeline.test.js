@@ -100,7 +100,7 @@ test("E2E 全链路：爬题 → 抽题 → 生成 → 提交", { timeout: 30000
   const submitted = answers.filter((item) => item.status === "已提交");
   assert.equal(submitted.length, 2, "答案记录应标记 2 条已提交");
   assert.ok(submitted.every((item) => item.submittedAt));
-  assert.ok(submitted.every((item) => item.confirmed === true), "应捕捉到页面成功提示（回答提交成功）");
+  assert.ok(submitted.every((item) => item.confirmed === true), "应捕捉到页面成功提示（回答已发布）");
 });
 
 test("E2E：自动提交的每日限额生效", { timeout: 120000, retry: 1 }, async (t) => {

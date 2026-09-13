@@ -523,7 +523,7 @@ async function readSubmitConfirmation(page, timeoutMs = 3000) {
   let lastText = "";
   while (Date.now() < deadline) {
     const found = await page.evaluate(() => {
-      const pattern = /提交成功|回答成功|发布成功|成功提交|审核中|已提交成功/;
+      const pattern = /回答已发布|提交成功|回答成功|发布成功|成功提交|审核中|已提交成功|已发布/;
       const nodes = document.querySelectorAll("div,p,span,td,h1,h2,h3,li");
       for (const node of nodes) {
         // 只认可见文本（innerText），避免读到页面预置但隐藏的成功提示

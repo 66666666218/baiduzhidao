@@ -168,7 +168,7 @@ function questionHtml(question) {
   <p class="question-content">${question.content}</p>
   <div class="ueditor"><textarea id="editor" placeholder="快来写下你的答案吧"></textarea></div>
   <button class="answer-button" id="submit">提交回答</button>
-  <div class="ok" id="ok" hidden>回答提交成功</div>
+  <div class="ok" id="ok" hidden>回答已发布</div>
 </div>
 <script>
 document.getElementById('submit').onclick = async () => {
