@@ -293,15 +293,26 @@ async function openNextQuestion(page, usedKeys, hooks = {}) {
     if (!(await button.isVisible().catch(() => false)) || !(await button.isEnabled().catch(() => false))) continue;
 
     hooks.onLog?.(`打开题目：${listTitle}`);
-    const popupPromise = page.waitForEvent("popup", { timeout: 10000 }).catch(() => null);
+    const popupPromise = page.context().waitForEvent("page", { timeout: 8000 }).catch(() => null);
     const listUrl = page.url();
     await button.click({ timeout: 30000, noWaitAfter: true });
     const popup = await popupPromise;
-    await page.waitForTimeout(2000).catch(() => {});
-    const questionPage = popup || page;
-    await questionPage.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
-    await questionPage.bringToFront().catch(() => {});
-    return { questionPage, listTitle, listUrl, isPopup: Boolean(popup) };
+    if (popup) {
+      await popup.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
+      await popup.bringToFront().catch(() => {});
+      return { questionPage: popup, listTitle, listUrl, isPopup: true };
+    }
+    // 真实行为（2026-09 校准）：当前页跳转到 /question/...，等待导航完成
+    const navigated = await page.waitForURL(/\/question\//, { timeout: 15000 }).then(() => true).catch(() => false);
+    if (!navigated) {
+      hooks.onLog?.("点击去答题后未发生跳转（可能已答过或入口失效）。");
+      await page.waitForTimeout(1000).catch(() => {});
+      return null;
+    }
+    await page.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(1200).catch(() => {});
+    await page.bringToFront().catch(() => {});
+    return { questionPage: page, listTitle, listUrl, isPopup: false };
   }
   hooks.onLog?.("当前页没有尚未处理的可回答题目。");
   return null;
@@ -350,12 +361,15 @@ async function collectQuestionCards(page) {
 // ---------- 题目详情页 ----------
 
 async function readQuestionTitle(page) {
+  // 新版详情页：干净标题在 .main-column-title-content
+  const clean = await page.locator(".main-column-title-content").first().textContent({ timeout: 1500 }).catch(() => "");
+  if (clean && clean.trim()) return normalizeTitle(clean);
   for (const selector of SEL.question.titleCandidates) {
     const text = await page.locator(selector).first().textContent({ timeout: 1500 }).catch(() => "");
     if (text && text.trim()) return normalizeTitle(text);
   }
   const fallback = await page.title().catch(() => "");
-  return normalizeTitle(fallback.replace(/_百度知道.*$/, ""));
+  return normalizeTitle(fallback.replace(/[_-]s*百度知道.*$/, ""));
 }
 
 async function openQuestionByUrl(page, questionUrl, hooks = {}) {

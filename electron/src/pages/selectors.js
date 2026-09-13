@@ -41,8 +41,10 @@ const SEL = {
   question: {
     // 标题候选，按优先级
     titleCandidates: ["h1", ".question-title", ".title", "[class*='question'][class*='title']"],
-    // 回答编辑器候选（富文本 div / textarea / iframe）
+    // 回答编辑器候选（富文本 div / textarea / iframe；新：cos-textarea-box）
     editorCandidates: [
+      ".cos-textarea-box",
+      ".thread-editor textarea",
       ".ueditor textarea",
       ".edit-area textarea",
       ".question-answer textarea",
@@ -51,12 +53,14 @@ const SEL = {
       "[contenteditable='true']",
     ],
     // “回答”入口按钮（详情页先点开编辑器）
-    answerButtonCandidates: [".answer-btn", ".wgt-answer .answer-button", "button:has-text('我来答')", "a:has-text('我来答')"],
-    // 提交按钮
+    answerButtonCandidates: [".question-header-btn", ".answer-btn", ".wgt-answer .answer-button", "button:has-text('我来答')", "a:has-text('我来答')"],
+    // 提交按钮（新：thread-editor-submit-button 文本"提交"）
     submitCandidates: [
+      ".thread-editor-submit-button",
       ".answer-button:has-text('提交回答')",
       "button:has-text('提交回答')",
       "a:has-text('提交回答')",
+      "button:has-text('提交')",
       ".btn-submit",
     ],
   },
