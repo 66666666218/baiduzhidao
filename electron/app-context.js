@@ -73,13 +73,20 @@ async function startTask(name, payload, runner) {
   const autosavePath = path.join(autosaveDir, `${name}_${stamp()}.csv`);
   currentAutosavePath = autosavePath;
   logger.log(`本轮自动保存文件：${autosavePath}`);
-  const result = await tasks.start(name, payload, runner, {
-    onLog: (message) => logger.log(message),
-    onProgress: (progress) => sendToRenderer("task:progress", progress),
-    onItem: (item) => sendToRenderer("task:item", item),
-  });
-  store.flushAll();
-  return result;
+  try {
+    const result = await tasks.start(name, payload, runner, {
+      onLog: (message) => logger.log(message),
+      onProgress: (progress) => sendToRenderer("task:progress", progress),
+      onItem: (item) => sendToRenderer("task:item", item),
+    });
+    store.flushAll();
+    return result;
+  } catch (error) {
+    // 失败也要给渲染端终止信号，否则 UI 永久停在运行态（按钮禁用无法恢复）
+    sendToRenderer("task:progress", { done: 0, total: 0, status: "failed" });
+    logger.log(`任务「${name}」失败：${error.message}`);
+    throw error;
+  }
 }
 
 // ---------- IPC 注册（在 main.js 中调用） ----------

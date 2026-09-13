@@ -134,7 +134,7 @@ class LlmClient {
       }
       const data = JSON.parse(text);
       const content = data?.choices?.[0]?.message?.content || "";
-      if (!String(content).trim()) throw new Error("AI API 没有返回可用回答。");
+      // 先记账再校验内容：空响应的 token 同样真实消耗（重试只发生在 HTTP 错误层，无双重计数）
       const usage = data.usage || {};
       const entry = {
         model: this.model,
@@ -146,6 +146,7 @@ class LlmClient {
       this.usage.promptTokens += entry.promptTokens;
       this.usage.completionTokens += entry.completionTokens;
       if (this.onUsage) this.onUsage(entry);
+      if (!String(content).trim()) throw new Error("AI API 没有返回可用回答。");
       return String(content);
     } finally {
       clearTimeout(timer);

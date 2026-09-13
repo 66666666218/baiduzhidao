@@ -114,6 +114,7 @@ $("exportBank").addEventListener("click", async () => {
 $("refreshStats").addEventListener("click", refreshBankStats);
 
 $("randomPick").addEventListener("click", async () => {
+  $("randomPick").disabled = true;
   try {
     const checked = Array.from(document.querySelectorAll(".pick-cat:checked")).map((box) => box.value);
     const result = await rpc.invoke("questions:random-pick", {
@@ -127,6 +128,8 @@ $("randomPick").addEventListener("click", async () => {
     }
   } catch (error) {
     appendLog(`抽题失败：${error.message}`);
+  } finally {
+    $("randomPick").disabled = false;
   }
 });
 
@@ -375,13 +378,13 @@ function updateProgress(progress) {
   wrap.hidden = false;
   $("progressText").textContent = `${progress.done} / ${progress.total || "?"}（${statusText(progress.status)}）`;
   $("progressFill").style.width = progress.total ? `${Math.min(100, Math.round((progress.done / progress.total) * 100))}%` : "0%";
-  const finished = progress.status === "done" || progress.status === "stopped";
+  const finished = progress.status === "done" || progress.status === "stopped" || progress.status === "failed";
   $("stopTask").disabled = finished;
   setActionsEnabled(finished);
 }
 
 function statusText(status) {
-  return { running: "进行中", done: "完成", stopped: "已停止" }[status] || status || "";
+  return { running: "进行中", done: "完成", stopped: "已停止", failed: "失败" }[status] || status || "";
 }
 
 function maskEnv(label) {
