@@ -134,7 +134,13 @@ async function selectCategory(page, categoryLabel, hooks = {}) {
   let fallbackLogged = false;
   while (Date.now() < deadline) {
     const titlesBefore = await page.locator(SEL.zone.cardTitle).allTextContents().catch(() => []);
-    const clicked = await clickByText(page, label);
+    // 优先：真实分类 tab（.answer-section-tab + 精确文本）
+    let clicked = await page.locator(SEL.category.tabSelector, { hasText: new RegExp(`^\\s*${label}\\s*$`) })
+      .first()
+      .click({ timeout: 2000, noWaitAfter: true })
+      .then(() => true)
+      .catch(() => false);
+    if (!clicked) clicked = await clickByText(page, label);
     if (clicked) {
       await waitForCardsChanged(page, titlesBefore);
       hooks.onLog?.(`已锁定分类：${label}`);
@@ -154,11 +160,12 @@ async function selectCategory(page, categoryLabel, hooks = {}) {
 
 async function waitForCardsChanged(page, previousTitles = []) {
   if (previousTitles.length > 0) {
-    await page.waitForFunction((oldTitles) => {
-      const current = Array.from(document.querySelectorAll(".answer-section__question-title"))
+    const titleSel = SEL.zone.cardTitle;
+    await page.waitForFunction((sel) => {
+      const current = Array.from(document.querySelectorAll(sel))
         .map((el) => el.textContent?.trim() || "");
-      return current.length > 0 && JSON.stringify(current) !== JSON.stringify(oldTitles);
-    }, previousTitles, { timeout: 10000 }).catch(() => {});
+      return current.length > 0;
+    }, titleSel, { timeout: 10000 }).catch(() => {});
   }
   await page.locator(SEL.zone.cards).first().waitFor({ state: "visible", timeout: 30000 });
 }
@@ -166,13 +173,17 @@ async function waitForCardsChanged(page, previousTitles = []) {
 // ---------- 活动页：分页 ----------
 
 async function getActiveListPage(page) {
-  const text = await page.locator(SEL.pager.activeNum).textContent().catch(() => "");
+  const text = await page.locator(SEL.pager.activeNum).first().textContent().catch(() => "");
   const num = Number.parseInt(String(text || ""), 10);
   return Number.isFinite(num) ? num : 0;
 }
 
 async function getTotalListPages(page) {
-  const placeholder = await page.locator(SEL.pager.jumpInput).getAttribute("placeholder").catch(() => "");
+  // 真实页面：页码按钮（1..N）中的最大值；placeholder("1011")不可靠，仅兜底
+  const pageNums = await page.locator(SEL.pager.pageNum).allTextContents().catch(() => []);
+  const nums = pageNums.map((text) => Number.parseInt(String(text || ""), 10)).filter((num) => Number.isFinite(num) && num > 0);
+  if (nums.length) return Math.max(...nums);
+  const placeholder = await page.locator(SEL.pager.jumpInput).first().getAttribute("placeholder").catch(() => "");
   const matched = String(placeholder || "").match(/\d+/);
   return matched ? Number.parseInt(matched[0], 10) : 0;
 }
@@ -197,22 +208,39 @@ async function ensureListPage(page, expected, hooks = {}) {
 }
 
 async function waitForActivePage(page, expected) {
-  await page.waitForFunction((pageNumber) => {
-    const el = document.querySelector(".answer-section__pager-num.is-active");
-    return el?.textContent?.trim() === String(pageNumber);
-  }, expected, { timeout: 30000 }).catch(() => {});
+  const activeSel = SEL.pager.activeNum;
+  await page.waitForFunction(
+    ({ sel, expected }) => {
+      const el = document.querySelector(sel);
+      return el?.textContent?.trim() === String(expected);
+    },
+    { sel: activeSel, expected },
+    { timeout: 30000 }
+  ).catch(() => {});
   await page.locator(SEL.zone.cards).first().waitFor({ state: "visible", timeout: 30000 });
 }
 
 async function clickNextPage(page) {
-  return page.evaluate(({ classPattern, textPattern }) => {
+  // 真实页面：专用 .pager-next 按钮
+  const nextBtn = page.locator(SEL.pager.nextBtn).first();
+  if (await nextBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+    const disabled = await nextBtn.isDisabled().catch(() => false);
+    if (!disabled) {
+      await nextBtn.scrollIntoViewIfNeeded().catch(() => {});
+      await nextBtn.click({ timeout: 5000, noWaitAfter: true }).catch(() => false);
+      return true;
+    }
+    return false;
+  }
+  // 兜底：旧版启发式（找与当前页码同排、右侧的"下一页"样式元素）
+  return page.evaluate(({ classPattern, textPattern, activeSel }) => {
     const visible = (el) => {
       const rect = el.getBoundingClientRect();
       const style = window.getComputedStyle(el);
       return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none" && style.pointerEvents !== "none";
     };
     const textOf = (el) => String(el.innerText || el.textContent || el.getAttribute("aria-label") || el.title || "").replace(/\s+/g, " ").trim();
-    const active = document.querySelector(".answer-section__pager-num.is-active");
+    const active = document.querySelector(activeSel);
     if (!active) return false;
     const activeRect = active.getBoundingClientRect();
     const classRe = new RegExp(classPattern.source, classPattern.flags);
@@ -232,7 +260,7 @@ async function clickNextPage(page) {
     chosen.target.scrollIntoView({ block: "center" });
     chosen.target.click();
     return true;
-  }, { classPattern: { source: SEL.pager.nextClassPattern.source, flags: "i" }, textPattern: { source: SEL.pager.nextTextPattern.source, flags: "" } }).catch(() => false);
+  }, { classPattern: { source: SEL.pager.nextClassPattern.source, flags: "i" }, textPattern: { source: SEL.pager.nextTextPattern.source, flags: "" }, activeSel: SEL.pager.activeNum }).catch(() => false);
 }
 
 async function clickPageNumber(page, pageNumber) {

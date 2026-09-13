@@ -55,13 +55,13 @@ function pageHtml(questions) {
   .tabs, .cats { display: flex; gap: 12px; margin-bottom: 16px; }
   .tab, .cat { padding: 8px 18px; border-radius: 20px; background: #e8ecf5; cursor: pointer; border: 0; font-size: 14px; }
   .cat.active { background: #2f6fed; color: #fff; }
-  .answer-section__question { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
-  .answer-section__question-title { font-size: 16px; font-weight: 600; margin-bottom: 10px; }
-  .answer-section__btn { background: #2f6fed; color: #fff; border: 0; border-radius: 8px; padding: 8px 22px; cursor: pointer; }
+  .answer-section-question { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .answer-section-question-title { font-size: 16px; font-weight: 600; margin-bottom: 10px; }
+  .answer-section-btn { background: #2f6fed; color: #fff; border: 0; border-radius: 8px; padding: 8px 22px; cursor: pointer; }
   .pager { display: flex; gap: 8px; align-items: center; justify-content: center; margin-top: 20px; }
-  .answer-section__pager-num { padding: 6px 12px; border-radius: 6px; background: #fff; cursor: pointer; border: 1px solid #dde3ee; }
-  .answer-section__pager-num.is-active { background: #2f6fed; color: #fff; }
-  .answer-section__pager-jump-input { width: 90px; padding: 6px; border: 1px solid #dde3ee; border-radius: 6px; }
+  .pager-num { padding: 6px 12px; border-radius: 6px; background: #fff; cursor: pointer; border: 1px solid #dde3ee; }
+  .pager-num.is-active { background: #2f6fed; color: #fff; }
+  .pager-jump-input { width: 90px; padding: 6px; border: 1px solid #dde3ee; border-radius: 6px; }
 </style>
 </head>
 <body>
@@ -74,8 +74,8 @@ function pageHtml(questions) {
     <div id="cards"></div>
     <div class="pager">
       <span id="pageNums" style="display:flex;gap:8px"></span>
-      <input class="answer-section__pager-jump-input" id="jump" placeholder="共__页" />
-      <button class="answer-section__pager-num" id="next">›</button>
+      <input class="pager-jump-input" id="jump" placeholder="共__页" />
+      <button class="pager-next" id="next">›</button>
     </div>
   </div>
 </div>
@@ -105,12 +105,12 @@ function render() {
   box.innerHTML = '';
   for (const q of list) {
     const card = document.createElement('div');
-    card.className = 'answer-section__question';
-    const title = document.createElement('div');
-    title.className = 'answer-section__question-title';
+    card.className = 'answer-section-question';
+    const title = document.createElement('p');
+    title.className = 'answer-section-question-title';
     title.textContent = q.title;
-    const btn = document.createElement('button');
-    btn.className = 'answer-section__btn';
+    const btn = document.createElement('a');
+    btn.className = 'answer-section-btn';
     btn.textContent = '去答题';
     btn.onclick = () => window.open('/question/' + q.id, '_blank');
     card.append(title, btn);
@@ -120,8 +120,8 @@ function render() {
   const nums = document.getElementById('pageNums');
   nums.innerHTML = '';
   for (let p = 1; p <= total; p += 1) {
-    const span = document.createElement('span');
-    span.className = 'answer-section__pager-num' + (p === state.page ? ' is-active' : '');
+    const span = document.createElement('button');
+    span.className = 'pager-num' + (p === state.page ? ' is-active' : '');
     span.textContent = String(p);
     span.onclick = () => { state.page = p; render(); };
     nums.appendChild(span);

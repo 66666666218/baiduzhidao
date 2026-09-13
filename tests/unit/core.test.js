@@ -292,9 +292,9 @@ test("config：normalizeBitEnvs 去重去空", () => {
 });
 
 test("config：normalizeCategories", () => {
-  assert.deepEqual(normalizeCategories("三类一起"), ["情感类", "教育类", "综合类"]);
+  assert.deepEqual(normalizeCategories("三类一起"), ["情感类", "教育类", "综合类", "人物类"]);
   assert.deepEqual(normalizeCategories(["教育类"]), ["教育类"]);
-  assert.deepEqual(normalizeCategories(undefined), ["情感类", "教育类", "综合类"]);
+  assert.deepEqual(normalizeCategories(undefined), ["情感类", "教育类", "综合类", "人物类"]);
 });
 
 test("Store：setEnvPage 断点记录与恢复", () => {

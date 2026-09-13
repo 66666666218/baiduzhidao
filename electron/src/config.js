@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const CATEGORIES = ["情感类", "教育类", "综合类"];
+const CATEGORIES = ["情感类", "教育类", "综合类", "人物类"];
 const ALL_CATEGORY = "三类一起";
 
 const DEFAULTS = {
