@@ -561,23 +561,41 @@ async function scrollActivityToBottom(page) {
   await page.waitForTimeout(1000).catch(() => {});
 }
 
-/** 从活动页读取每个账号的当天通过数（文本格式 "x/y"），识别不到返回空数组。 */
+/**
+ * 从活动页读取当天答题进度。
+ * 支持两种格式："x/y"（配额型）与 真实活动页的 "已答 N"（2026-09 校准，无总量上限）。
+ * 识别不到返回空数组。
+ */
 async function readDailyPassed(page) {
   await scrollActivityToBottom(page);
-  return page.evaluate(({ progressPattern }) => {
+  return page.evaluate(({ progressPattern, answeredPattern }) => {
     const re = new RegExp(progressPattern.source, progressPattern.flags);
+    const ansRe = new RegExp(answeredPattern.source, answeredPattern.flags);
     const results = [];
+    const seen = new Set();
     const textOf = (el) => String(el?.innerText || "").replace(/\s+/g, " ").trim();
-    const nodes = document.querySelectorAll("[class*='account'],[class*='progress'],li,p,div");
+    const nodes = document.querySelectorAll("[class*='account'],[class*='progress'],[class*='quest'],li,p,div");
     for (const node of nodes) {
       const text = textOf(node);
+      if (!text || text.length > 200 || seen.has(text)) continue;
       const matched = text.match(re);
-      if (matched && text.length < 200) {
+      if (matched) {
+        seen.add(text);
         results.push({ label: text.slice(0, 60), done: Number(matched[1]), total: Number(matched[2]) });
+        continue;
+      }
+      // 真实活动页格式："已答 49"（当天已回答数，无总量上限）
+      const ans = text.match(ansRe);
+      if (ans) {
+        seen.add(text);
+        results.push({ label: text.slice(0, 60), done: Number(ans[1]), total: 0, format: "answered-only" });
       }
     }
     return results;
-  }, { progressPattern: { source: SEL.passed.progressPattern.source, flags: "" } }).catch(() => []);
+  }, {
+    progressPattern: { source: SEL.passed.progressPattern.source, flags: "" },
+    answeredPattern: { source: "已答\\s*(\\d+)", flags: "" },
+  }).catch(() => []);
 }
 
 module.exports = {

@@ -71,6 +71,7 @@ function pageHtml(questions) {
   <div id="answerZone" hidden>
     <div class="cats" id="cats"></div>
     <div class="account-progress" style="margin-bottom:10px;color:#666">账号1：2/5</div>
+    <div class="quest-progress" style="margin-bottom:10px;color:#666">答题进度 已答 49</div>
     <div id="cards"></div>
     <div class="pager">
       <span id="pageNums" style="display:flex;gap:8px"></span>

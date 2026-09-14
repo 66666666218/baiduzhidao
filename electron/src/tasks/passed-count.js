@@ -30,12 +30,16 @@ async function runPassedCountTask(ctx, deps) {
       await zhidao.safeGoto(page, config.resolveActivityUrl());
       await zhidao.waitForBaiduReady(page, config.verifyWaitSeconds, { onLog: log });
       const rows = await zhidao.readDailyPassed(page);
-      const best = rows.sort((a, b) => (b.total || 0) - (a.total || 0))[0] || null;
+      // 配额型（x/y）优先；"已答N"格式无上限，不可判 completed
+      const quotaRows = rows.filter((row) => (row.total || 0) > 0);
+      const answeredOnly = rows.find((row) => row.format === "answered-only");
+      const best = quotaRows.sort((a, b) => b.total - a.total)[0] || null;
       const account = {
         bitEnv: envLabel,
-        status: best ? (best.done >= best.total ? "completed" : "partial") : "unknown",
-        done: best ? best.done : 0,
+        status: best ? (best.done >= best.total ? "completed" : "partial") : answeredOnly ? "partial" : "unknown",
+        done: best ? best.done : answeredOnly ? answeredOnly.done : 0,
         total: best ? best.total : 0,
+        format: best ? "quota" : answeredOnly ? "answered-only" : "none",
         raw: rows.slice(0, 5),
       };
       accounts.push(account);
