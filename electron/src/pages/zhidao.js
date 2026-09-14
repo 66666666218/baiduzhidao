@@ -276,7 +276,7 @@ async function clickPageNumber(page, pageNumber) {
 
 /** 逐个点击“去答题”；跳过已用过的题。返回 {questionPage, listTitle} 或 null。 */
 async function openNextQuestion(page, usedKeys, hooks = {}) {
-  await page.waitForLoadState("domcontentloaded", { timeout: 20000 }).catch(() => {});
+  // 注：不使用 waitForLoadState——back-navigation 后 load 事件可能永不触发，靠下方题卡显式等待
   const cards = page.locator(SEL.zone.cards);
   const hasCards = await cards.first().waitFor({ state: "visible", timeout: 30000 }).then(() => true).catch(() => false);
   if (!hasCards) {
@@ -293,17 +293,20 @@ async function openNextQuestion(page, usedKeys, hooks = {}) {
     if (!(await button.isVisible().catch(() => false)) || !(await button.isEnabled().catch(() => false))) continue;
 
     hooks.onLog?.(`打开题目：${listTitle}`);
-    const popupPromise = page.context().waitForEvent("page", { timeout: 8000 }).catch(() => null);
+    const popupPromise = page.context().waitForEvent("page", { timeout: 12000 }).catch(() => null);
     const listUrl = page.url();
     await button.click({ timeout: 30000, noWaitAfter: true });
-    const popup = await popupPromise;
+    // 弹窗与同页跳转竞速：谁先发生用谁（真实页面为同页跳转，弹窗路径兼容旧版/其它平台）
+    const popup = await Promise.race([
+      popupPromise,
+      page.waitForURL(/\/question\//, { timeout: 15000 }).then(() => null).catch(() => null),
+    ]);
     if (popup) {
       await popup.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
       await popup.bringToFront().catch(() => {});
       return { questionPage: popup, listTitle, listUrl, isPopup: true };
     }
-    // 真实行为（2026-09 校准）：当前页跳转到 /question/...，等待导航完成
-    const navigated = await page.waitForURL(/\/question\//, { timeout: 15000 }).then(() => true).catch(() => false);
+    const navigated = /\/question\//.test(page.url());
     if (!navigated) {
       hooks.onLog?.("点击去答题后未发生跳转（可能已答过或入口失效）。");
       await page.waitForTimeout(1000).catch(() => {});
@@ -362,7 +365,7 @@ async function collectQuestionCards(page) {
 
 async function readQuestionTitle(page) {
   // 新版详情页：干净标题在 .main-column-title-content
-  const clean = await page.locator(".main-column-title-content").first().textContent({ timeout: 1500 }).catch(() => "");
+  const clean = await page.locator(".main-column-title-content").first().textContent({ timeout: 600 }).catch(() => "");
   if (clean && clean.trim()) return normalizeTitle(clean);
   for (const selector of SEL.question.titleCandidates) {
     const text = await page.locator(selector).first().textContent({ timeout: 1500 }).catch(() => "");

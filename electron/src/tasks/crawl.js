@@ -75,6 +75,27 @@ async function runCrawlTask(ctx, deps) {
 
         let newCount = 0;
         while (!ctx.shouldStop()) {
+          // 自愈：同页跳转返回后 SPA 状态可能丢失（答题区折叠/分类重置）
+          // 优先轻量恢复（点击答题区标签），失败再整页重载
+          if (!(await page.locator(SEL.zone.cards).first().isVisible({ timeout: 2000 }).catch(() => false))) {
+            log("题卡不可见（同页跳转后状态丢失），恢复答题区状态...");
+            let restored = true;
+            try {
+              await zhidao.enterAnswerZone(page, { onLog: log });
+              await zhidao.selectCategory(page, category, { onLog: log });
+              await zhidao.ensureListPage(page, currentPage, { onLog: log });
+            } catch (lightError) {
+              restored = false;
+              log(`轻量恢复失败（${lightError.message.slice(0, 40)}），整页重载兜底...`);
+            }
+            if (!restored || !(await page.locator(SEL.zone.cards).first().isVisible({ timeout: 2000 }).catch(() => false))) {
+              await zhidao.safeGoto(page, config.resolveActivityUrl());
+              await zhidao.waitForBaiduReady(page, config.verifyWaitSeconds, { onLog: log });
+              await zhidao.enterAnswerZone(page, { onLog: log });
+              await zhidao.selectCategory(page, category, { onLog: log });
+              await zhidao.ensureListPage(page, currentPage, { onLog: log });
+            }
+          }
           const opened = await zhidao.openNextQuestion(page, seenKeys, { onLog: log });
           if (!opened) break;
           const questionPage = opened.questionPage;
@@ -207,10 +228,13 @@ async function keepQuestionOpen(questionPage, activityPage) {
       await questionPage.close().catch(() => {});
       await activityPage.bringToFront().catch(() => {});
     } else {
-      await activityPage.goBack({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(async () => {
-        await zhidao.safeGoto(activityPage, activityPage.url());
-      });
-      await activityPage.waitForTimeout(1500).catch(() => {});
+      // goBack 的 load 事件在部分页面不触发（超时但导航已完成），按 URL 轮询确认返回
+      await activityPage.goBack({ timeout: 4000 }).catch(() => {});
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline && /\/question\//.test(activityPage.url())) {
+        await activityPage.waitForTimeout(300).catch(() => {});
+      }
+      await activityPage.waitForTimeout(1200).catch(() => {});
     }
   } catch {
     // 页面状态异常不中断任务

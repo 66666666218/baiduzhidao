@@ -112,7 +112,8 @@ function render() {
     const btn = document.createElement('a');
     btn.className = 'answer-section-btn';
     btn.textContent = '去答题';
-    btn.onclick = () => window.open('/question/' + q.id, '_blank');
+    // 对齐真实行为：同页跳转（真实页面"去答题"为当前页导航到 /question/...）
+    btn.onclick = () => { location.href = '/question/' + q.id; };
     card.append(title, btn);
     box.appendChild(card);
   }
