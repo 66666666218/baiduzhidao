@@ -15,6 +15,7 @@ const { runGenerateTask } = require("./src/tasks/generate");
 const { runSubmitTask } = require("./src/tasks/submit");
 const { runPassedCountTask } = require("./src/tasks/passed-count");
 const { randomPickQuestions } = require("./src/tasks/random-pick");
+const { EventBus } = require("./src/events/bus");
 
 let mainWindow = null;
 let clipboardApi = null; // registerIpc 时注入（供任务内剪贴板兜底）
@@ -44,7 +45,16 @@ const llm = new LlmClient({
   onUsage: (entry) => store.addUsage(entry),
 });
 const browserPool = new BrowserPool(createAdapter({ apiUrl: config.load().apiUrl }));
-const tasks = new TaskManager();
+const eventBus = new EventBus();
+const tasks = new TaskManager({ eventBus });
+// 任务生命周期事件 → 日志（审计订阅在 v2.1-⑦ 扩展）
+eventBus.on("task.*", ({ event, taskName, taskId, to, error, label }) => {
+  if (event === "task.stateChanged") logger.log(`任务状态：${taskName} → ${to}`);
+  else if (event === "task.paused") logger.log(`任务暂停：${taskName}（${label || "checkpoint"}）`);
+  else if (event === "task.resumed") logger.log(`任务恢复：${taskName}`);
+  else if (event === "task.failed") logger.log(`任务失败：${taskName} — ${error || ""}`);
+  else if (event === "task.succeeded" || event === "task.cancelled") logger.log(`${event === "task.succeeded" ? "任务完成" : "任务取消"}：${taskName}`);
+});
 
 function deps() {
   return {
