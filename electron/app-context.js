@@ -16,6 +16,7 @@ const { runSubmitTask } = require("./src/tasks/submit");
 const { runPassedCountTask } = require("./src/tasks/passed-count");
 const { randomPickQuestions } = require("./src/tasks/random-pick");
 const { EventBus } = require("./src/events/bus");
+const { AuditLogger } = require("./src/audit/logger");
 
 let mainWindow = null;
 let clipboardApi = null; // registerIpc 时注入（供任务内剪贴板兜底）
@@ -46,6 +47,7 @@ const llm = new LlmClient({
 });
 const browserPool = new BrowserPool(createAdapter({ apiUrl: config.load().apiUrl }));
 const eventBus = new EventBus();
+const auditLogger = new AuditLogger({ auditDir: path.join(dataDir, "audit"), eventBus });
 const tasks = new TaskManager({ eventBus });
 // 任务生命周期事件 → 日志（审计订阅在 v2.1-⑦ 扩展）
 eventBus.on("task.*", ({ event, taskName, taskId, to, error, label }) => {
@@ -87,7 +89,12 @@ async function startTask(name, payload, runner) {
     const result = await tasks.start(name, payload, runner, {
       onLog: (message) => logger.log(message),
       onProgress: (progress) => sendToRenderer("task:progress", progress),
-      onItem: (item) => sendToRenderer("task:item", item),
+      onItem: (item) => {
+      sendToRenderer("task:item", item);
+      if (item && item.answer && item.status === "已生成回答") eventBus.emit("answer.generated", { questionId: item.questionUrl || item.title, model: config.load().aiModel, decision: item.quality || "" });
+      if (item && item.status === "已提交") eventBus.emit("submission.succeeded", { questionId: item.questionUrl || item.title, account: item.bitEnv, confirmed: item.confirmed });
+      if (item && String(item.status || "").startsWith("提交失败")) eventBus.emit("submission.failed", { questionId: item.questionUrl || item.title, account: item.bitEnv, reason: item.status });
+    },
     });
     store.flushAll();
     return result;
