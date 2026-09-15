@@ -63,3 +63,20 @@ test("Quality Gate：自定义阈值", () => {
   const result = strict.evaluate("这个回答中等长度，有五十个字符左右吧，大概就是这样了。", QUESTION);
   assert.equal(result.decision, "REVIEW");
 });
+
+test("Quality Gate：不确定词密集 → REVIEW（规则红线）", () => {
+  const result = gate.evaluate(
+    "这个问题可能有很多答案。通常来说要看情况，大概也许每个人都有不同的可能吧，通常大家的选择都不一样。",
+    QUESTION
+  );
+  assert.equal(result.checks.format.uncertainWords, true);
+  assert.equal(result.decision, "REVIEW");
+  assert.ok(result.issues.some((issue) => issue.includes("不确定词")));
+});
+
+test("Quality Gate：官方示例结构（结论/真实细节/观点升华）不被误杀", () => {
+  const official =
+    "结论：真正有效的安慰，不是讲道理，而是先让对方觉得被理解了。真实细节：我以前状态很差的时候，有个朋友只是陪我在楼下坐了两个小时，问了一句你最近是不是撑太久了。问题本质：人真正需要的不是被教育，而是被接住。实操建议：先听，别急着评判；先接情绪，再聊解决办法。观点升华：一句最近是不是很累，比十句你要坚强更有用。";
+  const result = gate.evaluate(official, { title: "如何安慰心情不好的人", questionContent: "" });
+  assert.equal(result.decision, "PASS", JSON.stringify(result.issues));
+});

@@ -179,13 +179,15 @@ async function getActiveListPage(page) {
 }
 
 async function getTotalListPages(page) {
-  // 真实页面：页码按钮（1..N）中的最大值；placeholder("1011")不可靠，仅兜底
+  // 真实页面：页码按钮只渲染邻近页（如 1..2），跳页输入 placeholder 为总页数（如 1011）
+  // 取两者较大值，避免深爬提前结束
   const pageNums = await page.locator(SEL.pager.pageNum).allTextContents().catch(() => []);
   const nums = pageNums.map((text) => Number.parseInt(String(text || ""), 10)).filter((num) => Number.isFinite(num) && num > 0);
-  if (nums.length) return Math.max(...nums);
+  const buttonMax = nums.length ? Math.max(...nums) : 0;
   const placeholder = await page.locator(SEL.pager.jumpInput).first().getAttribute("placeholder").catch(() => "");
   const matched = String(placeholder || "").match(/\d+/);
-  return matched ? Number.parseInt(matched[0], 10) : 0;
+  const placeholderTotal = matched ? Number.parseInt(matched[0], 10) : 0;
+  return Math.max(buttonMax, placeholderTotal);
 }
 
 async function ensureListPage(page, expected, hooks = {}) {
