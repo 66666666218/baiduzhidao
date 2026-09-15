@@ -6,7 +6,10 @@
  * （rewrite、quality 等新策略按同一接口添加）。
  */
 
-const { SYSTEM_PROMPT, DEFAULT_TITLE_TEMPLATE, DEFAULT_INTRO_TEMPLATE } = require("../../config");
+const { SYSTEM_PROMPT } = require("../../config");
+
+const DEFAULT_TITLE_TEMPLATE = "A列标题：{{标题}}";
+const DEFAULT_INTRO_TEMPLATE = "B列问题内容/简介：{{问题内容}}";
 
 function createAnswerStrategy({ systemPrompt, titleTemplate, introTemplate } = {}) {
   const strategy = {
