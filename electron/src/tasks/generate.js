@@ -2,6 +2,7 @@
 
 const { nowText } = require("../config");
 const excel = require("../storage/excel");
+const { buildQualityGate } = require("../quality/gate");
 
 /**
  * AI 生成任务：对给定题目行批量生成回答。
@@ -17,6 +18,7 @@ async function runGenerateTask(ctx, deps) {
   const rows = Array.isArray(ctx.payload.results) ? ctx.payload.results : [];
   if (!rows.length) throw new Error("当前没有可生成的题目，请先抽题或选择表格。");
 
+  const qualityGate = deps.qualityGate || buildQualityGate({});
   const filePath = String(ctx.payload.filePath || "").trim().replace(/^"|"$/g, "");
   const { titleTemplate, introTemplate } = ctx.payload;
 
@@ -110,7 +112,9 @@ async function runGenerateTask(ctx, deps) {
       item.status = item.answer.trim() ? (item.status === "已提交" ? "已提交" : "已生成回答") : (item.status || "待生成");
       item.createdAt = item.createdAt || nowText();
       if (item.answer.trim()) {
-        qualityCheck(item, log);
+        const verdict = qualityGate.evaluate(item.answer, { title: item.title, questionContent: item.questionContent });
+        item.quality = `${verdict.decision}(${verdict.score})${verdict.issues.length ? "：" + verdict.reviewReason : ""}`;
+        if (verdict.decision === "REVIEW") log(`质检提醒：${item.title || item.questionUrl} → ${verdict.reviewReason}，建议人工复核。`);
         store.upsertAnswer(item);
         // CSV 自动保存兜底（防表格被占用/进程崩溃丢记录）
         appendAutosave(deps.autosavePath, item);
@@ -159,14 +163,3 @@ function appendAutosave(autosavePath, item) {
   }
 }
 
-/** 回答质检：长度异常、AI 痕迹词、标题复读等问题打日志提醒并写入 item.quality（导出表格可见） */
-function qualityCheck(item, log) {
-  const issues = [];
-  const text = String(item.answer || "").trim();
-  if (text.length < 50) issues.push(`过短（${text.length} 字）`);
-  if (text.length > 500) issues.push(`偏长（${text.length} 字）`);
-  if (/作为AI|作为一个AI|AI助手|语言模型/i.test(text)) issues.push("含 AI 痕迹词");
-  if (item.title && text.includes(item.title)) issues.push("复读标题");
-  item.quality = issues.join("；") || "通过";
-  if (issues.length) log(`质检提醒：${item.title || item.questionUrl} → ${issues.join("、")}，建议人工复核。`);
-}
