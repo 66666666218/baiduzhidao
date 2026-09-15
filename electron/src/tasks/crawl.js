@@ -75,6 +75,7 @@ async function runCrawlTask(ctx, deps) {
 
         let newCount = 0;
         while (!ctx.shouldStop()) {
+          await ctx.pausePoint?.("爬题·题间检查点");
           // 自愈：同页跳转返回后 SPA 状态可能丢失（答题区折叠/分类重置）
           // 优先轻量恢复（点击答题区标签），失败再整页重载
           if (!(await page.locator(SEL.zone.cards).first().isVisible({ timeout: 2000 }).catch(() => false))) {

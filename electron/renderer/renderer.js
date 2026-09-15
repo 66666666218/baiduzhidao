@@ -368,6 +368,26 @@ function setActionsEnabled(enabled) {
   }
 }
 
+let taskPaused = false;
+
+$("pauseTask").addEventListener("click", async () => {
+  const result = await rpc.invoke("task:pause").catch(() => null);
+  if (result && result.accepted) {
+    taskPaused = true;
+    $("pauseTask").hidden = true;
+    $("resumeTask").hidden = false;
+    appendLog("已请求暂停，任务将在下一个检查点挂起...");
+  }
+});
+
+$("resumeTask").addEventListener("click", async () => {
+  await rpc.invoke("task:resume").catch(() => {});
+  taskPaused = false;
+  $("resumeTask").hidden = true;
+  $("pauseTask").hidden = false;
+  appendLog("已恢复任务。");
+});
+
 function updateProgress(progress) {
   const wrap = $("progressWrap");
   if (!progress) {
@@ -381,6 +401,17 @@ function updateProgress(progress) {
   const finished = progress.status === "done" || progress.status === "stopped" || progress.status === "failed";
   $("stopTask").disabled = finished;
   setActionsEnabled(finished);
+  // 暂停/恢复按钮跟随运行状态与暂停标志
+  $("pauseTask").disabled = finished;
+  $("resumeTask").disabled = finished;
+  if (finished) {
+    $("pauseTask").hidden = false;
+    $("resumeTask").hidden = true;
+    taskPaused = false;
+  } else if (!taskPaused) {
+    $("pauseTask").hidden = false;
+    $("resumeTask").hidden = true;
+  }
 }
 
 function statusText(status) {

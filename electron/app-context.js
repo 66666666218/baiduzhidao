@@ -140,6 +140,9 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
 
   // 任务控制
   ipcMain.handle("task:stop", () => tasks.stop());
+  ipcMain.handle("task:pause", () => tasks.pause());
+  ipcMain.handle("task:resume", () => tasks.resume());
+  ipcMain.handle("task:history", () => ({ current: tasks.currentState(), history: tasks.historyList() }));
   ipcMain.handle("task:running", () => ({ running: tasks.isRunning() }));
 
   // 比特浏览器

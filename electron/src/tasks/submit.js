@@ -115,6 +115,7 @@ async function runSubmitTask(ctx, deps) {
 
       for (const item of slot.rows) {
         if (ctx.shouldStop()) break;
+        await ctx.pausePoint?.("提交·条间检查点");
         processed += 1;
         ctx.report({ done: successCount + failCount, total: totalPlanned, status: "running" });
         log(`打开题目链接 ${processed}/${totalPlanned}：${item.title || item.questionUrl}`);

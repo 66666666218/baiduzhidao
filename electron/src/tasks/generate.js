@@ -61,6 +61,7 @@ async function runGenerateTask(ctx, deps) {
   async function worker() {
     while (true) {
       if (ctx.shouldStop() || budgetExhausted) return;
+      await ctx.pausePoint?.("生成·题间检查点");
       const slot = uniqueWork[done];
       if (!slot) return;
       done += 1;
