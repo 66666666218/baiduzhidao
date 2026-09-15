@@ -30,6 +30,7 @@ class Pipeline {
     const previous = {};
     for (const stage of this.stages) {
       if (completed.has(stage.name)) {
+        previous[stage.name] = null; // 跳过的阶段向下游显式传 null
         this.emitEvent("pipeline.stageSkipped", { stage: stage.name });
         continue;
       }

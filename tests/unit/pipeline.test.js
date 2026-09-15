@@ -49,35 +49,20 @@ test("Pipeline：失败即停（后续阶段不执行）", async () => {
   assert.equal(ran, false);
 });
 
-test("Pipeline：断点续跑（completedStages 跳过）", async () => {
+test("Pipeline：断点续跑（completedStages 跳过，跳过阶段向下游传 null）", async () => {
   const runs = [];
   const saved = [];
-  const checkpoint = {
-    load: () => ({ completedStages: ["a"] }),
-    save: (state) => saved.push(state),
-  };
   const pipeline = new Pipeline({
     name: "demo",
-    checkpoint,
-    stages: [
-      { name: "a", run: async () => { runs.push("a"); return 1; } },
-      { name: "b", run: async ({ previous }) => { runs.push("b"); return previous.a + 1; } },
-    ],
-  });
-  // 断点恢复：a 已完成被跳过 —— 但 previous.a 不可得，b 需容忍（真实场景由 checkpoint 数据补齐）
-  await assert.rejects(() => pipeline.run({}), () => true);
-  // 说明：跳过阶段后 previous 缺失由业务层负责（此处 b 依赖 a 会失败），因此改用无依赖断言：
-  const pipeline2 = new Pipeline({
-    name: "demo2",
     checkpoint: { load: () => ({ completedStages: ["a"] }), save: (s) => saved.push(s) },
     stages: [
-      { name: "a", run: async () => { runs.push("a2"); return 1; } },
-      { name: "b", run: async () => { runs.push("b2"); return 2; } },
+      { name: "a", run: async () => { runs.push("a"); return 1; } },
+      { name: "b", run: async ({ previous }) => { runs.push("b"); return (previous.a || 0) + 2; } },
     ],
   });
-  const result = await pipeline2.run({});
-  assert.deepEqual(result, { a: null, b: 2 });
-  assert.deepEqual(runs, ["b2"], "已完成阶段应被跳过");
+  const result = await pipeline.run({});
+  assert.deepEqual(result, { a: null, b: 2 }, "b 收到 previous.a=null → 0+2");
+  assert.deepEqual(runs, ["b"], "已完成的 a 不应重复执行");
   assert.ok(saved.some((s) => s.completedStages.includes("b")));
 });
 
