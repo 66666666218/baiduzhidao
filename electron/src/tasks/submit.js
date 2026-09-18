@@ -83,14 +83,38 @@ async function runSubmitTask(ctx, deps) {
     log("所有账号均已达标，本次无需提交。");
     return { stopped: false, count: 0, failed: 0, total: 0, results: [] };
   }
-  const allocation = allocateRowsToEnvs(rows, activeEnvs, { perEnvLimit: perEnvLimitRaw, accountDailyLimit });
+
+  // AccountManager：集中校验账号可用性（封禁/额度），不可用的账号提前剔除
+  let accountManager = deps.accountManager;
+  if (!accountManager) {
+    const { AccountManager } = require("../browser/account-manager");
+    accountManager = new AccountManager({ store, dailyLimit: 0 });
+    accountManager.register(activeEnvs);
+  } else {
+    accountManager.register(activeEnvs);
+  }
+  const usableEnvs = [];
+  for (const label of activeEnvs) {
+    try {
+      accountManager.acquire(label);
+      usableEnvs.push(label);
+    } catch (error) {
+      log(`账号 ${label} 不可用，跳过：${error.message}`);
+    }
+  }
+  if (!usableEnvs.length) {
+    log("没有可用账号（全部被额度/封禁拦截），本次不提交。");
+    return { stopped: false, count: 0, failed: 0, total: 0, results: [] };
+  }
+
+  const allocation = allocateRowsToEnvs(rows, usableEnvs, { perEnvLimit: perEnvLimitRaw, accountDailyLimit });
   const totalPlanned = allocation.reduce((sum, slot) => sum + slot.rows.length, 0);
 
   log(`准备自动提交 ${totalPlanned}/${allRows.length} 条答案。`);
   // 容量不足时显式告警，绝不静默丢弃
   if (totalPlanned < rows.length) {
     const dropped = rows.length - totalPlanned;
-    log(`⚠️ 本轮账号容量（${activeEnvs.length} 个账号 × 每账号上限）只放行 ${totalPlanned} 条，剩余 ${dropped} 条本轮不提交。请提高「每账号单轮条数/每账号每日限额」或增加账号后再跑一次。`);
+    log(`⚠️ 本轮账号容量（${usableEnvs.length} 个账号 × 每账号上限）只放行 ${totalPlanned} 条，剩余 ${dropped} 条本轮不提交。请提高「每账号单轮条数/每账号每日限额」或增加账号后再跑一次。`);
   }
   log(`提交逻辑：每账号提交 ${accountDailyLimit > 0 ? accountDailyLimit : "不限"} 条后轮换；打开题目链接、填入回答、点击提交。`);
 
@@ -99,6 +123,7 @@ async function runSubmitTask(ctx, deps) {
   let failCount = 0;
   let processed = 0;
   const results = [];
+  const lastSuccessByEnv = {}; // envLabel -> 最近一次成功时的全局成功数（用于连续失败判定）
 
   for (const slot of allocation) {
     if (ctx.shouldStop() || !slot.rows.length) continue;
@@ -162,7 +187,14 @@ async function runSubmitTask(ctx, deps) {
           results.push(failedItem);
           ctx.emitItem(failedItem);
           log(`提交失败：${item.title || item.questionUrl}；${describeError(error)}`);
+          // 连续 3 次失败自动标记账号需人工检查（AccountManager 层拦截后续提交）
+          if (deps.accountManager && failCount - lastSuccessByEnv[envLabel] >= 3 && lastSuccessByEnv[envLabel] !== undefined) {
+            deps.accountManager.markBlocked(envLabel, `连续 ${failCount - lastSuccessByEnv[envLabel]} 次提交失败`);
+            log(`⚠️ 账号 ${envLabel} 已连续多次失败，已标记需人工检查，本轮跳过该账号。`);
+            break;
+          }
         }
+        lastSuccessByEnv[envLabel] = successCount;
         ctx.report({ done: successCount + failCount, total: totalPlanned, status: "running" });
         if (processed < totalPlanned && !ctx.shouldStop()) {
           await ctx.delay(config.delayMin, config.delayMax, "下一条提交间隔");

@@ -246,6 +246,12 @@ test("提交任务：容量不足时告警且不静默丢弃（日志断言）",
   const deps = {
     log: (message) => logs.push(message),
     config: { closeAfter: false },
+    accountManager: (() => {
+      const { AccountManager } = require("../../electron/src/browser/account-manager");
+      const am = new AccountManager({ store: new Store(tempDir()), dailyLimit: 0 });
+      am.register(["A", "B"]);
+      return am;
+    })(),
     browserPool: {
       adapter: { checkConnection: async () => ({ ok: true, status: 200 }) },
       acquire: async () => { throw new Error("测试桩：不真正打开浏览器"); },
