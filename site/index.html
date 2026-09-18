@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zhidao Answer Studio — 自动化任务框架</title>
+<meta name="description" content="开源自动化任务框架：任务状态机、流水线、浏览器抽象、LLM 分层、质量门、事件审计。77 项自动化测试。">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="hero">
+  <div class="container">
+    <div class="hero-badge">开源 · Electron + Node.js · 77 项自动化测试</div>
+    <h1>Zhidao Answer Studio</h1>
+    <p class="hero-sub">一个以"百度知道答题"为首个适配器的<b>通用自动化任务框架</b>：<br>
+    任务状态机 · 流水线执行器 · 浏览器抽象层 · LLM Provider 分层 · 质量门 · 事件审计</p>
+    <div class="hero-actions">
+      <a class="btn primary" href="https://github.com/66666666218/baiduzhidao" target="_blank" rel="noopener">GitHub 仓库</a>
+      <a class="btn" href="#demo">在线演示</a>
+      <a class="btn" href="#architecture">架构设计</a>
+      <a class="btn" href="#metrics">测试与质量</a>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- 数据总览 -->
+  <section class="container" id="metrics">
+    <h2>项目实时数据</h2>
+    <p class="section-sub">数据来自本地运行缓存（页面加载时只读快照，不含任何账号信息）。</p>
+    <div class="stats-grid" id="statsGrid">
+      <div class="stat"><div class="stat-num" id="stTests">77</div><div class="stat-label">自动化测试（单元+E2E）</div></div>
+      <div class="stat"><div class="stat-num" id="stBank">—</div><div class="stat-label">题库规模</div></div>
+      <div class="stat"><div class="stat-num" id="stGen">—</div><div class="stat-label">已生成回答</div></div>
+      <div class="stat"><div class="stat-num" id="stAudit">—</div><div class="stat-label">审计事件</div></div>
+      <div class="stat"><div class="stat-num">99.8%</div><div class="stat-label">演示批次过审率</div></div>
+      <div class="stat"><div class="stat-num">4</div><div class="stat-label">平台分类适配</div></div>
+    </div>
+  </section>
+
+  <!-- 架构 -->
+  <section class="container alt-bg" id="architecture">
+    <h2>架构总览</h2>
+    <p class="section-sub">五层分层：UI → 任务引擎 → 领域/质量 → 基础设施 → 平台适配器。核心与"百度知道"解耦，页面适配器只是第一个平台插件。</p>
+    <div class="arch-grid">
+      <div class="arch-card">
+        <h3>任务状态机</h3>
+        <p>PENDING → RUNNING → SUCCESS / FAILED / CANCELLED，RUNNING ⇄ PAUSED。<br>迁移校验、迁移历史、全生命周期事件。</p>
+        <code>tasks/statemachine.js</code>
+      </div>
+      <div class="arch-card">
+        <h3>流水线执行器</h3>
+        <p>阶段链式传递、失败即停（带阶段名）、断点续跑（跳过阶段向下游传 null）、阶段级事件。</p>
+        <code>workflows/pipeline.js</code>
+      </div>
+      <div class="arch-card">
+        <h3>领域模型</h3>
+        <p>Question 十态生命周期（DISCOVERED → … → SUBMITTED），fingerprint 去重（URL pathname + 标题哈希），旧数据零破坏升级。</p>
+        <code>domain/question.js</code>
+      </div>
+      <div class="arch-card">
+        <h3>LLM 分层</h3>
+        <p>Provider（OpenAI 兼容传输）+ Strategy（提问模板/清洗）+ Client（并发闸/退避重试/token 记账/日预算）。</p>
+        <code>llm/*</code>
+      </div>
+      <div class="arch-card">
+        <h3>质量门</h3>
+        <p>长度/格式/AI 痕迹/标题复读/相关性/重复度 七项检查 → 评分 → PASS / REVIEW 决策。</p>
+        <code>quality/gate.js</code>
+      </div>
+      <div class="arch-card">
+        <h3>可观测性</h3>
+        <p>事件总线（精确/前缀/全量订阅）→ 运行日志（账号打码）+ 审计日志（JSONL 按天）+ 健康自检流水线（8 阶段）。</p>
+        <code>events/ · audit/ · selftest.js</code>
+      </div>
+    </div>
+    <details class="arch-more">
+      <summary>查看完整分层图</summary>
+      <pre class="arch-tree">Renderer（零构建 UI）
+   │  window.api（preload 白名单桥）
+   ▼
+Electron Main ── ipc/app-context.js（装配根）
+   ▼
+Application：tasks/manager · workflows/pipeline · selftest
+   ▼
+Domain：domain/question · quality/gate
+   ▼
+Infrastructure：events/bus · audit/logger · log · storage/store · storage/excel
+   │              llm/client → providers + strategies · browser/pool · account-manager
+   ▼
+Platform Adapter：pages/selectors（唯一真源） · pages/zhidao · mock-site</pre>
+    </details>
+  </section>
+
+  <!-- 在线演示 -->
+  <section class="container" id="demo">
+    <h2>在线演示（模拟环境）</h2>
+    <p class="section-sub">以下演示运行在<b>本地模拟站</b>上——它与真实页面的 DOM 结构对齐，但完全离线、不访问任何真实平台、不产生真实发布。用于展示任务引擎与流水线的真实行为。</p>
+    <div class="demo-grid">
+      <div class="demo-card">
+        <h3>① 爬题流水线</h3>
+        <p>进入答题区 → 锁定分类 → 逐题打开 → 提取标题与链接 → 指纹去重 → 入库。</p>
+        <button class="btn primary" data-demo="crawl">运行演示</button>
+        <div class="demo-log" id="log-crawl" hidden></div>
+      </div>
+      <div class="demo-card">
+        <h3>② AI 生成 + 质量门</h3>
+        <p>LLM 生成回答 → 质量门七项检查 → 评分 → PASS / REVIEW 决策。</p>
+        <button class="btn primary" data-demo="generate">运行演示</button>
+        <div class="demo-log" id="log-generate" hidden></div>
+      </div>
+      <div class="demo-card">
+        <h3>③ 健康自检</h3>
+        <p>8 阶段自检流水线：模拟站 → 浏览器 → 引擎装配 → 爬题 → 生成 → 提交 → 核对 → 通过数。</p>
+        <button class="btn primary" data-demo="selftest">运行演示</button>
+        <div class="demo-log" id="log-selftest" hidden></div>
+      </div>
+    </div>
+    <p class="hint">演示需要本机启动演示后端（<code>node site/server.js</code>），数据仅存在于内存。</p>
+  </section>
+
+  <!-- 文档 -->
+  <section class="container alt-bg" id="docs">
+    <h2>文档</h2>
+    <div class="doc-grid">
+      <a class="doc-card" href="https://github.com/66666666218/baiduzhidao/blob/main/docs/%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1.md" target="_blank" rel="noopener"><h3>架构设计</h3><p>分层、状态机、数据模型、演进路线</p></a>
+      <a class="doc-card" href="https://github.com/66666666218/baiduzhidao/blob/main/docs/%E5%BC%80%E5%8F%91%E6%96%87%E6%A1%A3.md" target="_blank" rel="noopener"><h3>开发文档</h3><p>四轮审查记录、问题清单、修复档案</p></a>
+      <a class="doc-card" href="https://github.com/66666666218/baiduzhidao/blob/main/docs/%E5%BE%85%E5%86%B3%E7%AD%96%E6%B8%85%E5%8D%95.md" target="_blank" rel="noopener"><h3>待决策清单</h3><p>公开的决策队列</p></a>
+      <a class="doc-card" href="https://github.com/66666666218/baiduzhidao/blob/main/NIGHTLY_FINAL_REPORT.md" target="_blank" rel="noopener"><h3>迭代报告</h3><p>每夜增量、验收数据、遗留问题</p></a>
+    </div>
+  </section>
+
+  <!-- 声明 -->
+  <section class="container">
+    <div class="disclaimer">
+      <h3>使用声明</h3>
+      <p>本项目为自动化任务框架的技术演示。框架本身平台无关；随附的百度知道适配器仅供学习研究，
+      使用时请遵守目标平台的服务条款与当地法律法规。该项目不提供、也不应被用于规避平台审核或批量套取平台奖励的用途。
+      自动化操作产生的账号后果由使用者自行承担。</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="container">
+    <p>Zhidao Answer Studio · <a href="https://github.com/66666666218/baiduzhidao" target="_blank" rel="noopener">GitHub</a> · MIT</p>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
