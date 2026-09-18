@@ -65,6 +65,7 @@ function deps() {
     llm,
     copy: (text) => (clipboardApi ? clipboardApi.writeText(String(text || "")) : Promise.resolve()),
     autosavePath: currentAutosavePath,
+    emitEvent: (event, payload) => eventBus.emit(event, payload),
   };
 }
 

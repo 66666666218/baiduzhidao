@@ -115,6 +115,13 @@ async function runGenerateTask(ctx, deps) {
       if (item.answer.trim()) {
         const verdict = qualityGate.evaluate(item.answer, { title: item.title, questionContent: item.questionContent });
         item.quality = `${verdict.decision}(${verdict.score})${verdict.issues.length ? "：" + verdict.reviewReason : ""}`;
+        if (deps.emitEvent) {
+          deps.emitEvent("answer.qualityChecked", {
+            question: item.title || item.questionUrl,
+            decision: verdict.decision,
+            score: verdict.score,
+          });
+        }
         if (verdict.decision === "REVIEW") log(`质检提醒：${item.title || item.questionUrl} → ${verdict.reviewReason}，建议人工复核。`);
         store.upsertAnswer(item);
         // CSV 自动保存兜底（防表格被占用/进程崩溃丢记录）

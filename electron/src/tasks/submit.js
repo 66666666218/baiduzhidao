@@ -189,7 +189,10 @@ async function runSubmitTask(ctx, deps) {
           log(`提交失败：${item.title || item.questionUrl}；${describeError(error)}`);
           // 连续 3 次失败自动标记账号需人工检查（AccountManager 层拦截后续提交）
           if (deps.accountManager && failCount - lastSuccessByEnv[envLabel] >= 3 && lastSuccessByEnv[envLabel] !== undefined) {
-            deps.accountManager.markBlocked(envLabel, `连续 ${failCount - lastSuccessByEnv[envLabel]} 次提交失败`);
+            if (deps.accountManager) {
+              deps.accountManager.markBlocked(envLabel, `连续 ${failCount - lastSuccessByEnv[envLabel]} 次提交失败`);
+              if (deps.emitEvent) deps.emitEvent("account.blocked", { account: envLabel, reason: `连续 ${failCount - lastSuccessByEnv[envLabel]} 次提交失败` });
+            }
             log(`⚠️ 账号 ${envLabel} 已连续多次失败，已标记需人工检查，本轮跳过该账号。`);
             break;
           }
