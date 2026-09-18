@@ -160,6 +160,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     const result = randomPickQuestions(bank, store.loadUsedKeys(), {
       categories: payload && payload.categories,
       count: (payload && payload.count) || config.load().randomCount,
+      strategy: payload && payload.strategy,
     });
     if (!result.picked.length) throw new Error("当前分类下没有可抽的题目。");
 

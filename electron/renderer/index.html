@@ -155,6 +155,15 @@
           </div>
           <div class="field-grid">
             <div class="field"><label>抽取数量</label><input type="number" id="randomCount" min="1" /></div>
+            <div class="field"><label>采样策略</label>
+              <select id="samplingStrategy">
+                <option value="random">随机</option>
+                <option value="unanswered">未答优先</option>
+                <option value="newest">最新入库</option>
+                <option value="oldest">最早入库</option>
+                <option value="category-balanced">分类均衡</option>
+              </select>
+            </div>
             <div class="field"><label>保存路径（留空弹窗选择）</label>
               <div class="pair">
                 <input type="text" id="randomOutputPath" placeholder="文件夹或 xlsx 路径" />

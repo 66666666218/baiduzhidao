@@ -120,6 +120,7 @@ $("randomPick").addEventListener("click", async () => {
     const result = await rpc.invoke("questions:random-pick", {
       categories: checked.length ? checked : ["三类一起"],
       count: Number($("randomCount").value) || 20,
+      strategy: $("samplingStrategy").value,
       outputPath: $("randomOutputPath").value,
     });
     if (result && !result.canceled) {
