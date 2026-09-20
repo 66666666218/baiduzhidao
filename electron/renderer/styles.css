@@ -142,3 +142,6 @@ td.title-cell { max-width: 380px; overflow: hidden; text-overflow: ellipsis; whi
 .link-row a { color: var(--primary); text-decoration: none; word-break: break-all; }
 
 .empty-hint { text-align: center; color: var(--muted); padding: 24px 0 !important; }
+
+.tutorial-steps { margin: 8px 0 0; padding-left: 20px; }
+.tutorial-steps li { margin-bottom: 8px; line-height: 1.65; }

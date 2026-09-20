@@ -22,6 +22,7 @@
         <button class="nav-item" data-view="results">📋 复制答案</button>
         <button class="nav-item" data-view="submit">🚀 自动提交</button>
         <button class="nav-item" data-view="links">🔗 常用网址</button>
+        <button class="nav-item" data-view="tutorial">📖 使用教程</button>
         <button class="nav-item" data-view="logs">📜 运行日志</button>
       </nav>
       <div class="sidebar-footer">
@@ -253,6 +254,62 @@
           </div>
         </div>
       </section>
+
+      <!-- 使用教程 -->
+      <section class="view" data-view="tutorial">
+        <h2>使用教程</h2>
+
+        <div class="card">
+          <h3>① 准备工作（一次性）</h3>
+          <ol class="tutorial-steps">
+            <li>安装比特浏览器（bitbrowser.cn）并注册登录；打开「系统设置 → 本地设置」→ 开启 API 服务（默认端口 54345，无需改动）。</li>
+            <li>在比特浏览器「浏览器窗口」页新建窗口：一个百度账号建一个窗口，窗口名建议用「账号1」「账号2」。</li>
+            <li>双击窗口打开 → 在里面登录你的百度账号（推荐扫码，最不容易触发验证）。登录一次即长期有效。</li>
+            <li>回到本软件 → 「比特环境」页 → 环境名称每行填一个窗口名 → 点「测试连接」看到 ✅。</li>
+          </ol>
+        </div>
+
+        <div class="card">
+          <h3>② 爬取题目（免费，积累题库）</h3>
+          <ol class="tutorial-steps">
+            <li>「题目爬取」页 → 选好分类 → 点「开始爬取」。程序会自动进入活动页、逐题记录标题和链接。</li>
+            <li>爬取支持断点续爬：中途停止后勾选「断点续爬」即可从上次位置继续；已入库的题自动跳过。</li>
+            <li>「题库浏览」页可随时搜索、翻看已爬取的题目。</li>
+          </ol>
+        </div>
+
+        <div class="card">
+          <h3>③ 生成 AI 回答（需硅基流动 API Key）</h3>
+          <ol class="tutorial-steps">
+            <li>注册 cloud.siliconflow.cn 并创建 API Key，在「生成答案」页填入保存。</li>
+            <li>「随机抽题」页 → 设数量 → 「随机生成表格」产出一个 xlsx。</li>
+            <li>「生成答案」页 → 来源表格会自动填好 → 点「开始生成」。生成结果自动写回表格并带「质检」列。</li>
+            <li>质检为 REVIEW 的行建议人工修改后再提交；PASS 的可直接用。</li>
+          </ol>
+        </div>
+
+        <div class="card">
+          <h3>④ 提交回答（两种方式）</h3>
+          <p><b>方式 A · 批量通道（推荐，官方支持）</b>：工作台筛题下载表格 → 用本软件生成回答填入「回答内容」列 → 工作台上传表格，平台批量审核。额度随有效回答数解锁（10 条→1000，30 条→5000，60 条→10000）。</p>
+          <p><b>方式 B · 自动提交</b>：「自动提交」页选同一张表格 → 设「每账号每日限额」（建议 ≤10）→ 开始。系统自动轮换账号、跳过已提交、检测账号是否已达标。</p>
+        </div>
+
+        <div class="card">
+          <h3>⑤ 每日循环（一键脚本）</h3>
+          <p>在项目目录打开命令行：<code>node scripts/daily-batch.js 10</code> = 抽新题 → AI 生成 → 自动提交 10 条，一条命令完成当日任务。</p>
+        </div>
+
+        <div class="card">
+          <h3>⚠️ 安全红线（务必遵守）</h3>
+          <ol class="tutorial-steps">
+            <li>新账号首周每日提交 ≤ 5 条，账号稳定后再逐步放到 10~30 条。</li>
+            <li>保持「操作间隔」默认值（8~20 秒随机），千万不要调小——0 延迟会触发平台风控导致会话失效。</li>
+            <li>遇到「安全验证」立即停下手动处理，绝不要让程序连续重试。</li>
+            <li>一键自检（比特环境页按钮）可随时验证整条链路，不消耗账号额度。</li>
+          </ol>
+        </div>
+      </section>
+
 
       <!-- 常用网址 -->
       <section class="view" data-view="links">
