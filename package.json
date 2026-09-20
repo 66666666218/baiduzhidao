@@ -5,43 +5,8 @@
   "description": "百度知道活动页答题助手（v2 重构版）：题目爬取、随机抽题、AI 生成回答、自动提交",
   "main": "electron/main.js",
   "private": true,
-  "scripts": {
-    "start": "electron .",
-    "smoke": "electron . --smoke",
-    "test": "node --test \"tests/unit/*.test.js\"",
-    "test:e2e": "node --test \"tests/e2e/*.test.js\"",
-    "mock": "node mock-site/run.js",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder",
-    "selftest": "node scripts/selftest-cli.js"
-  },
-  "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
-  },
   "dependencies": {
     "playwright-core": "^1.48.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
-  },
-  "build": {
-    "appId": "com.zhidao.answer.studio",
-    "productName": "百度知道答题助手v2",
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "electron/**/*",
-      "package.json"
-    ],
-    "win": {
-      "target": [
-        "dir",
-        "nsis"
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
-    }
   }
 }
