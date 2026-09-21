@@ -197,7 +197,14 @@ class MockSite {
   }
 
   handler(req, res) {
-    const url = new URL(req.url, "http://localhost");
+    let url;
+    try {
+      url = new URL(req.url, "http://localhost");
+    } catch {
+      // 畸形请求行会让 URL 抛错；同步回调里抛出 = 未捕获异常 = 进程崩，自检会看到莫名其妙的失败
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("bad request");
+    }
     const send = (code, body, type = "application/json; charset=utf-8") => {
       const payload = typeof body === "string" ? body : JSON.stringify(body);
       res.writeHead(code, { "Content-Type": type });
@@ -205,9 +212,23 @@ class MockSite {
     };
     const readBody = () => new Promise((resolve) => {
       let data = "";
-      req.on("data", (chunk) => { data += chunk; });
+      req.on("data", (chunk) => {
+        data += chunk;
+        if (data.length > 1e6) { req.destroy(); resolve(null); }
+      });
       req.on("end", () => resolve(data));
     });
+    /** 解析请求体；非法 JSON 或超大体返回 null，由调用方回 400（不能抛出，抛出即崩进程） */
+    const readJson = async () => {
+      const body = await readBody();
+      if (body === null) return null;
+      try {
+        return JSON.parse(body || "{}");
+      } catch {
+        return null;
+      }
+    };
+    const badJson = () => send(400, { error: "请求体不是合法 JSON" });
 
     // ---- 站点 ----
     if (url.pathname === "/hd/21th_activity/") {
@@ -225,8 +246,9 @@ class MockSite {
       return send(200, this.questions.filter((q) => q.category === cat && q.page === page));
     }
     if (url.pathname === "/api/submit" && req.method === "POST") {
-      return readBody().then((body) => {
-        this.submissions.push(JSON.parse(body));
+      return readJson().then((body) => {
+        if (!body) return badJson();
+        this.submissions.push(body);
         return send(200, { ok: true });
       });
     }
@@ -239,21 +261,24 @@ class MockSite {
 
     // ---- 模拟比特浏览器 ----
     if (url.pathname === "/browser/list" && req.method === "POST") {
-      return readBody().then((body) => {
-        const { name } = JSON.parse(body || "{}");
+      return readJson().then((body) => {
+        if (!body) return badJson();
+        const { name } = body;
         return send(200, { success: true, data: { list: [{ id: `env-${name}`, name }] } });
       });
     }
     if (url.pathname === "/browser/open" && req.method === "POST") {
-      return readBody().then((body) => {
-        const { id } = JSON.parse(body || "{}");
+      return readJson().then((body) => {
+        if (!body) return badJson();
+        const { id } = body;
         this.openedEnvs.set(id, (this.openedEnvs.get(id) || 0) + 1);
         return send(200, { success: true, data: { id, ws: { playwright: this.cdpUrl } } });
       });
     }
     if (url.pathname === "/browser/close" && req.method === "POST") {
-      return readBody().then((body) => {
-        const { id } = JSON.parse(body || "{}");
+      return readJson().then((body) => {
+        if (!body) return badJson();
+        const { id } = body;
         this.openedEnvs.delete(id);
         return send(200, { success: true });
       });
@@ -261,8 +286,9 @@ class MockSite {
 
     // ---- 模拟 LLM ----
     if (url.pathname === "/v1/chat/completions" && req.method === "POST") {
-      return readBody().then((body) => {
-        const payload = JSON.parse(body || "{}");
+      return readJson().then((body) => {
+        if (!body) return badJson();
+        const payload = body;
         this.llmCalls.push({ model: payload.model, user: payload.messages?.[1]?.content || "" });
         const answer = `这是一条模拟生成的回答，共约一百字。针对你提出的问题，我的看法是：先沟通、再观察、最后做决定。沟通时把感受说清楚，观察对方的反应是否匹配，最后基于事实而不是情绪做出选择，这样无论结果如何都不会后悔。`;
         return send(200, {

@@ -15,7 +15,12 @@ const { describeError } = require("../errors");
 async function runCrawlTask(ctx, deps) {
   const { browserPool, store, config, log } = deps;
   const payload = ctx.payload;
-  const bitEnvs = (payload.bitEnvs || []).map((env) => env.label || env);
+  // 环境名允许传字符串或 {label}，但非数组/空对象要挡掉：
+  // 之前 payload.bitEnvs 是字符串时 .map 直接 TypeError，任务以"【未知】"失败且看不出原因。
+  const bitEnvs = (Array.isArray(payload.bitEnvs) ? payload.bitEnvs : [])
+    .map((env) => (env && env.label) || env)
+    .filter((env) => typeof env === "string" && env.trim())
+    .map((env) => env.trim());
   if (!bitEnvs.length) throw new Error("请先填写至少一个比特浏览器环境名称。");
 
   const category = payload.category || SEL.category.labels[0];
@@ -63,6 +68,11 @@ async function runCrawlTask(ctx, deps) {
         log(`续爬：从上次完成的第 ${currentPage} 页继续（重复题会自动跳过）。`);
       }
       let totalPages = await zhidao.getTotalListPages(page);
+      // 连续多少页一条新题都没有就收工：分页按钮可见≠还能翻页（真实站点常用 class 而不是
+      // disabled 表示末页），此时 clickNextPage 会一直返回 true，while 就成了不终止的死循环。
+      // 取 10 而不是 3：整页题都答过在续爬时是正常现象，阈值太紧会把没爬完的页提前砍掉。
+      const EMPTY_PAGE_LIMIT = 10;
+      let emptyStreak = 0;
       while (!ctx.shouldStop()) {
         // 自愈：被甩到登录/验证页时回到活动页（连续快速导航偶发触发风控软校验）
         if (/passport\.baidu\.com|wappass/i.test(page.url())) {
@@ -71,7 +81,7 @@ async function runCrawlTask(ctx, deps) {
           await zhidao.waitForBaiduReady(page, config.verifyWaitSeconds, { onLog: log });
         }
         await zhidao.enterAnswerZone(page, { onLog: log });
-        await zhidao.ensureListPage(page, currentPage, { onLog: log });
+        const onRightPage = await zhidao.ensureListPage(page, currentPage, { onLog: log });
 
         let newCount = 0;
         while (!ctx.shouldStop()) {
@@ -119,6 +129,9 @@ async function runCrawlTask(ctx, deps) {
           if (!title || isActivityUrl || !zhidao.titlesMatch(opened.listTitle, title)) {
             duplicateSkipped += 1;
             log(`跳过无效题目页（${!title ? "无标题" : isActivityUrl ? "仍在活动页，弹窗可能被拦截" : "标题不匹配"}）：${opened.listTitle}`);
+            // 跳过也必须给这张卡占位：openNextQuestion 每次都从第 0 张卡重扫，只认 seenKeys，
+            // 不占位就会把同一张坏卡无限点开→返回→再点开，整轮爬题原地打转。
+            if (opened.listTitle) seenKeys.add(zhidao.listKey(opened.listTitle));
             page = await keepQuestionOpen(questionPage, page);
             continue;
           }
@@ -148,6 +161,12 @@ async function runCrawlTask(ctx, deps) {
         for (const card of fallbackCards) {
           const title = zhidao.normalizeTitle(card.title);
           if (!title || seenKeys.has(zhidao.listKey(title)) || !card.questionUrl) continue;
+          // 免打开通道是从题卡 DOM 里"猜"链接，比逐个打开更不可信：
+          // 只要不是百度知道/本机模拟站的题目详情页地址就不入库，否则脏链接会一路带到提交阶段。
+          if (!zhidao.isSafeQuestionUrl(card.questionUrl) || !/\/question\//i.test(card.questionUrl)) {
+            log(`跳过可疑题链：${title} → ${card.questionUrl}`);
+            continue;
+          }
           seenKeys.add(zhidao.listKey(title));
           const item = {
             category,
@@ -166,11 +185,18 @@ async function runCrawlTask(ctx, deps) {
         }
         if (fallbackCount) log(`本页通过题卡直提取补收 ${fallbackCount} 条（未逐个打开）。`);
 
-        // 记录断点：本页已处理完
-        store.setEnvPage(`${envLabel}:${category}`, currentPage);
+        // 记录断点：只有确认停在了预期的那一页才算处理完，否则断点会跳过没爬的页
+        if (onRightPage) store.setEnvPage(`${envLabel}:${category}`, currentPage);
+        else log(`第 ${currentPage} 页未确认到位，断点保持不变，本页结果仍入库。`);
 
         ctx.report({ done: doneCount, total: totalPages ? Math.max(doneCount, (totalPages - startPage + 1) * 6) : 0, status: "running" });
         log(`第 ${currentPage} 页新增 ${newCount} 条，本次累计 ${doneCount} 条。`);
+        // 页码没切过去是最强的"到底了"信号，一次就抵五页空转
+        emptyStreak = newCount ? 0 : emptyStreak + (onRightPage ? 1 : 5);
+        if (emptyStreak >= EMPTY_PAGE_LIMIT) {
+          log(`连续 ${emptyStreak} 页没有新增题目，判定列表已到底或不再变化，停止翻页。`);
+          break;
+        }
         if (totalPages && currentPage >= totalPages) {
           log("已到最后一页，爬取结束。");
           break;

@@ -6,6 +6,21 @@ const rpc = window.api;
 
 let logLines = [];
 
+/**
+ * 渲染层约定：任何一次主进程调用失败都必须在日志里留痕。
+ * 之前十几处 await 没有 catch，拒绝被静默吞掉——最典型的是导出答案时目标 xlsx
+ * 正被 Excel 占用，界面毫无提示，用户以为已经导出成功。
+ * 失败时返回 null，调用方按"取消"处理（现有 handler 都已判 !result / result.canceled）。
+ */
+async function call(label, channel, payload) {
+  try {
+    return await rpc.invoke(channel, payload);
+  } catch (error) {
+    appendLog(`${label}失败：${error.message}`);
+    return null;
+  }
+}
+
 // ---------- 视图切换 ----------
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => {
@@ -61,13 +76,13 @@ $("runSelfTest").addEventListener("click", async () => {
 });
 
 $("saveSettings").addEventListener("click", async () => {
-  await saveSettingsQuiet();
+  if (!await saveSettingsQuiet()) return;
   $("settingsHint").textContent = "✅ 已保存";
   setTimeout(() => { $("settingsHint").textContent = ""; }, 2500);
 });
 
 $("startCrawl").addEventListener("click", async () => {
-  await saveSettingsQuiet();
+  if (!await saveSettingsQuiet()) return;
   try {
     const settings = await rpc.invoke("settings:get");
     const result = await rpc.invoke("task:crawl", {
@@ -86,8 +101,8 @@ $("startCrawl").addEventListener("click", async () => {
 });
 
 $("pickCrawlDir").addEventListener("click", async () => {
-  const result = await rpc.invoke("path:pick-folder", { title: "选择爬取结果文件夹" });
-  if (!result.canceled) $("crawlOutputDir").value = result.filePath;
+  const result = await call("选择爬取结果文件夹", "path:pick-folder", { title: "选择爬取结果文件夹" });
+  if (result && !result.canceled) $("crawlOutputDir").value = result.filePath;
 });
 
 $("importBank").addEventListener("click", async () => {
@@ -135,17 +150,17 @@ $("randomPick").addEventListener("click", async () => {
 });
 
 $("pickRandomPath").addEventListener("click", async () => {
-  const result = await rpc.invoke("path:pick-save-xlsx", { title: "选择随机抽题保存路径" });
-  if (!result.canceled) $("randomOutputPath").value = result.filePath;
+  const result = await call("选择随机抽题保存路径", "path:pick-save-xlsx", { title: "选择随机抽题保存路径" });
+  if (result && !result.canceled) $("randomOutputPath").value = result.filePath;
 });
 
 $("pickGenerateExcel").addEventListener("click", async () => {
-  const result = await rpc.invoke("path:pick-open-table", { title: "选择生成答案来源表格" });
-  if (!result.canceled) $("generateExcelPath").value = result.filePath;
+  const result = await call("选择生成来源表格", "path:pick-open-table", { title: "选择生成答案来源表格" });
+  if (result && !result.canceled) $("generateExcelPath").value = result.filePath;
 });
 
 $("startGenerate").addEventListener("click", async () => {
-  await saveSettingsQuiet();
+  if (!await saveSettingsQuiet()) return;
   try {
     const settings = await rpc.invoke("settings:get");
     const result = await rpc.invoke("task:generate", {
@@ -159,7 +174,8 @@ $("startGenerate").addEventListener("click", async () => {
       filePath: $("generateExcelPath").value,
       results: [],
     });
-    appendLog(`生成结束：新回答 ${result.count} 条，失败 ${result.failed} 条。`);
+    // 未选题时会弹文件选择框，用户取消 → {canceled:true}，此时没有 count/failed 字段
+    if (result && !result.canceled) appendLog(`生成结束：新回答 ${result.count} 条，失败 ${result.failed} 条。`);
     refreshUsage();
   } catch (error) {
     appendLog(`生成失败：${error.message}`);
@@ -167,13 +183,13 @@ $("startGenerate").addEventListener("click", async () => {
 });
 
 $("pickSubmitExcel").addEventListener("click", async () => {
-  const result = await rpc.invoke("path:pick-open-table", { title: "选择提交来源表格" });
-  if (!result.canceled) $("submitExcelPath").value = result.filePath;
+  const result = await call("选择提交来源表格", "path:pick-open-table", { title: "选择提交来源表格" });
+  if (result && !result.canceled) $("submitExcelPath").value = result.filePath;
 });
 
 $("startSubmit").addEventListener("click", async () => {
   if (!confirm("自动提交会真实发布回答，存在风控/封号风险，确认继续？")) return;
-  await saveSettingsQuiet();
+  if (!await saveSettingsQuiet()) return;
   try {
     const settings = await rpc.invoke("settings:get");
     const filePath = $("submitExcelPath").value;
@@ -198,12 +214,12 @@ $("startSubmit").addEventListener("click", async () => {
 });
 
 $("fetchPassed").addEventListener("click", async () => {
-  await saveSettingsQuiet();
   try {
+    if (!await saveSettingsQuiet()) return;
     const settings = await rpc.invoke("settings:get");
     const result = await rpc.invoke("task:passed-count", { bitEnvs: settings.bitEnvs });
     for (const account of result.accounts) {
-      appendLog(`账号 ${account.bitEnv}：${account.status === "completed" ? "已全部解锁" : account.status === "error" ? `读取失败 ${account.error}` : `${account.done}/${account.total}`}`);
+      appendLog(`账号 ${account.bitEnv}：${account.status === "completed" ? "已全部解锁" : account.status === "error" ? `读取失败 ${account.error}` : account.status === "unknown" ? "状态未知（未读到进度页）" : `${account.done}/${account.total}`}`);
     }
   } catch (error) {
     appendLog(`读取失败：${error.message}`);
@@ -213,27 +229,28 @@ $("fetchPassed").addEventListener("click", async () => {
 $("refreshResults").addEventListener("click", refreshResults);
 
 $("exportResults").addEventListener("click", async () => {
-  const result = await rpc.invoke("answers:export", { keyword: $("resultsSearch").value });
+  const result = await call("导出答案记录", "answers:export", { keyword: $("resultsSearch").value });
   if (result && !result.canceled) appendLog(`已导出 ${result.count} 条答案${result.keyword ? `（搜索：${result.keyword}）` : ""} → ${result.filePath}`);
 });
 
 $("clearUsed").addEventListener("click", async () => {
   if (!confirm("确认清空所有“已提交”的答案记录？")) return;
-  const result = await rpc.invoke("answers:clear", { onlyUsed: true });
+  const result = await call("清空已提交记录", "answers:clear", { onlyUsed: true });
+  if (!result) return;
   appendLog(`已清空 ${result.cleared} 条已提交记录。`);
   refreshResults();
 });
 
 $("clearAll").addEventListener("click", async () => {
   if (!confirm("确认清空全部答案记录？此操作不可恢复。")) return;
-  await rpc.invoke("answers:clear", {});
+  if (!await call("清空答案记录", "answers:clear", {})) return;
   refreshResults();
 });
 
 $("maskAccounts").addEventListener("change", refreshResults);
 
 $("copyLog").addEventListener("click", async () => {
-  await rpc.invoke("clipboard:write", logLines.join("\n"));
+  if (!await call("复制日志", "clipboard:write", logLines.join("\n"))) return;
   $("copyLog").textContent = "已复制";
   setTimeout(() => { $("copyLog").textContent = "复制日志"; }, 1500);
 });
@@ -244,19 +261,26 @@ $("clearLog").addEventListener("click", () => {
 });
 
 $("maskLog").addEventListener("change", async () => {
-  await rpc.invoke("logs:set-mask", $("maskLog").checked);
+  await call("切换日志脱敏", "logs:set-mask", $("maskLog").checked);
 });
 
 $("stopTask").addEventListener("click", async () => {
-  await rpc.invoke("task:stop");
+  if (!await call("停止任务", "task:stop")) return;
   appendLog("已发送停止请求，等待任务退出...");
 });
 
 // ---------- 主进程事件 ----------
 rpc.on("task:log", (text) => appendLog(text));
 rpc.on("task:progress", (progress) => updateProgress(progress));
-rpc.on("task:item", (item) => {
-  if (document.querySelector(".view.results.active")) refreshResults();
+// 完成一条就整表重渲染一次太贵（200 条 = 200 次 IPC + DOM 重建），
+// 而且会把用户刚点过、正显示"已复制"的按钮节点换掉。合并成最多 300ms 一次。
+let resultsRefreshTimer = null;
+rpc.on("task:item", () => {
+  if (resultsRefreshTimer) return;
+  resultsRefreshTimer = setTimeout(() => {
+    resultsRefreshTimer = null;
+    if (document.querySelector(".view.results.active")) refreshResults();
+  }, 300);
 });
 
 // ---------- 函数 ----------
@@ -287,11 +311,12 @@ async function saveSettingsQuiet() {
   patch.aiDailyTokenBudget = Number($("aiDailyTokenBudget").value) || 0;
   patch.submitLimit = Number($("submitLimit").value) || 0;
   patch.accountDailyLimit = Number($("accountDailyLimit").value) || 0;
-  await rpc.invoke("settings:save", patch);
+  return Boolean(await call("保存设置", "settings:save", patch));
 }
 
 async function loadSettings() {
-  const settings = await rpc.invoke("settings:get");
+  const settings = await call("读取设置", "settings:get");
+  if (!settings) return;
   $("apiUrl").value = settings.apiUrl || "";
   $("activityUrl").value = settings.activityUrl || "";
   $("bitEnvs").value = (settings.bitEnvs || []).map((env) => env.label || env).join("\n");
@@ -322,14 +347,16 @@ async function loadSettings() {
 }
 
 async function refreshPickStats() {
-  const stats = await rpc.invoke("bank:stats");
+  const stats = await call("读取题库统计", "bank:stats");
+  if (!stats) return;
   $("pickStats").textContent = stats.total
     ? `题库 ${stats.total} 条 · 可抽 ${stats.remainingCount} / 已抽 ${stats.usedCount}`
     : "题库为空，请先爬题或导入";
 }
 
 async function refreshBankStats() {
-  const stats = await rpc.invoke("bank:stats");
+  const stats = await call("读取题库统计", "bank:stats");
+  if (!stats) return;
   const counts = stats.counts || {};
   const detail = Object.entries(counts).map(([name, count]) => `${name} ${count}`).join(" · ");
   const pickInfo = stats.total ? ` · 可抽 ${stats.remainingCount} / 已抽 ${stats.usedCount}` : "";
@@ -337,7 +364,8 @@ async function refreshBankStats() {
 }
 
 async function refreshUsage() {
-  const usage = await rpc.invoke("ai:usage");
+  const usage = await call("读取 AI 用量", "ai:usage");
+  if (!usage) return;
   $("usageHint").textContent = usage.calls
     ? `累计调用 ${usage.calls} 次，输入 ${usage.promptTokens} tokens，输出 ${usage.completionTokens} tokens`
     : "";
@@ -416,7 +444,7 @@ function updateProgress(progress) {
 }
 
 function statusText(status) {
-  return { running: "进行中", done: "完成", stopped: "已停止", failed: "失败" }[status] || status || "";
+  return { running: "进行中", paused: "已暂停", done: "完成", stopped: "已停止", failed: "失败" }[status] || status || "";
 }
 
 function maskEnv(label) {
@@ -433,12 +461,13 @@ let bankTotal = 0;
 const BANK_PAGE_SIZE = 50;
 
 async function renderBank() {
-  const result = await rpc.invoke("bank:list", {
+  const result = await call("读取题库", "bank:list", {
     keyword: $("bankSearch").value,
     category: $("bankCategory").value,
     page: bankPage,
     pageSize: BANK_PAGE_SIZE,
   });
+  if (!result || !result.rows) return;
   bankTotal = result.total;
   const tbody = $("bankBody");
   tbody.innerHTML = "";
@@ -470,7 +499,7 @@ async function renderBank() {
       anchor.href = "#";
       anchor.addEventListener("click", async (event) => {
         event.preventDefault();
-        await rpc.invoke("link:open", item.questionUrl);
+        await call("打开题目链接", "link:open", item.questionUrl);
       });
       linkCell.appendChild(anchor);
     }
@@ -498,11 +527,12 @@ let resultsTotal = 0;
 const RESULTS_PAGE_SIZE = 50;
 
 async function refreshResults() {
-  const result = await rpc.invoke("answers:list", {
+  const result = await call("读取答案记录", "answers:list", {
     keyword: $("resultsSearch").value,
     page: resultsPage,
     pageSize: RESULTS_PAGE_SIZE,
   });
+  if (!result) return;
   const results = result.rows || [];
   resultsTotal = result.total || results.length;
   const mask = $("maskAccounts").checked;
@@ -535,7 +565,7 @@ async function refreshResults() {
       copyBtn.className = "btn soft";
       copyBtn.textContent = "复制答案";
       copyBtn.addEventListener("click", async () => {
-        await rpc.invoke("clipboard:write", item.answer);
+        if (!await call("复制答案", "clipboard:write", item.answer)) return;
         copyBtn.textContent = "已复制";
         setTimeout(() => { copyBtn.textContent = "复制答案"; }, 1500);
       });
@@ -578,13 +608,13 @@ function renderLinks() {
     anchor.href = "#";
     anchor.addEventListener("click", async (event) => {
       event.preventDefault();
-      await rpc.invoke("link:open", link.url);
+      await call("打开链接", "link:open", link.url);
     });
     const copyBtn = document.createElement("button");
     copyBtn.className = "btn soft";
     copyBtn.textContent = "复制链接";
     copyBtn.addEventListener("click", async () => {
-      await rpc.invoke("clipboard:write", link.url);
+      if (!await call("复制链接", "clipboard:write", link.url)) return;
       copyBtn.textContent = "已复制";
       setTimeout(() => { copyBtn.textContent = "复制链接"; }, 1500);
     });

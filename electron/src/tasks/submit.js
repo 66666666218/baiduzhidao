@@ -48,7 +48,9 @@ async function runSubmitTask(ctx, deps) {
     return { stopped: false, count: 0, failed: 0, total: 0, results: [] };
   }
 
-  const bitEnvs = (ctx.payload.bitEnvs || []).map((env) => env.label || env);
+  // 与 crawl.js 同样先校验形状：传成字符串时 .map 会抛 TypeError，任务只报"未知错误"
+  const rawEnvs = Array.isArray(ctx.payload.bitEnvs) ? ctx.payload.bitEnvs : [];
+  const bitEnvs = rawEnvs.map((env) => (env && typeof env === "object" ? env.label : env) || "").filter(Boolean);
   if (!bitEnvs.length) throw new Error("请先填写至少一个比特浏览器环境名称。");
 
   const submitLimit = Math.max(0, Number(ctx.payload.submitLimit) || 0);
@@ -243,7 +245,10 @@ async function runSubmitTask(ctx, deps) {
           row.confirmed = update.confirmed;
         }
       }
-      excel.writeWorkbookSafe(filePath, rows.map(excel.answerToRow), "随机抽题", excel.ANSWER_HEADERS);
+      // 必须传日志回调：表格被 Excel 占用时 writeWorkbookSafe 会另存备份，
+      // 不提示的话原表状态永远停在"已生成"，而下一轮去重读的正是原表 → 整表重复提交。
+      excel.writeWorkbookSafe(filePath, rows.map(excel.answerToRow), "随机抽题", excel.ANSWER_HEADERS,
+        (message) => log(message));
       pendingWriteBack.clear();
     } catch (error) {
       log(`写回表格状态失败（不影响提交记录）：${error.message}`);

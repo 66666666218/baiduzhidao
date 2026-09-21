@@ -135,7 +135,9 @@ function appendCsvRow(filePath, row, headers) {
 
 function csvCell(value) {
   const text = String(value ?? "");
-  return `"${text.replace(/"/g, '""')}"`;
+  // 题目原文可能以 = + - @ 开头，Excel/WPS 会把它当公式执行（=HYPERLINK 能把单元格内容发出去）
+  const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  return `"${safe.replace(/"/g, '""')}"`;
 }
 
 function uniqueFilePath(filePath) {

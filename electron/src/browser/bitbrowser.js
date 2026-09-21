@@ -5,6 +5,9 @@
  * 文档：比特浏览器客户端开启“本地设置 → API”后，默认 http://127.0.0.1:54345。
  * 接口约定见 BrowserAdapter 注释（browser/index.js）。
  */
+/** 单次本地 API 调用的兜底超时；开环境本身就要十几秒，给足余量只为了不无限挂住 */
+const POST_TIMEOUT_MS = 60 * 1000;
+
 class BitBrowserAdapter {
   constructor(baseUrl = "http://127.0.0.1:54345", fetchImpl = globalThis.fetch) {
     this.baseUrl = String(baseUrl || "http://127.0.0.1:54345").replace(/\/$/, "");
@@ -58,15 +61,23 @@ class BitBrowserAdapter {
   }
 
   async post(apiPath, payload) {
+    // 没有超时的话：客户端端口在但卡住不响应，这个 await 永远不返回，
+    // 任务停在 RUNNING，此后 assertIdle() 拒掉一切任务，只能靠重启进程解开。
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
     let response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}${apiPath}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload || {}),
+        signal: controller.signal,
       });
     } catch (error) {
-      throw new Error(`无法连接比特浏览器本地服务：${error.message}。请确认客户端已打开、本地 API 已开启且地址正确。`);
+      const reason = error && error.name === "AbortError" ? `响应超过 ${POST_TIMEOUT_MS / 1000} 秒` : error.message;
+      throw new Error(`无法连接比特浏览器本地服务：${reason}。请确认客户端已打开、本地 API 已开启且地址正确。`);
+    } finally {
+      clearTimeout(timer);
     }
     const text = await response.text();
     if (!response.ok) throw new Error(`比特浏览器 API 请求失败：HTTP ${response.status} ${text.slice(0, 200)}`);

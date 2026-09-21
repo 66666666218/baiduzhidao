@@ -16,9 +16,12 @@ const { normalizeCategories } = require("../config");
 
 const STRATEGIES = new Set(["random", "newest", "oldest", "unanswered", "category-balanced"]);
 
-function randomPickQuestions(bank, usedKeys, { categories, count, strategy = "random" } = {}) {
+function randomPickQuestions(bank, usedKeys, options) {
+  // options 显式传 null 时解构默认值不生效（只对 undefined 生效），会直接 TypeError
+  const { categories, count, strategy = "random" } = options || {};
   const selectedCategories = new Set(normalizeCategories(categories));
-  const pool = (bank || []).filter((item) => {
+  const pool = (Array.isArray(bank) ? bank : []).filter((item) => {
+    if (!item || typeof item !== "object") return false; // 题库 JSON 被半写坏时数组里可能混进 null
     const category = String(item.category || "").trim();
     return !category || selectedCategories.has(category);
   });
@@ -28,11 +31,13 @@ function randomPickQuestions(bank, usedKeys, { categories, count, strategy = "ra
   };
 
   const bankKeys = new Set(pool.map(keyOf));
-  let used = (usedKeys || []).filter((key) => bankKeys.has(key));
-  let available = pool.filter((item) => !used.includes(keyOf(item)));
+  // 用 Set 而不是数组 includes：万级题库 × 千级已用键时，逐项线性扫描会在主进程里
+  // 独占事件循环好几秒，界面在这段时间整个假死。
+  let used = new Set((Array.isArray(usedKeys) ? usedKeys : []).filter((key) => bankKeys.has(key)));
+  let available = pool.filter((item) => !used.has(keyOf(item)));
   let resetRound = false;
   if (!available.length) {
-    used = [];
+    used = new Set();
     available = pool.slice();
     resetRound = true;
   }
@@ -60,12 +65,14 @@ function normalizeStrategy(strategy) {
 /** 按策略从 available 中取 take 条（纯函数，不改输入） */
 function sample(available, strategy, take) {
   if (strategy === "newest") {
-    // createdAt 降序（新在前）；无时间戳的排最后
-    const sorted = available.slice().sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    // createdAt 降序（新在前）；无时间戳的排最后。
+    // 先洗牌再排序：sort 稳定，同时间戳（爬题批量入库时精度只到秒）会永远保持入库顺序，
+    // 于是每一轮都抽到同一批题——洗牌让并列项随机化。
+    const sorted = shuffle(available).sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
     return sorted.slice(0, take);
   }
   if (strategy === "oldest") {
-    const sorted = available.slice().sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
+    const sorted = shuffle(available).sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
     return sorted.slice(0, take);
   }
   if (strategy === "unanswered") {

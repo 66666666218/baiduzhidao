@@ -10,7 +10,8 @@ const { getWorkPage } = require("./crawl");
  */
 async function runPassedCountTask(ctx, deps) {
   const { browserPool, config, log } = deps;
-  const bitEnvs = (ctx.payload.bitEnvs || []).map((env) => env.label || env);
+  const rawEnvs = Array.isArray(ctx.payload.bitEnvs) ? ctx.payload.bitEnvs : [];
+  const bitEnvs = rawEnvs.map((env) => (env && typeof env === "object" ? env.label : env) || "").filter(Boolean);
   if (!bitEnvs.length) throw new Error("请先填写至少一个比特浏览器环境名称。");
 
   await browserPool.adapter.checkConnection();

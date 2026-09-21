@@ -23,7 +23,9 @@ async function pageLooksLikeVerify(page) {
 
 /** 等待页面就绪；若命中百度安全验证，等待人工处理后继续。 */
 async function waitForBaiduReady(page, verifyWaitSeconds = 10, hooks = {}) {
-  const waitMs = Math.max(5, Number(verifyWaitSeconds) || 10) * 1000;
+  // 0 是"不等待、命中验证就直接失败"的明确设置（配置层允许 0），不能被 `|| 10` 兜成 10 秒
+  const configured = Number(verifyWaitSeconds);
+  const waitMs = (Number.isFinite(configured) ? Math.max(0, configured) : 10) * 1000;
   const deadline = Date.now() + waitMs;
   let warned = false;
   while (Date.now() < deadline) {
@@ -142,7 +144,7 @@ async function selectCategory(page, categoryLabel, hooks = {}) {
       .catch(() => false);
     if (!clicked) clicked = await clickByText(page, label);
     if (clicked) {
-      await waitForCardsChanged(page, titlesBefore);
+      await waitForCardsChanged(page, titlesBefore, hooks);
       hooks.onLog?.(`已锁定分类：${label}`);
       return;
     }
@@ -158,14 +160,19 @@ async function selectCategory(page, categoryLabel, hooks = {}) {
   throw new Error(`没有识别到“${label}”标签，也没有加载出题卡。`);
 }
 
-async function waitForCardsChanged(page, previousTitles = []) {
+async function waitForCardsChanged(page, previousTitles = [], hooks = {}) {
   if (previousTitles.length > 0) {
     const titleSel = SEL.zone.cardTitle;
-    await page.waitForFunction((sel) => {
+    const changed = await page.waitForFunction(({ sel, previous }) => {
       const current = Array.from(document.querySelectorAll(sel))
         .map((el) => el.textContent?.trim() || "");
-      return current.length > 0;
-    }, titleSel, { timeout: 10000 }).catch(() => {});
+      if (!current.length) return false;
+      // "列表非空"不等于"换了一批"：分类切换是异步重绘，旧列表还挂在 DOM 上时立刻返回，
+      // 上一分类的题就会以新分类入库，且这些链接此后被永久去重。必须看到新标题才算切换成功。
+      const before = new Set(previous);
+      return current.some((title) => title && !before.has(title));
+    }, { sel: titleSel, previous: previousTitles }, { timeout: 10000 }).then(() => true).catch(() => false);
+    if (!changed) hooks.onLog?.("切换分类后题卡列表没有出现新题目，按当前列表继续（结果可能与所选分类不符）。");
   }
   await page.locator(SEL.zone.cards).first().waitFor({ state: "visible", timeout: 30000 });
 }
@@ -192,34 +199,34 @@ async function getTotalListPages(page) {
 
 async function ensureListPage(page, expected, hooks = {}) {
   const active = await getActiveListPage(page);
-  if (active === expected) return;
+  if (active === expected) return true;
   if (active && expected === active + 1 && (await clickNextPage(page))) {
-    await waitForActivePage(page, expected);
-    return;
+    return waitForActivePage(page, expected, hooks);
   }
   if (await clickPageNumber(page, expected)) {
-    await waitForActivePage(page, expected);
-    return;
+    return waitForActivePage(page, expected, hooks);
   }
   const jumpInput = page.locator(SEL.pager.jumpInput);
   await jumpInput.fill(String(expected));
   await jumpInput.press("Enter");
   await jumpInput.blur().catch(() => {});
-  await waitForActivePage(page, expected);
-  hooks.onLog?.(`已切换到第 ${expected} 页。`);
+  return waitForActivePage(page, expected, hooks);
 }
 
-async function waitForActivePage(page, expected) {
+/** 等待分页组件切到 expected；返回是否真的到位（超时不再静默吞掉） */
+async function waitForActivePage(page, expected, hooks = {}) {
   const activeSel = SEL.pager.activeNum;
-  await page.waitForFunction(
+  const reached = await page.waitForFunction(
     ({ sel, expected }) => {
       const el = document.querySelector(sel);
       return el?.textContent?.trim() === String(expected);
     },
     { sel: activeSel, expected },
     { timeout: 30000 }
-  ).catch(() => {});
-  await page.locator(SEL.zone.cards).first().waitFor({ state: "visible", timeout: 30000 });
+  ).then(() => true).catch(() => false);
+  await page.locator(SEL.zone.cards).first().waitFor({ state: "visible", timeout: 30000 }).catch(() => {});
+  if (!reached) hooks.onLog?.(`未能切到第 ${expected} 页（当前仍停在第 ${(await getActiveListPage(page)) || "?"} 页）。`);
+  return reached;
 }
 
 async function clickNextPage(page) {
@@ -295,14 +302,19 @@ async function openNextQuestion(page, usedKeys, hooks = {}) {
     if (!(await button.isVisible().catch(() => false)) || !(await button.isEnabled().catch(() => false))) continue;
 
     hooks.onLog?.(`打开题目：${listTitle}`);
-    const popupPromise = page.context().waitForEvent("page", { timeout: 12000 }).catch(() => null);
+    // 没被 race 选中的新页面必须自己关掉：否则"同页跳转赢、弹窗晚到"这种组合每发生一次
+    // 就留下一个没人管的标签页，长时间爬题会越堆越多直到环境卡死。
+    const popupArrived = page.context().waitForEvent("page", { timeout: 12000 }).catch(() => null);
     const listUrl = page.url();
     await button.click({ timeout: 30000, noWaitAfter: true });
     // 弹窗与同页跳转竞速：谁先发生用谁（真实页面为同页跳转，弹窗路径兼容旧版/其它平台）
     const popup = await Promise.race([
-      popupPromise,
+      popupArrived,
       page.waitForURL(/\/question\//, { timeout: 15000 }).then(() => null).catch(() => null),
     ]);
+    if (!popup) {
+      popupArrived.then((late) => { if (late) late.close().catch(() => {}); });
+    }
     if (popup) {
       await popup.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
       await popup.bringToFront().catch(() => {});
@@ -342,15 +354,21 @@ async function collectQuestionCards(page) {
       }
     };
     const extractUrl = (card) => {
+      // 只看显式挂在元素上的地址，不再正则扫 outerHTML：
+      // 卡片 HTML 里任何一段 https 都可能被当成题链（广告位、统计像素、推荐题），
+      // 抓错一条就会以"题目地址"入库，等到提交阶段才暴露。
+      const values = [];
+      for (const el of card.querySelectorAll("a[href],[data-url],[data-href],[onclick]")) {
+        values.push(el.getAttribute("data-url") || el.getAttribute("data-href") || el.getAttribute("href") || el.getAttribute("onclick"));
+      }
       const link = Array.from(card.querySelectorAll("a[href]"))
         .map((el) => absoluteUrl(el.getAttribute("href")))
-        .find(Boolean);
+        .find((url) => url && /\/question\//i.test(url));
       if (link) return link;
-      for (const el of card.querySelectorAll("button,a,[role='button'],div,span")) {
-        const values = [el.getAttribute("data-url"), el.getAttribute("data-href"), el.getAttribute("href"), el.getAttribute("onclick"), el.outerHTML];
-        const matched = values.join(" ").match(/https?:\\?\/\\?\/[^'"<>\s]+|\/question\/\d+[^'"<>\s]*/i);
+      for (const value of values) {
+        const matched = String(value || "").match(/https?:\\?\/\\?\/[^'"<>\s]+|\\?\/question\\?\/[^'"<>\s]+/i);
         const url = matched && absoluteUrl(matched[0].replace(/\\\//g, "/"));
-        if (url) return url;
+        if (url && /\/question\//i.test(url)) return url;
       }
       return "";
     };
@@ -374,13 +392,58 @@ async function readQuestionTitle(page) {
     if (text && text.trim()) return normalizeTitle(text);
   }
   const fallback = await page.title().catch(() => "");
-  return normalizeTitle(fallback.replace(/[_-]s*百度知道.*$/, ""));
+  // 站点标题形如「问题标题_百度知道」/「问题标题 - 百度知道」：剥不干净就会带着后缀入库，
+  // 去重键（按标题算）随之漂移，同一题会被反复爬成两条。
+  // 正则要求"分隔符 + 百度知道 + 结尾"，避免把提问内容里本身就含"百度知道"的标题切掉。
+  return normalizeTitle(fallback.replace(/[_\-–—|]\s*百度知道\s*$/, ""));
+}
+
+/**
+ * 题目地址来自导入的表格/爬取结果，不可信任：
+ * file:/// 会把已登录的浏览器带去读本地文件，站外 https 更会把答案和点击送到别人的页面。
+ * 只放行百度知道与本机模拟站（自检/端到端用）。
+ */
+function isSafeQuestionUrl(raw) {
+  let parsed = null;
+  try {
+    parsed = new URL(String(raw || "").trim());
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+  const host = parsed.hostname.toLowerCase();
+  if (host === "127.0.0.1" || host === "localhost" || host === "::1") return true;
+  return host === "baidu.com" || host.endsWith(".baidu.com");
 }
 
 async function openQuestionByUrl(page, questionUrl, hooks = {}) {
+  if (!isSafeQuestionUrl(questionUrl)) {
+    throw new Error(`题目链接不是百度知道地址，已拒绝打开：${String(questionUrl).slice(0, 80)}`);
+  }
   hooks.onLog?.(`打开题目链接：${questionUrl}`);
   await page.goto(questionUrl, { waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {});
   await page.waitForTimeout(1500).catch(() => {});
+  // 落地地址再校一次：站外 302 会把已登录的会话带离百度知道
+  const landed = String(page.url() || "");
+  if (!landed || /^about:blank$/i.test(landed)) throw new Error("题目页未能打开（导航失败）。");
+  if (!isSafeQuestionUrl(landed)) {
+    throw new Error("打开后被重定向到站外，已中止填写。");
+  }
+  // goto 的失败在上面被 catch 吞掉了，此时 page.url() 还是循环里上一题的地址。
+  // 不比对落地路径就会把本题的答案填进上一题、并把本题记成"已提交"——提交环节复用同一个 page，
+  // 所以这一步是必须的，不是可选的保险。
+  const pathOf = (value) => {
+    try {
+      return new URL(value).pathname.replace(/\/$/, "");
+    } catch {
+      return "";
+    }
+  };
+  const wanted = pathOf(questionUrl);
+  const arrived = pathOf(landed);
+  if (wanted && arrived && wanted !== arrived) {
+    throw new Error(`题目页未切换：目标 ${wanted}，当前停留在 ${arrived}。`);
+  }
 }
 
 // ---------- 题目详情页：填答案 ----------
@@ -617,6 +680,7 @@ module.exports = {
   readQuestionTitle,
   titlesMatch,
   openQuestionByUrl,
+  isSafeQuestionUrl,
   fillAnswerDraft,
   submitAnswer,
   readSubmitConfirmation,

@@ -22,14 +22,24 @@ class Semaphore {
       this.running += 1;
       return;
     }
+    // 等待者不自增：名额一律由 admit() 同步交接。两边都计一次会让并发数悄悄翻倍，
+    // 都不计（setConcurrency 直接 shift）则等于放开闸。
     await new Promise((resolve) => this.queue.push(resolve));
-    this.running += 1;
+  }
+
+  /** 按当前上限放行排队者；计数与交接同步完成，调用方不要再改 running */
+  admit() {
+    while (this.running < this.limit && this.queue.length) {
+      const waiter = this.queue.shift();
+      this.running += 1;
+      waiter();
+    }
   }
 
   release() {
     this.running -= 1;
-    const next = this.queue.shift();
-    if (next) next();
+    // 运行中调低上限后，running 可能暂时高于 limit：admit() 里的比较会把排队者继续挡住
+    this.admit();
   }
 }
 
@@ -64,7 +74,7 @@ class LlmClient {
     if (patch.baseUrl !== undefined) this.baseUrl = String(patch.baseUrl || "").trim() || "https://api.siliconflow.cn/v1/chat/completions";
     if (patch.apiKey !== undefined) this.apiKey = String(patch.apiKey || "").trim();
     if (patch.model !== undefined) this.model = String(patch.model || "").trim() || "deepseek-ai/DeepSeek-V3";
-    if (patch.concurrency !== undefined) this.semaphore = new Semaphore(patch.concurrency || 1);
+    if (patch.concurrency !== undefined) this.setConcurrency(patch.concurrency);
     if (patch.maxTokens !== undefined) this.maxTokens = Number(patch.maxTokens) || 520;
     if (patch.temperature !== undefined) this.temperature = Number.isFinite(Number(patch.temperature)) ? Number(patch.temperature) : 0.7;
     if (patch.systemPrompt !== undefined && String(patch.systemPrompt || "").trim()) this.strategy.systemPrompt = String(patch.systemPrompt);
@@ -74,6 +84,21 @@ class LlmClient {
 
   ready() {
     return Boolean(this.apiKey && this.baseUrl && this.model);
+  }
+
+  /**
+   * 并发热更新：始终复用同一个信号量。
+   * 换实例会让旧实例队列里排队的 worker 永远等不到 resolve（任务卡死），
+   * 而 release 打到新实例上又把 running 减成负数，并发闸就此失效。
+   */
+  setConcurrency(value) {
+    const limit = Math.max(1, Number(value) || 1);
+    const semaphore = this.semaphore;
+    if (!semaphore || limit === semaphore.limit) return limit;
+    semaphore.limit = limit;
+    // 调高上限后把排队的 worker 放出来；计数由 admit() 负责，这里不能自己 shift
+    semaphore.admit();
+    return limit;
   }
 
   /** 供应商描述（UI 展示用："硅基流动"/"本地服务/Ollama"/"自定义 OpenAI 兼容"） */
@@ -89,12 +114,6 @@ class LlmClient {
       model: this.model,
       fetchImpl: this.fetchImpl,
     });
-  }
-
-  buildQuestionText(item, { titleTemplate, introTemplate } = {}) {
-    const { buildChat } = require("./strategies/answer");
-    const strategy = createAnswerStrategy({ ...this.strategy, titleTemplate, introTemplate });
-    return buildChat(strategy, item).user.split("\n\n").slice(1).join("\n\n");
   }
 
   async generateAnswer(item, { titleTemplate, introTemplate, onLog } = {}) {
@@ -132,7 +151,15 @@ class LlmClient {
           this.usage.calls += 1;
           this.usage.promptTokens += entry.promptTokens;
           this.usage.completionTokens += entry.completionTokens;
-          if (this.onUsage) this.onUsage(entry);
+          // 记账失败不能连累已经拿到手的答案：addUsage 会同步写盘，Windows 上偶发 EBUSY，
+          // 若让它抛出来会被下面的 catch 当成"AI 请求失败"，整条回答被丢弃并重试烧一遍 token。
+          if (this.onUsage) {
+            try {
+              this.onUsage(entry);
+            } catch (usageError) {
+              if (onLog) onLog(`token 记账失败（不影响本条回答）：${usageError.message}`);
+            }
+          }
           if (!content.trim()) throw new Error("AI API 没有返回可用回答。");
           return content;
         } catch (error) {

@@ -21,6 +21,7 @@ const { AuditLogger } = require("./src/audit/logger");
 let mainWindow = null;
 let clipboardApi = null; // registerIpc 时注入（供任务内剪贴板兜底）
 let currentAutosavePath = ""; // 当前任务的 CSV 自动保存文件
+let autosaveSeq = 0; // 同一分钟内连起两个任务时区分自动保存文件
 
 // ---------- 单例服务 ----------
 
@@ -34,7 +35,7 @@ fs.mkdirSync(path.join(dataDir, "logs"), { recursive: true });
 
 const config = new Config(dataDir);
 const logger = new Logger(path.join(dataDir, "logs"));
-const store = new Store(dataDir);
+const store = new Store(dataDir, { owner: "gui" });
 const llm = new LlmClient({
   concurrency: config.load().aiConcurrency,
   apiKey: config.load().aiApiKey,
@@ -80,10 +81,22 @@ logger.onLog((text) => sendToRenderer("task:log", text));
 // ---------- 任务包装 ----------
 
 async function startTask(name, payload, runner) {
+  // 互斥检查必须在这里、且在下面的 try 之前做：
+  // 放进 tasks.start 的异常里统一处理，会给"用户连点两次"这种启动拒绝也广播一次
+  // status:"failed"，把仍在正常运行的上一个任务的进度条改成"失败"并重新启用按钮。
+  tasks.assertIdle();
+  // 脚本类工具（scripts/*.js）会另起一个 Store 写同一份 JSON，两边各持内存缓存整份覆写。
+  // 主程序这边只警告不拦停：拦在 GUI 上会让人以为软件坏了，脚本那边则直接拒绝启动。
+  const foreignWriter = store.detectForeignWriter();
+  if (foreignWriter) {
+    logger.log(`⚠️ 检测到另一个写入者（${foreignWriter.owner} · 进程 ${foreignWriter.pid}，${Math.round(foreignWriter.idleMs / 1000)} 秒前还在活动）正在写同一份数据目录，` +
+      "两边会互相覆盖题库/记录。请先关掉它（命令行工具或主程序）再继续。");
+  }
   // 每个任务一份 CSV 自动保存兜底（防表格占用/崩溃丢记录）
   const autosaveDir = path.join(dataDir, "autosave");
   fs.mkdirSync(autosaveDir, { recursive: true });
-  const autosavePath = path.join(autosaveDir, `${name}_${stamp()}.csv`);
+  // stamp() 只到分钟，同一分钟内起两次同名任务会共用一个 CSV，上一轮的记录会混进这一轮
+  const autosavePath = path.join(autosaveDir, `${name}_${stamp()}_${++autosaveSeq}.csv`);
   currentAutosavePath = autosavePath;
   logger.log(`本轮自动保存文件：${autosavePath}`);
   try {
@@ -183,7 +196,6 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     }
 
     // 表格成功落盘后才记去重额度：取消/写失败都不会白白消耗题目
-    store.addUsedKeys(result.usedKeys);
     const savedPath = excel.writeWorkbookSafe(
       outputPath,
       result.picked.map(excel.answerToRow),
@@ -191,6 +203,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       excel.ANSWER_HEADERS,
       (message) => emit("task:log", message)
     );
+    store.addUsedKeys(result.usedKeys);
     // 记住最近一次抽题表格：生成/提交视图默认使用，减少手动选文件
     config.save({ lastPickFilePath: savedPath });
     return {
@@ -260,8 +273,11 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       filters: [{ name: "Excel 表格", extensions: ["xlsx"] }],
     });
     if (choice.canceled || !choice.filePath) return { canceled: true };
-    excel.writeWorkbook(choice.filePath, rows.map(excel.answerToRow), "答案记录", excel.ANSWER_HEADERS);
-    return { canceled: false, filePath: choice.filePath, count: rows.length, keyword: keyword || "" };
+    // 用带兜底的写法：目标文件正被 Excel/WPS 打开时直写会 EBUSY，
+    // 渲染端这条链路没有 catch，用户只会看到"点了没反应"，以为已经导出了。
+    const savedPath = excel.writeWorkbookSafe(choice.filePath, rows.map(excel.answerToRow), "答案记录", excel.ANSWER_HEADERS,
+      (message) => logger.log(message));
+    return { canceled: false, filePath: savedPath, count: rows.length, keyword: keyword || "" };
   });
 
   // 题库管理
@@ -274,9 +290,11 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     }
     // 随机抽题视角：已抽过（usedKeys 命中题库）与剩余可抽
     const usedKeys = new Set(store.loadUsedKeys());
+    // 必须与 random-pick.js 的 keyOf 完全一致，否则"已抽"永远匹配不上：
+    // 这里曾写成 /s+/g（漏了反斜杠，剥掉的是字母 s 而不是空白字符），剩余可抽数长期虚高。
     const keyOf = (item) => {
       const url = String(item.questionUrl || "").trim().toLowerCase();
-      return url ? `url:${url}` : `title:${String(item.title || "").replace(/s+/g, "").toLowerCase()}`;
+      return url ? `url:${url}` : `title:${String(item.title || "").replace(/\s+/g, "").toLowerCase()}`;
     };
     const usedCount = bank.filter((item) => usedKeys.has(keyOf(item))).length;
     return { total: bank.length, dir: dataDir, counts, usedCount, remainingCount: Math.max(0, bank.length - usedCount) };
@@ -404,6 +422,20 @@ function stamp() {
   return nowText().replace(/[/: ]/g, "-").slice(0, 16);
 }
 
+/** file: URL 是否正好指向本程序的某个本地页面（忽略 hash，带查询即拒绝） */
+function isSameLocalPage(url, filePath) {
+  if (!/^file:/i.test(String(url || ""))) return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.search) return false;
+    // Windows 下 pathname 形如 "/D:/code/.../index.html"，要先去掉开头的斜杠再归一化
+    const onDisk = decodeURIComponent(parsed.pathname).replace(/^\/+([A-Za-z]:)/, "$1");
+    return path.normalize(onDisk).toLowerCase() === path.normalize(filePath).toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
 function createWindow({ smoke = false } = {}) {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -418,9 +450,32 @@ function createWindow({ smoke = false } = {}) {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      // 显式写死：这个窗口挂了 31 条高权 IPC 通道（任意路径读写、打开数据目录…），
+      // Electron 默认值随大版本会变，写清楚防升级后静默放开。
+      sandbox: true,
     },
   });
   mainWindow.setMenuBarVisibility(false);
+  // 渲染层只加载本地文件：任何跳外站/开新窗口的行为都不是本程序的功能，
+  // 一旦放行就等于把 window.api 交到远端页面手里。
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    logger.log(`已拦截新窗口请求：${url}`);
+    return { action: "deny" };
+  });
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    // 只看 file: 前缀不够：临时目录/下载目录里随便一份 HTML 都能把主窗口导航过去，
+    // 那个页面照样挂着 window.api 的全部通道。只放行我们自己这一页。
+    if (!isSameLocalPage(url, path.join(__dirname, "renderer", "index.html"))) {
+      event.preventDefault();
+      logger.log(`已拦截页面跳转：${url}`);
+    }
+  });
+  // 本程序不需要任何受限权限（地理/摄像头/剪贴板写入/通知…），Electron 的默认放行策略随版本会变，写死拒绝。
+  mainWindow.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    logger.log(`已拒绝权限请求：${permission}`);
+    callback(false);
+  });
+  mainWindow.webContents.session.setPermissionCheckHandler(() => false);
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -435,7 +490,14 @@ async function smokeCheck() {
   window.webContents.on("console-message", (_event, level, message) => {
     if (level >= 2) errors.push(message);
   });
-  await new Promise((resolve) => window.webContents.once("did-finish-load", resolve));
+  // 加载失败时 did-finish-load 永远不来，打包冒烟会无限挂住 CI；
+  // 这里用超时兜底，让 --smoke 无论如何都以非 0 退出并说明原因。
+  const loaded = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve("timeout"), 20000);
+    window.webContents.once("did-finish-load", () => { clearTimeout(timer); resolve("ok"); });
+    window.webContents.once("did-fail-load", (_e, code, description) => { clearTimeout(timer); resolve(`fail:${code} ${description}`); });
+  });
+  if (loaded !== "ok") errors.push(`页面加载未完成（${loaded}）`);
   await new Promise((resolve) => setTimeout(resolve, 1500));
   const bridgeOk = await window.webContents.executeJavaScript("typeof window.api === 'object' && typeof window.api.invoke === 'function'");
   const bankOk = await window.webContents.executeJavaScript("document.getElementById('bankStats') && document.getElementById('bankStats').textContent.length >= 0");
@@ -450,6 +512,18 @@ function shutdown() {
     store.flushAll();
   } catch (error) {
     console.error("[shutdown] flush failed:", error);
+  }
+  try {
+    store.releaseLock();
+  } catch (error) {
+    console.error("[shutdown] lock release failed:", error);
+  }
+  // 审计事件走的是异步批量队列：不显式同步刷盘，退出前最后几条（往往正是失败那条）会丢。
+  // 这里刻意不关浏览器环境：关环境属于账号侧动作，退出时替用户关掉他手动开着的环境不合适。
+  try {
+    auditLogger.flushSync();
+  } catch (error) {
+    console.error("[shutdown] audit flush failed:", error);
   }
 }
 

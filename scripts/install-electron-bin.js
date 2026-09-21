@@ -27,8 +27,30 @@ console.log("zip:", zipPath, (size / 1048576).toFixed(1), "MB");
 if (size < 10000000) throw new Error("zip 不完整（小于 10MB），请重新下载");
 
 const distDir = path.join(__dirname, "..", "node_modules", "electron", "dist");
-fs.rmSync(distDir, { recursive: true, force: true });
-fs.mkdirSync(distDir, { recursive: true });
-execSync(`powershell -NoProfile -Command "Expand-Archive -LiteralPath '${zipPath.replace(/\\/g, "/")}' -DestinationPath '${distDir.replace(/\\/g, "/")}' -Force"`, { stdio: "inherit" });
+// 先解到临时目录、验过 electron.exe 再换目录。
+// 原来先 rmSync(dist) 再解压：解压一失败（弱网/磁盘忙）就把唯一可用的安装也毁了，只能重装依赖。
+const tmpDir = `${distDir}.解压中_${Date.now()}`;
+const backupDir = `${distDir}.旧版_${Date.now()}`;
+fs.mkdirSync(tmpDir, { recursive: true });
+try {
+  execSync(`powershell -NoProfile -Command "Expand-Archive -LiteralPath '${zipPath.replace(/\\/g, "/")}' -DestinationPath '${tmpDir.replace(/\\/g, "/")}' -Force"`, { stdio: "inherit" });
+  if (!fs.existsSync(path.join(tmpDir, "electron.exe"))) {
+    throw new Error("解压结果里没有 electron.exe，判定为解压失败");
+  }
+  // 全新安装时 dist 根本不存在，renameSync 会抛 ENOENT——而下面的 catch 会把
+  // 刚刚解压成功的 tmpDir 一起删掉，于是这个脚本只对"装过想重装"的人有效。
+  const hasOld = fs.existsSync(distDir);
+  if (hasOld) fs.renameSync(distDir, backupDir);
+  try {
+    fs.renameSync(tmpDir, distDir);
+  } catch (error) {
+    if (hasOld) fs.renameSync(backupDir, distDir); // 新包就位失败就把旧包放回去，至少还能用
+    throw error;
+  }
+  if (hasOld) fs.rmSync(backupDir, { recursive: true, force: true });
+} catch (error) {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+  throw error;
+}
 fs.writeFileSync(path.join(distDir, "..", "path.txt"), "electron.exe");
 console.log("ELECTRON_BIN_OK");

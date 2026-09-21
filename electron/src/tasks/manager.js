@@ -65,6 +65,8 @@ class TaskManager {
     machine.start();
 
     const self = this;
+    /** 最近一次上报的进度；暂停/恢复时要复用 done/total 改写状态，不然界面进度条会跳空 */
+    let lastProgress = null;
     const ctx = {
       payload: this.current.livePayload,
       shouldStop: () => Boolean(self.current && self.current.stopped),
@@ -72,16 +74,24 @@ class TaskManager {
       /** 暂停检查点：已请求暂停时挂起，直到 resume/cancel/stop */
       async pausePoint(label = "") {
         if (!self.current || !self.current.paused) return;
-        machine.pause(label || "checkpoint");
-        self.emitEvent("task.paused", { taskId: machine.taskId, label: label || "checkpoint" });
-        onLog?.("任务已暂停（检查点：" + (label || "checkpoint") + "）。");
+        // 并发>1 时多个 worker 会同时走到这里：状态机只允许 RUNNING→PAUSED，
+        // 第二个 worker 再 pause 就是非法迁移并抛错，会把整个任务 Promise.all 打崩。
+        if (machine.state === STATES.RUNNING) {
+          machine.pause(label || "checkpoint");
+          self.emitEvent("task.paused", { taskId: machine.taskId, label: label || "checkpoint" });
+          onLog?.("任务已暂停（检查点：" + (label || "checkpoint") + "）。");
+          // 进度条也要显式变成"已暂停"：任务挂在 pausePoint 里不再 report，
+          // 界面会一直停在"进行中"，用户分不清是卡住还是在等恢复。
+          if (lastProgress) onProgress?.({ ...lastProgress, status: "paused" });
+        }
         while (self.current && self.current.paused && !self.current.stopped) {
           await new Promise((resolve) => setTimeout(resolve, 150));
         }
-        if (self.current && !self.current.stopped && machine.state === STATES.PAUSED) {
+        if (self.current && !self.current.stopped && machine.state === STATES.PAUSED && machine.can(STATES.RUNNING)) {
           machine.resume();
           self.emitEvent("task.resumed", { taskId: machine.taskId });
           onLog?.("任务已恢复。");
+          if (lastProgress) onProgress?.({ ...lastProgress, status: "running" });
         }
       },
       livePayload: () => (self.current ? { ...self.current.livePayload } : { ...(payload || {}) }),
@@ -90,7 +100,10 @@ class TaskManager {
         self.current.livePayload = { ...self.current.livePayload, ...(patch || {}) };
       },
       delay: randomDelayFactory(() => self.shouldStopCurrent()),
-      report: (progress) => onProgress?.(progress),
+      report: (progress) => {
+        lastProgress = progress || null;
+        onProgress?.(progress);
+      },
       emitItem: (item) => onItem?.(item),
     };
 
@@ -107,7 +120,9 @@ class TaskManager {
       return result;
     } catch (error) {
       if (!machine.isTerminal) {
-        machine.fail(error.message);
+        // 任务在暂停中失败时 PAUSED→FAILED 是非法迁移，直接 fail 会在 catch 里再抛一次，盖掉真正的错误
+        if (machine.can(STATES.FAILED)) machine.fail(error.message);
+        else machine.cancel(`failed_while_${machine.state.toLowerCase()}`);
         this.emitEvent("task.failed", { taskId: machine.taskId, error: error.message });
       }
       this.archive();

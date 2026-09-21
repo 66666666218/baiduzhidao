@@ -25,14 +25,23 @@ const items = Array.isArray(raw) ? raw : [];
 console.log(`v1 题库共 ${items.length} 条`);
 
 const { Store } = require("../electron/src/storage/store");
-const store = new Store(v2DataDir);
+const { normalizeCategory } = require("../electron/src/config");
+const store = new Store(v2DataDir, { owner: "cli:migrate-v1-bank" });
+// 迁移是整库覆写：主程序开着时跑一次，会把它内存里的旧题库原样盖回来
+store.assertExclusive("migrate-v1-bank 题库迁移");
 
 let imported = 0;
 let updated = 0;
 let skipped = 0;
+let unknownCategory = 0;
 for (const item of items) {
+  // 以前是"非教育/综合一律记情感类"，会把 v1 的人物类（以及空分类）整片改类。
+  // 现在按应用认得的标准分类名匹配，认不出就留空——空分类的题目在抽题时对各分类都可见，
+  // 比给它贴一个错误的标签更容易被发现。
+  const category = normalizeCategory(item.category);
+  if (!category) unknownCategory += 1;
   const question = {
-    category: /教育/.test(String(item.category || "")) ? "教育类" : /综合/.test(String(item.category || "")) ? "综合类" : "情感类",
+    category,
     title: item.title || "",
     questionContent: item.questionContent || "",
     questionUrl: item.questionUrl || "",
@@ -49,9 +58,14 @@ for (const item of items) {
   else if (result === "updated") updated += 1;
 }
 store.flushAll();
+store.releaseLock();
 
-console.log(`迁移完成：新增 ${imported} 条，补充 ${updated} 条，跳过 ${skipped} 条`);
+console.log(`迁移完成：新增 ${imported} 条，补充 ${updated} 条，跳过 ${skipped} 条${unknownCategory ? `，其中 ${unknownCategory} 条分类无法识别（已留空）` : ""}`);
 console.log(`v2 题库总计：${store.bankSize()} 条（${path.join(v2DataDir, "bank.json")}）`);
+if (!items.length) {
+  console.error("v1 文件里没有条目，迁移未生效。");
+  process.exit(1);
+}
 
 // 可选：迁移 v1 答题记录（已生成的回答）
 if (v1AnswersPath) {
