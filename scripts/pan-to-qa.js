@@ -92,7 +92,7 @@ function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function buildAnswerHtml({ name, link, code }) {
+function buildAnswerHtml({ cleanName: name, link, code }) {
   const type = guessType(name);
   const codeLine = code ? `<p>提取码：<strong>${escapeHtml(code)}</strong></p>` : "";
   return [
