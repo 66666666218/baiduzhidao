@@ -107,4 +107,4 @@ async function launchHeadlessEdge({ onLog } = {}) {
   };
 }
 
-module.exports = { launchHeadlessEdge, findEdge };
+module.exports = { launchHeadlessEdge, findEdge, findFreePort };

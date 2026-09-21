@@ -79,6 +79,26 @@ docs/开发文档.md                   架构设计与决策记录
 docs/待决策清单.md                 等用户拍板的事项
 ```
 
+## 网盘资源供给链路（10 万目标 · 供给端）
+
+```
+采集（二选一或并行）
+  ├─ 方式一  scripts/panlay-login.js    panlay.com 登录（人工一次，会话常驻）
+  │          scripts/panlay-explore.js  工具页结构探测
+  │          scripts/panlay-search-qa.js（开发中）panlay 资源搜索采集
+  └─ 方式二  scripts/pan-crawl-batch.js  关键词池批量爬取（去重/断点/限速）
+                 ↓ 两列主资源库  运行缓存/pan-resources-master.xlsx
+转换（星链SOP 第2阶段）
+  └─ scripts/pan-to-qa.js               两列 → 六列问答格式（质量门槛）
+上传（星链SOP 第3阶段）
+  └─ scripts/workbench-upload-per-account.js  按账号批量上传（每日额度自适应）
+```
+
+```bash
+node scripts/pan-crawl-batch.js --minutes=60     # 采集 1 小时（断点续爬，可反复跑）
+node scripts/pan-to-qa.js 运行缓存/pan-resources-master.xlsx  # 转问答格式
+```
+
 ## 用真实比特浏览器联调
 
 1. 打开比特浏览器 → 本地设置 → 开启 API
