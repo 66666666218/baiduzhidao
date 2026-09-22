@@ -63,7 +63,10 @@ async function runSubmitTask(ctx, deps) {
   if (!rows.length) throw new Error("本次总回答数量为 0，不再继续。");
 
   const accountDailyLimit = Math.max(0, Number(ctx.payload.accountDailyLimit) || 0);
-  const perEnvLimitRaw = bitEnvs.length > 1 ? Math.max(1, Number(ctx.payload.maxQuestionsPerEnv) || rows.length) : rows.length;
+  // 提交容量只由「每账号每日限额」（accountDailyLimit，风控语义）控制。
+  // 不再挪用爬题参数 maxQuestionsPerEnv：它曾导致多账号时总量 = 账号数 × 5 的隐蔽截断
+  //（单账号不限、多账号 5 条/号，行为不一致），用户设的「提交条数」形同虚设。
+  const perEnvLimitRaw = rows.length;
 
   // 提交前达标检测：活动页显示已全部解锁的账号跳过（v1 功能保留，默认开启，checkCompletedEnvs=false 关闭）
   let completedEnvs = new Set();
