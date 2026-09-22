@@ -56,12 +56,12 @@ const inputFile = path.resolve(args.input);
 const limit = args.limit !== undefined ? Math.max(0, Number(args.limit)) : 100;
 const destRoot = args.dest || "/来自资源批量转存";
 const cc = {
-  collect: Math.max(1, Number(args["cc-collect"]) || 4),
-  transfer: Math.max(1, Number(args["cc-transfer"]) || 3),
-  confirm: Math.max(1, Number(args["cc-confirm"]) || 5),
-  share: Math.max(1, Number(args["cc-share"]) || 2),
+  collect: Math.max(1, Number(args["cc-collect"]) || 6),
+  transfer: Math.max(1, Number(args["cc-transfer"]) || 6),
+  confirm: Math.max(1, Number(args["cc-confirm"]) || 8),
+  share: Math.max(1, Number(args["cc-share"]) || 4),
 };
-const paceMs = Math.max(300, Number(args["pace-ms"]) || 1500);
+const paceMs = Math.max(200, Number(args["pace-ms"]) || 800);
 const keepImg = !args["no-img"];
 const fixedPwd = typeof args["share-pwd"] === "string" ? args["share-pwd"] : "";
 
@@ -159,15 +159,18 @@ function parseLinkCell(text) {
   const state = args.fresh ? new Map() : loadState();
   const tasks = [];
   let junk = 0;
-  for (let i = 0; i < rows.length; i += 1) {
+  const startIdx = Math.max(0, Number(args.start) || 0);
+  for (let i = startIdx; i < rows.length; i += 1) {
     const row = rows[i];
     const rawName = String(row[nameKey] || "").trim();
     const { link, pwd: cellPwd } = parseLinkCell(`${row[linkKey] || ""}${pwdKey ? " 提取码:" + row[pwdKey] : ""}`);
     if (!link || qaLib.reject(rawName, link + (link.includes("pwd=") ? "" : `?pwd=${cellPwd}`))) { junk += 1; continue; }
     const srcLink = link + (link.includes("pwd=") ? "" : `?pwd=${cellPwd}`);
     const prev = state.get(srcLink);
+    const attempts = (prev && prev.attempts) || 0;
+    if (prev && prev.status !== "done" && attempts >= 3) { junk += 1; continue; } // 反复失败的黑名单条目（疑似被单条风控拉黑）
     const phase = prev && prev.status === "done" ? "done" : (prev && prev.phase) || "new";
-    const t = { idx: i, rawName, srcLink, phase, entry: prev || null };
+    const t = { idx: i, rawName, srcLink, phase, entry: prev || null, attempts };
     // 断点恢复：阶段①已采集的条目要把元数据带回（否则阶段②崩溃）
     if (t.phase === "collected" && prev && prev.meta) t.meta = prev.meta;
     tasks.push(t);
@@ -204,138 +207,114 @@ function parseLinkCell(text) {
 
   let fatalStop = false;
   const stamp = () => new Date().toISOString().slice(11, 19);
-
-  // ─── 阶段① COLLECT：verify + list 元数据 ───
-  const toCollect = tasks.filter((t) => t.phase === "new" || t.phase === "failed");
-  console.log(`\n[阶段① 采集] 待处理 ${toCollect.length} 条（并发 ${cc.collect}）`);
-  await pool(toCollect, cc.collect, async (t) => {
-    await waitGate();
-    try {
-      const resolved = await transfer.resolveShare(exe, { link: t.srcLink });
-      t.meta = { shareid: resolved.shareid, from: resolved.from, sekey: resolved.sekey, bdstoken: resolved.bdstoken, files: resolved.files };
-      t.phase = "collected";
-      const entry = { srcLink: t.srcLink, name: t.rawName, status: "pending", phase: "collected", meta: t.meta, at: new Date().toISOString() };
-      state.set(t.srcLink, entry);
-      saveState(entry);
-      logLine(`  ①✓ [${stamp()}] ${t.rawName.slice(0, 26)} (${resolved.files.length}文件)`);
-    } catch (e) {
-      handleCollectError(t, e);
-    }
-  });
-  function handleCollectError(t, e) {
-    const msg = e.message || "";
-    t.phase = "failed";
-    const entry = { srcLink: t.srcLink, name: t.rawName, status: "failed", phase: "failed", error: msg.slice(0, 120), at: new Date().toISOString() };
-    state.set(t.srcLink, entry);
-    saveState(entry);
-    logLine(`  ①✗ [${stamp()}] ${t.rawName.slice(0, 26)} → ${msg.slice(0, 60)}`);
-    if (msg.includes("errno=2") || msg.includes("风控")) tripPause(10, "verify 限频/风控");
+  // 分享会话互斥锁：verify/BDCLND/list 共用一个 Cookie 罐，必须串行（否则互相覆盖导致 -9/解析失败）
+  const MAX_CONSECUTIVE_FAILS = Math.max(5, Number(args["max-fails"]) || 10);
+  const delayMinS = Math.max(1, Number(args["delay-min"]) || 2);
+  const delayMaxS = Math.max(delayMinS, Number(args["delay-max"]) || 5);
+  let collectChain = Promise.resolve();
+  function withCollectLock(fn) {
+    const run = collectChain.then(fn, fn);
+    collectChain = run.catch(() => {});
+    return run;
   }
 
-  // ─── 阶段② TRANSFER：转存到自己网盘 ───
-  const toTransfer = tasks.filter((t) => t.phase === "collected");
-
-  // 容量预检：空间不足直接停（转存接口对容量不足误报 errno=2"文件已存在"）
-  const checkQuota = async () => {
+  // ─── 单条完整链：采集→转存→确认→分享（同一 Cookie 会话内串行，保证 BDCLND 一致） ───
+  const quota = async () => {
     const q = await exe.call(`/api/quota?checkfree=1&checkexpire=1&web=1`).catch(() => ({}));
     if (q.errno !== 0 || !q.total) return null;
     return { freeGB: (q.total - q.used) / 1024 ** 3, totalGB: q.total / 1024 ** 3 };
   };
-  const quota0 = await checkQuota();
+  const quota0 = await quota();
   if (quota0) {
     console.log(`网盘空间：总 ${quota0.totalGB.toFixed(0)}GB | 剩余 ${quota0.freeGB.toFixed(1)}GB`);
     if (quota0.freeGB < 10) {
-      console.log("⛔ 剩余空间不足 10GB——转存必然失败（百度会误报“文件已存在”）。");
-      console.log("   处理：① 开通/续费 SVIP 扩容 ② 清理网盘空间 ③ 换大空间账号的浏览器窗口。");
-      console.log("   管线停止（已采集元数据保留，扩容后重跑自动续传）。");
+      console.log("⛔ 剩余空间不足 10GB——转存必然失败。处理：① 扩容 ② 清理网盘 ③ 换大空间账号窗口。");
       await browser.close();
       process.exit(3);
     }
   }
 
-  console.log(`\n[阶段② 转存] 待处理 ${toTransfer.length} 条（并发 ${cc.transfer}）`);
-  await pool(toTransfer, cc.transfer, async (t) => {
+  let done = 0, failed = 0, consecutiveFails = 0;
+  const qaRows = [];
+  for (const t of tasks) {
+    if (fatalStop) break;
+    if (t.phase === "done") { if (t.qaRow) qaRows.push(t.qaRow); continue; }
     await waitGate();
+    const entryBase = { srcLink: t.srcLink, name: t.rawName };
     try {
-      const idx = String(t.idx + 1).padStart(5, "0");
-      const destDir = `${destRoot}/${baseName}/${idx}`;
-      const r = await transfer.transferFiles(exe, {
-        shareid: t.meta.shareid, from: t.meta.from, sekey: t.meta.sekey,
-        files: t.meta.files, destDir, bdstoken: t.meta.bdstoken,
-        sharePageUrl: t.meta.sharePageUrl || t.srcLink,
-      });
-      if (r.errno === 12 || r.errno === -10) throw Object.assign(new Error("网盘容量不足"), { fatal: true });
-      if (r.errno === 2) throw Object.assign(new Error("errno=2：大概率容量不足（百度误报“文件已存在”）"), { capacityHint: true });
-      if (r.errno !== 0) throw new Error(`转存 errno=${r.errno} ${r.show_msg || ""}`);
-      t.phase = "transferred";
-      t.destDir = destDir;
-      updateState(t, { phase: "transferred", destDir });
-      logLine(`  ②✓ [${stamp()}] ${t.rawName.slice(0, 26)} → ${destDir}`);
-    } catch (e) {
-      if (e.capacityHint) {
-        const q = await checkQuota();
-        if (q && q.freeGB < 5) {
-          console.log(`⛔ 复检确认剩余空间仅 ${q.freeGB.toFixed(1)}GB——容量不足，管线停止。扩容后重跑自动续传。`);
-          fatalStop = true;
-          return;
-        }
+      // ① 采集
+      if (t.phase === "new" || t.phase === "failed") {
+        const resolved = await transfer.resolveShare(exe, { link: t.srcLink });
+        t.meta = { shareid: resolved.shareid, from: resolved.from, sekey: resolved.sekey, bdstoken: resolved.bdstoken, files: resolved.files, sharePageUrl: resolved.sharePageUrl };
+        t.phase = "collected";
+        saveState({ ...entryBase, status: "pending", phase: "collected", meta: t.meta, at: new Date().toISOString() });
       }
-      if (e.fatal) { fatalStop = true; t.phase = "collected"; logLine(`  ⛔ ${e.message} — 管线将在本阶段后停止`); return; }
-      t.phase = "failed";
-      updateState(t, { phase: "failed", error: (e.message || "").slice(0, 120) });
-      logLine(`  ②✗ [${stamp()}] ${t.rawName.slice(0, 26)} → ${e.message.slice(0, 60)}`);
-    }
-  });
-
-  // ─── 阶段③ CONFIRM：确认落盘 ───
-  const toConfirm = tasks.filter((t) => t.phase === "transferred");
-  console.log(`\n[阶段③ 确认落盘] 待处理 ${toConfirm.length} 条（并发 ${cc.confirm}）`);
-  await pool(toConfirm, cc.confirm, async (t) => {
-    await waitGate();
-    try {
-      const names = t.meta.files.map((f) => f.path.split("/").pop());
-      const v = await transfer.verifyTransferred(exe, { destDir: t.destDir, expectNames: names });
-      if (!v.ok) throw new Error(`落盘确认失败 ${v.found.length}/${names.length}`);
-      t.phase = "confirmed";
-      updateState(t, { phase: "confirmed" });
-      logLine(`  ③✓ [${stamp()}] ${t.rawName.slice(0, 26)} 已确认在网盘`);
+      // ② 转存
+      if (t.phase === "collected") {
+        const idx = String(t.idx + 1).padStart(5, "0");
+        t.destDir = `${destRoot}/${baseName}/${idx}`;
+        const r = await transfer.transferFiles(exe, {
+          shareid: t.meta.shareid, from: t.meta.from, sekey: t.meta.sekey,
+          files: t.meta.files, destDir: t.destDir, bdstoken: t.meta.bdstoken,
+          sharePageUrl: t.meta.sharePageUrl || t.srcLink,
+        });
+        if (r.errno === 12 || r.errno === -10) throw Object.assign(new Error("网盘容量不足"), { fatal: true });
+        if (r.errno !== 0) throw new Error(`转存 errno=${r.errno} ${r.show_msg || ""}`);
+        t.phase = "transferred";
+        saveState({ ...entryBase, status: "pending", phase: "transferred", destDir: t.destDir, at: new Date().toISOString() });
+      }
+      // ③ 确认落盘
+      if (t.phase === "transferred") {
+        const names = t.meta.files.map((f) => f.path.split("/").pop());
+        const v = await transfer.verifyTransferred(exe, { destDir: t.destDir, expectNames: names });
+        if (!v.ok) throw new Error(`落盘确认失败 ${v.found.length}/${names.length}`);
+        t.phase = "confirmed";
+        saveState({ ...entryBase, status: "pending", phase: "confirmed", at: new Date().toISOString() });
+      }
+      // ④ 自有分享
+      if (t.phase === "confirmed") {
+        const ownPwd = fixedPwd || randomPwd();
+        const share = await createShare({
+          bduss, stoken,
+          paths: t.meta.files.map((f) => `${t.destDir}/${f.path.split("/").pop()}`),
+          password: ownPwd,
+        });
+        if (!share.link) throw new Error("创建分享失败");
+        t.ownLink = `${share.link}?pwd=${share.password}`;
+        t.ownPwd = share.password;
+        t.phase = "done";
+        const meta = qaLib.parseName(t.rawName);
+        t.qaRow = {
+          qid: "",
+          问题标题: qaLib.buildTitle(meta, t.idx),
+          回答内容: qaLib.buildAnswerHtml(t.ownLink, qaLib.buildIntro(meta), keepImg),
+        };
+        qaRows.push(t.qaRow);
+        done += 1;
+        consecutiveFails = 0;
+        saveState({ ...entryBase, status: "done", phase: "done", ownLink: t.ownLink, ownPwd: t.ownPwd, qaRow: t.qaRow, at: new Date().toISOString() });
+        logLine(`  ✅ [${stamp()}] ${t.rawName.slice(0, 26)} → ${t.ownLink}`);
+      }
     } catch (e) {
-      t.phase = "failed";
-      updateState(t, { phase: "failed", error: (e.message || "").slice(0, 120) });
-      logLine(`  ③✗ [${stamp()}] ${t.rawName.slice(0, 26)} → ${e.message.slice(0, 60)}`);
+      failed += 1;
+      consecutiveFails += 1;
+      t.attempts = (t.attempts || 0) + 1;
+      t.phase = t.phase === "new" ? "failed" : t.phase; // 已转存的保留阶段，重跑从断点续
+      saveState({ ...entryBase, status: "failed", phase: t.phase, attempts: t.attempts, error: (e.message || "").slice(0, 120), at: new Date().toISOString() });
+      logLine(`  ✗ [${stamp()}] ${t.rawName.slice(0, 26)} → ${e.message.slice(0, 70)}`);
+      if (e.fatal) { console.log("⛔ 致命错误，停止（已完成条目完好，重跑续传）"); break; }
+      if (/errno=2/.test(e.message)) {
+        const q = await quota();
+        if (q && q.freeGB < 5) { console.log(`⛔ 复检确认剩余仅 ${q.freeGB.toFixed(1)}GB——空间已满，自动停止。`); fatalStop = true; break; }
+      }
+      if (consecutiveFails >= MAX_CONSECUTIVE_FAILS) {
+        console.log(`⚠️ 连续 ${MAX_CONSECUTIVE_FAILS} 条失败，疑似风控/接口变化，自动停止。`);
+        break;
+      }
+      if (/风控/.test(e.message)) { console.log("  ⏸ 风控信号，暂停 5 分钟…"); await sleep(5 * 60 * 1000); }
     }
-  });
-
-  // ─── 阶段④ SHARE：创建自己的永久分享 ───
-  const toShare = tasks.filter((t) => t.phase === "confirmed");
-  console.log(`\n[阶段④ 自有分享] 待处理 ${toShare.length} 条（并发 ${cc.share}）`);
-  await pool(toShare, cc.share, async (t) => {
-    await waitGate();
-    try {
-      const ownPwd = fixedPwd || randomPwd();
-      const share = await createShare({
-        bduss, stoken,
-        paths: t.meta.files.map((f) => `${t.destDir}/${f.path.split("/").pop()}`),
-        password: ownPwd,
-      });
-      if (!share.link) throw new Error("创建分享失败");
-      t.ownLink = `${share.link}?pwd=${share.password}`;
-      t.ownPwd = share.password;
-      t.phase = "done";
-      const meta = qaLib.parseName(t.rawName);
-      t.qaRow = {
-        qid: "",
-        问题标题: qaLib.buildTitle(meta, t.idx),
-        回答内容: qaLib.buildAnswerHtml(t.ownLink, qaLib.buildIntro(meta), keepImg),
-      };
-      updateState(t, { phase: "done", status: "done", ownLink: t.ownLink, ownPwd: t.ownPwd, qaRow: t.qaRow });
-      logLine(`  ④✓ [${stamp()}] ${t.rawName.slice(0, 26)} → ${t.ownLink}`);
-    } catch (e) {
-      t.phase = "failed";
-      updateState(t, { phase: "failed", error: (e.message || "").slice(0, 120) });
-      logLine(`  ④✗ [${stamp()}] ${t.rawName.slice(0, 26)} → ${e.message.slice(0, 60)}`);
-    }
-  });
+    await sleep((delayMinS + Math.random() * (delayMaxS - delayMinS)) * 1000);
+  }
 
   // ─── 阶段⑤ EXPORT：问答 xlsx ───
   const doneRows = tasks.filter((t) => t.phase === "done" && t.qaRow).map((t) => t.qaRow);

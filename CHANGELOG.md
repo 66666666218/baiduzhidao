@@ -1,5 +1,6 @@
 # CHANGELOG
 
+- [2026-09-22 14:30] FEAT: pan-transfer-ui.js 真UI流程转存（提取→保存→确定→响应取落盘路径→自有分享→模板出表）；账号深度风控中，建议隔夜冷却后放量 (Files: scripts/pan-transfer-ui.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-22 13:05] FIX: 断点恢复 meta 回填崩溃 + 转存 referer 指向分享页；判定账号处于转存封禁期（errno=2 全量复现，与请求形态无关） (Files: scripts/pan-transfer-pipeline.js, electron/src/netdisk/transfer.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-22 12:10] FEAT: netdisk-share-existing.js——网盘已有资源免转存直接自有分享并生成上传专用表（8/8成功，公网验证通过） (Files: scripts/netdisk-share-existing.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-22 11:25] FIX: 转存协议按真UI抓包校准（fsidlist+type=1，sekey/bdstoken走query）——errno=2真因是账号超容(-171.5GB，百度误报"文件已存在")；管线新增容量预检与复检 (Files: electron/src/netdisk/transfer.js, scripts/pan-transfer-pipeline.js, docs/自审日志.md, CHANGELOG.md)
