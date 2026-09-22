@@ -167,7 +167,10 @@ function parseLinkCell(text) {
     const srcLink = link + (link.includes("pwd=") ? "" : `?pwd=${cellPwd}`);
     const prev = state.get(srcLink);
     const phase = prev && prev.status === "done" ? "done" : (prev && prev.phase) || "new";
-    tasks.push({ idx: i, rawName, srcLink, phase, entry: prev || null });
+    const t = { idx: i, rawName, srcLink, phase, entry: prev || null };
+    // 断点恢复：阶段①已采集的条目要把元数据带回（否则阶段②崩溃）
+    if (t.phase === "collected" && prev && prev.meta) t.meta = prev.meta;
+    tasks.push(t);
   }
   // limit 只作用于未完成条目（已完成的不占配额）
   const doneTasks = tasks.filter((t) => t.phase === "done");
@@ -259,6 +262,7 @@ function parseLinkCell(text) {
       const r = await transfer.transferFiles(exe, {
         shareid: t.meta.shareid, from: t.meta.from, sekey: t.meta.sekey,
         files: t.meta.files, destDir, bdstoken: t.meta.bdstoken,
+        sharePageUrl: t.meta.sharePageUrl || t.srcLink,
       });
       if (r.errno === 12 || r.errno === -10) throw Object.assign(new Error("网盘容量不足"), { fatal: true });
       if (r.errno === 2) throw Object.assign(new Error("errno=2：大概率容量不足（百度误报“文件已存在”）"), { capacityHint: true });

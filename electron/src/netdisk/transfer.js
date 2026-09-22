@@ -64,13 +64,12 @@ function createBrowserExecutor(page) {
     page,
     async call(pathAndQuery, opts = {}) {
       return page.evaluate(async ({ pathAndQuery, opts }) => {
-        const resp = await fetch(`https://pan.baidu.com${pathAndQuery}`, {
-          method: opts.method || "GET",
-          headers: opts.headers || {},
-          body: opts.body,
-        });
+        const init = { method: opts.method || "GET", headers: opts.headers || {}, body: opts.body };
+        // Referer 是 fetch 禁改头，必须用 referrer 选项（转存接口校验分享页 referer）
+        if (opts.referrer) init.referrer = opts.referrer;
+        const resp = await fetch(`https://pan.baidu.com${pathAndQuery}`, init);
         return resp.json();
-      }, { pathAndQuery, opts: { method: opts.method || "GET", headers: opts.headers || {}, body: opts.body } });
+      }, { pathAndQuery, opts: { method: opts.method || "GET", headers: opts.headers || {}, body: opts.body, referrer: opts.referrer || "" } });
     },
     async seedBDCLND(randsk) {
       await page.evaluate((r) => { document.cookie = `BDCLND=${r}; path=/; domain=.baidu.com`; }, randsk);
@@ -164,14 +163,14 @@ async function resolveShare(exe, { link }) {
 
   const files = await listShareTree(exe, { surl, bdstoken });
   if (!files.length) throw new Error("分享里没有文件");
-  return { shareid, from, sekey: decodeURIComponent(randsk), bdstoken, files };
+  return { shareid, from, sekey: decodeURIComponent(randsk), bdstoken, files, sharePageUrl: `${PAN_API}/s/${fullCode}?pwd=${pwd}` };
 }
 
 /**
  * 转存到自己网盘（2026-09 抓包校准：body 用 fsidlist 而非 filelist；sekey/bdstoken 走 query）。
  * 返回 { errno, toFsIds }
  */
-async function transferFiles(exe, { shareid, from, sekey, files, destDir, bdstoken }) {
+async function transferFiles(exe, { shareid, from, sekey, files, destDir, bdstoken, sharePageUrl }) {
   const qs = new URLSearchParams({
     shareid: String(shareid),
     from: String(from),
@@ -194,6 +193,7 @@ async function transferFiles(exe, { shareid, from, sekey, files, destDir, bdstok
       "X-Requested-With": "XMLHttpRequest",
     },
     body: body.toString(),
+    referrer: sharePageUrl || `${PAN_API}/disk/main`,
   });
 }
 
