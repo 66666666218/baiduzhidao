@@ -1,5 +1,6 @@
 # CHANGELOG
 
+- [2026-09-22 15:00] FEAT: 批量转存功能内置软件——新任务 batch-transfer（真UI流程+确权分享+断点+熔断）+ 软件新视图「🔄 批量转存」+ IPC/preload 接线；冒烟与146单测通过 (Files: electron/src/tasks/batch-transfer.js, electron/app-context.js, electron/preload.js, electron/renderer/index.html, electron/renderer/renderer.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-22 14:30] FEAT: pan-transfer-ui.js 真UI流程转存（提取→保存→确定→响应取落盘路径→自有分享→模板出表）；账号深度风控中，建议隔夜冷却后放量 (Files: scripts/pan-transfer-ui.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-22 13:05] FIX: 断点恢复 meta 回填崩溃 + 转存 referer 指向分享页；判定账号处于转存封禁期（errno=2 全量复现，与请求形态无关） (Files: scripts/pan-transfer-pipeline.js, electron/src/netdisk/transfer.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-22 12:10] FEAT: netdisk-share-existing.js——网盘已有资源免转存直接自有分享并生成上传专用表（8/8成功，公网验证通过） (Files: scripts/netdisk-share-existing.js, docs/自审日志.md, CHANGELOG.md)

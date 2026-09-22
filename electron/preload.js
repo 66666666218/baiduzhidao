@@ -17,6 +17,7 @@ const invokeChannels = new Set([
   "task:generate",
   "task:submit",
   "task:passed-count",
+  "task:batch-transfer",
   "bit:check",
   "questions:random-pick",
   "answers:list",

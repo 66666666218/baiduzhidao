@@ -213,6 +213,31 @@ $("startSubmit").addEventListener("click", async () => {
   }
 });
 
+$("pickBatchExcel").addEventListener("click", async () => {
+  const result = await call("选择资源表格", "path:pick-open-table", { title: "选择资源表格" });
+  if (result && !result.canceled) $("batchExcelPath").value = result.filePath;
+});
+
+$("startBatchTransfer").addEventListener("click", async () => {
+  if (!await saveSettingsQuiet()) return;
+  const filePath = $("batchExcelPath").value;
+  if (!filePath) { appendLog("请先选择资源表格。"); return; }
+  const bitEnv = $("batchBitEnv").value.trim();
+  if (!bitEnv) { appendLog("请填写用于转存的比特环境名（该窗口需已登录百度网盘）。"); return; }
+  try {
+    appendLog(`批量转存启动：环境 ${bitEnv}，目标目录 ${$("batchDestDir").value || "/来自资源批量转存"}`);
+    const result = await rpc.invoke("task:batch-transfer", {
+      filePath,
+      bitEnv,
+      destDir: $("batchDestDir").value.trim() || "/来自资源批量转存",
+      limit: Number($("batchLimit").value) || 0,
+    });
+    appendLog(`批量转存结束：本轮成功 ${result.count} 条，失败 ${result.failed} 条，历史累计 ${result.totalOk} 条。上传专用表见运行数据目录/批量转存/。`);
+  } catch (error) {
+    appendLog(`批量转存失败：${error.message}`);
+  }
+});
+
 $("fetchPassed").addEventListener("click", async () => {
   try {
     if (!await saveSettingsQuiet()) return;
@@ -388,7 +413,7 @@ function appendLog(text) {
   if (atBottom) view.scrollTop = view.scrollHeight;
 }
 
-const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "fetchPassed", "runSelfTest"];
+const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "fetchPassed", "runSelfTest"];
 
 function setActionsEnabled(enabled) {
   for (const id of ACTION_BUTTON_IDS) {
