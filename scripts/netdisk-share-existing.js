@@ -19,11 +19,12 @@ const qaLib = require("./qa-template-lib");
 const root = path.resolve(__dirname, "..");
 const workDir = path.join(root, "运行缓存", "网盘已有资源QA");
 const stateFile = path.join(workDir, "state.jsonl");
-const outDir = process.argv[2] ? path.resolve(process.argv[2]) : path.join(workDir, "上传专用表");
+const _positional = process.argv.slice(2).find((a) => !a.startsWith("--"));
+const outDir = _positional ? path.resolve(_positional) : path.join(workDir, "上传专用表");
 
 // 跳过清单：测试文件/空目录/敏感命名
 const SKIP_NAMES = ["netdisk-share-test.txt", "老司机必看.zip", "上海第二工业大学杀杀杀完整版.zip",
-  "尽快保存 避免失效 保存即可观看", "云一朵知识问答", "redian百度转存_20260919_013706"];
+  "尽快保存 避免失效 保存即可观看", "云一朵知识问答", "redian百度转存_20260919_013706", "【抖音最新注册跳核对技术】无限注册.zip"];
 function randomPwd() {
   const chars = "abcdefghjkmnpqrstuvwxyz23456789";
   return Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
@@ -46,6 +47,9 @@ function saveState(entry) {
 }
 
 (async () => {
+  // --dir=/xxx：枚举指定网盘目录（默认根目录）
+  const dirArg = (() => { const m = process.argv.slice(2).find((a) => a.startsWith("--dir=")); return m ? m.slice(6) : "/"; })() || "/";
+  const dirArgNorm = dirArg.startsWith("/") ? dirArg : "/" + dirArg;
   // 1) 连接比特浏览器拿登录态
   const cdpFile = path.join(root, "运行缓存", "cdp.txt");
   const cdp = fs.readFileSync(cdpFile, "utf8").trim();
@@ -62,7 +66,7 @@ function saveState(entry) {
   })();
 
   // 2) 收集分享单元：根目录文件夹（整folder一个分享）+ 根目录合规文件
-  const rootItems = await list("/");
+  const rootItems = await list(dirArgNorm);
   const units = [];
   for (const f of rootItems) {
     if (SKIP_NAMES.includes(f.server_filename)) continue;
