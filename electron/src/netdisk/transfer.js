@@ -167,18 +167,33 @@ async function resolveShare(exe, { link }) {
   return { shareid, from, sekey: decodeURIComponent(randsk), bdstoken, files };
 }
 
-/** 转存到自己网盘。返回 { errno, toFsIds } */
+/**
+ * 转存到自己网盘（2026-09 抓包校准：body 用 fsidlist 而非 filelist；sekey/bdstoken 走 query）。
+ * 返回 { errno, toFsIds }
+ */
 async function transferFiles(exe, { shareid, from, sekey, files, destDir, bdstoken }) {
-  const body = new URLSearchParams({
-    path: destDir,
-    sekey,
-    filelist: JSON.stringify(files.map((f) => f.path)),
+  const qs = new URLSearchParams({
+    shareid: String(shareid),
+    from: String(from),
+    sekey: encodeURIComponent(sekey),
+    channel: "chunlei",
+    web: "1",
+    app_id: "250528",
+    clienttype: "0",
+    ...(bdstoken ? { bdstoken } : {}),
   });
-  return exe.call(`/share/transfer?shareid=${shareid}&from=${from}${bdstoken ? `&bdstoken=${bdstoken}` : ""}`, {
+  const body = new URLSearchParams({
+    fsidlist: JSON.stringify(files.map((f) => Number(f.fs_id))),
+    path: destDir,
+    type: "1",
+  });
+  return exe.call(`/share/transfer?${qs.toString()}`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "X-Requested-With": "XMLHttpRequest",
+    },
     body: body.toString(),
-    referer: `${PAN_API}/disk/main`,
   });
 }
 

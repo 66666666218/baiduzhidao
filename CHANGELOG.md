@@ -1,5 +1,6 @@
 # CHANGELOG
 
+- [2026-09-22 11:25] FIX: 转存协议按真UI抓包校准（fsidlist+type=1，sekey/bdstoken走query）——errno=2真因是账号超容(-171.5GB，百度误报"文件已存在")；管线新增容量预检与复检 (Files: electron/src/netdisk/transfer.js, scripts/pan-transfer-pipeline.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-22 06:30] FEAT: 转存确权管线一键全转（五阶段并发批处理+断点+风控自愈）+ transfer.js 执行器架构（浏览器上下文过风控/POST verify/shorturl list）+ qa-template-lib 共享库重构 (Files: scripts/pan-transfer-pipeline.js, scripts/qa-template-lib.js, scripts/mass-qa-template.js, electron/src/netdisk/transfer.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-22 05:10] FEAT: mass-qa-template.js 按 user 答题模板批量生成问答——4万资源→39402条合格（8分片），命名解析/标题轮换/规则化简介/质量门槛 (Files: scripts/mass-qa-template.js, 运行缓存/答题模板QA/(gitignore), docs/自审日志.md, CHANGELOG.md)
 - [2026-09-22 04:15] CHORE: 提交总量放开——开发版配置 accountDailyLimit=0/maxQuestionsPerEnv=500，实测设100传100（2/3账号验证）；打包版配置未动 (Files: 运行缓存/settings.json(gitignore), docs/自审日志.md, CHANGELOG.md)

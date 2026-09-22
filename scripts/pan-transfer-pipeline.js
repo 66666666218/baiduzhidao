@@ -231,6 +231,25 @@ function parseLinkCell(text) {
 
   // ─── 阶段② TRANSFER：转存到自己网盘 ───
   const toTransfer = tasks.filter((t) => t.phase === "collected");
+
+  // 容量预检：空间不足直接停（转存接口对容量不足误报 errno=2"文件已存在"）
+  const checkQuota = async () => {
+    const q = await exe.call(`/api/quota?checkfree=1&checkexpire=1&web=1`).catch(() => ({}));
+    if (q.errno !== 0 || !q.total) return null;
+    return { freeGB: (q.total - q.used) / 1024 ** 3, totalGB: q.total / 1024 ** 3 };
+  };
+  const quota0 = await checkQuota();
+  if (quota0) {
+    console.log(`网盘空间：总 ${quota0.totalGB.toFixed(0)}GB | 剩余 ${quota0.freeGB.toFixed(1)}GB`);
+    if (quota0.freeGB < 10) {
+      console.log("⛔ 剩余空间不足 10GB——转存必然失败（百度会误报“文件已存在”）。");
+      console.log("   处理：① 开通/续费 SVIP 扩容 ② 清理网盘空间 ③ 换大空间账号的浏览器窗口。");
+      console.log("   管线停止（已采集元数据保留，扩容后重跑自动续传）。");
+      await browser.close();
+      process.exit(3);
+    }
+  }
+
   console.log(`\n[阶段② 转存] 待处理 ${toTransfer.length} 条（并发 ${cc.transfer}）`);
   await pool(toTransfer, cc.transfer, async (t) => {
     await waitGate();
@@ -242,12 +261,21 @@ function parseLinkCell(text) {
         files: t.meta.files, destDir, bdstoken: t.meta.bdstoken,
       });
       if (r.errno === 12 || r.errno === -10) throw Object.assign(new Error("网盘容量不足"), { fatal: true });
+      if (r.errno === 2) throw Object.assign(new Error("errno=2：大概率容量不足（百度误报“文件已存在”）"), { capacityHint: true });
       if (r.errno !== 0) throw new Error(`转存 errno=${r.errno} ${r.show_msg || ""}`);
       t.phase = "transferred";
       t.destDir = destDir;
       updateState(t, { phase: "transferred", destDir });
       logLine(`  ②✓ [${stamp()}] ${t.rawName.slice(0, 26)} → ${destDir}`);
     } catch (e) {
+      if (e.capacityHint) {
+        const q = await checkQuota();
+        if (q && q.freeGB < 5) {
+          console.log(`⛔ 复检确认剩余空间仅 ${q.freeGB.toFixed(1)}GB——容量不足，管线停止。扩容后重跑自动续传。`);
+          fatalStop = true;
+          return;
+        }
+      }
       if (e.fatal) { fatalStop = true; t.phase = "collected"; logLine(`  ⛔ ${e.message} — 管线将在本阶段后停止`); return; }
       t.phase = "failed";
       updateState(t, { phase: "failed", error: (e.message || "").slice(0, 120) });
