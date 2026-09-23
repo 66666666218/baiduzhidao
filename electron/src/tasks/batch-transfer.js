@@ -19,7 +19,6 @@ const qaLib = require("../netdisk/qa-template-lib");
 
 
 // 打包后 __dirname 在 asar 内且安装目录不可写：数据一律放用户数据目录（%AppData%\zhidao-answer-studio）
-const dataDir = path.join(app.getPath("userData"), "批量转存");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function parseLinkCell(text) {
   const s = String(text || "");
@@ -35,6 +34,7 @@ function randomPwd() {
 
 async function runBatchTransferTask(ctx, deps) {
   const { app } = require("electron"); // 主进程内可用：数据放用户数据目录（打包后安装目录不可写）
+  const dataDir = path.join(app.getPath("userData"), "\u6279量转存");
   const { browserPool, log } = deps;
   const payload = ctx.livePayload ? ctx.livePayload() : ctx.payload;
   const filePath = String(payload.filePath || "").trim().replace(/^"|"$/g, "");

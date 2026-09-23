@@ -1,5 +1,6 @@
 # CHANGELOG
 
+- [2026-09-23 20:20] FIX: 打包版二次崩溃（dataDir 顶层引用 app）修复+交付包终验流程建立；桌面完整包就地更新为修复版并验证通过 (Files: electron/src/tasks/batch-transfer.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-23 19:40] FIX: 打包版启动崩溃——qa-template-lib 移入 asar 树内+数据目录改 userData+懒加载 electron；重打包并验证（403MB 新包已放桌面） (Files: electron/src/netdisk/qa-template-lib.js, electron/src/tasks/batch-transfer.js, scripts/*(引用更新), docs/自审日志.md, CHANGELOG.md)
 - [2026-09-23 19:40] FIX: 打包版启动崩溃——qa-template-lib 移入 asar 树内+数据目录改 userData+懒加载 electron；重打包并验证（403MB 新包已放桌面） (Files: electron/src/netdisk/qa-template-lib.js, electron/src/tasks/batch-transfer.js, scripts/*(引用更新), docs/自审日志.md, CHANGELOG.md)
 - [2026-09-23 01:40] FEAT: 多账号轮换——批量转存支持多窗口（凭证逐窗口提取/按窗口轮换/perEnv 粒度/errno=4 复用）；界面多行环境名输入 (Files: electron/src/tasks/batch-transfer.js, electron/renderer/index.html, electron/renderer/renderer.js, docs/自审日志.md, CHANGELOG.md)
