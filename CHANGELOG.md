@@ -1,5 +1,7 @@
 # CHANGELOG
 
+- [2026-09-23 19:40] FIX: 打包版启动崩溃——qa-template-lib 移入 asar 树内+数据目录改 userData+懒加载 electron；重打包并验证（403MB 新包已放桌面） (Files: electron/src/netdisk/qa-template-lib.js, electron/src/tasks/batch-transfer.js, scripts/*(引用更新), docs/自审日志.md, CHANGELOG.md)
+- [2026-09-23 19:40] FIX: 打包版启动崩溃——qa-template-lib 移入 asar 树内+数据目录改 userData+懒加载 electron；重打包并验证（403MB 新包已放桌面） (Files: electron/src/netdisk/qa-template-lib.js, electron/src/tasks/batch-transfer.js, scripts/*(引用更新), docs/自审日志.md, CHANGELOG.md)
 - [2026-09-23 01:40] FEAT: 多账号轮换——批量转存支持多窗口（凭证逐窗口提取/按窗口轮换/perEnv 粒度/errno=4 复用）；界面多行环境名输入 (Files: electron/src/tasks/batch-transfer.js, electron/renderer/index.html, electron/renderer/renderer.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-23 01:20] REFACTOR: 软件内置批量转存升级为纯协议引擎（protocol.js 共享模块；比特环境仅提取凭证一次）；单测+冒烟+真实任务级验证通过 (Files: electron/src/netdisk/protocol.js, electron/src/tasks/batch-transfer.js, electron/renderer/index.html, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-23 12:30] FEAT: pan-transfer-batch.js 纯协议批量转存管线（38条/分钟实测，全链路贯通：协议转存→确权分享→模板问答→平台上传38条成功） (Files: scripts/pan-transfer-batch.js, docs/自审日志.md, CHANGELOG.md)

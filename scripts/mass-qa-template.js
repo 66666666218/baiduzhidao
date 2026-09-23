@@ -37,7 +37,7 @@ if (!srcFile || !fs.existsSync(srcFile)) {
 }
 
 // ---------- 生成逻辑（共享库 qa-template-lib） ----------
-const qaLib = require("./qa-template-lib");
+const qaLib = require("../electron/src/netdisk/qa-template-lib");
 const parseName = qaLib.parseName;
 const reject = qaLib.reject;
 const buildTitle = qaLib.buildTitle;

@@ -36,7 +36,7 @@ const XLSX = require("xlsx");
 const { chromium } = require("playwright-core");
 const transfer = require("../electron/src/netdisk/transfer");
 const { createShare } = require("../electron/src/netdisk/share");
-const qaLib = require("./qa-template-lib");
+const qaLib = require("../electron/src/netdisk/qa-template-lib");
 
 const root = path.resolve(__dirname, "..");
 const cacheDir = path.join(root, "运行缓存", "transfer-pipeline");

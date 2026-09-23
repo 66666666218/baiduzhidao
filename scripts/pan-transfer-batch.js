@@ -25,7 +25,7 @@ const fs = require("fs");
 const XLSX = require("xlsx");
 const { chromium } = require("playwright-core");
 const { createShare } = require("../electron/src/netdisk/share");
-const qaLib = require("./qa-template-lib");
+const qaLib = require("../electron/src/netdisk/qa-template-lib");
 
 const root = path.resolve(__dirname, "..");
 const PAN = "https://pan.baidu.com";
