@@ -65,10 +65,18 @@ function parseLinkCell(text) {
 }
 
 (async () => {
-  const wb = XLSX.readFile(inputFile);
-  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: false });
+  // 输入两种形态：xlsx 表格（自动识别列） 或 txt（一行一个链接，直接批量转存）
+  let rows;
+  if (/\.txt$/i.test(inputFile)) {
+    const lines = fs.readFileSync(inputFile, "utf8").split(/\r?\n/).map((x) => x.trim()).filter((x) => x && !x.startsWith("#"));
+    rows = lines.map((line, i) => ({ __name: `链接${i + 1}`, __link: line }));
+    console.log(`链接清单 ${rows.length} 行（txt 模式：一行一个链接，转存后用真实文件名生成问答）`);
+  } else {
+    const wb = XLSX.readFile(inputFile);
+    rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: false });
+  }
   const keys = Object.keys(rows[0]);
-  const nameKey = keys.find((k) => /文件名|名称|标题|资源/.test(k)) || keys[0];
+  const nameKey = keys.find((k) => /文件名|名称|标题|资源/.test(k)) || keys.find((k) => !/链接|网址|url/i.test(k) && !/pan\.baidu\.com/.test(String(rows[0][k] || ""))) || keys[0];
   const linkKey = keys.find((k) => /链接|网址|url/i.test(k)) || keys.find((k) => /pan\.baidu\.com/.test(String(rows[0][k] || ""))) || keys[1];
   const pwdKey = keys.find((k) => /提取码|密码|访问码/.test(k)) || "";
   console.log(`资源表 ${rows.length} 行 | 名称列="${nameKey}" 链接列="${linkKey}"`);
@@ -161,8 +169,11 @@ function parseLinkCell(text) {
       if (!share.link) throw new Error("创建分享失败");
       const ownLink = `${share.link}?pwd=${share.password}`;
 
-      // ⑦ 按模板生成问答行
-      const meta = qaLib.parseName(rawName);
+      // ⑦ 按模板生成问答行（无名时用落盘真实文件名）
+      const displayName = rawName && rawName.length >= 4 && !/^链接\d+$/.test(rawName)
+        ? rawName
+        : decodeURIComponent((toPaths[0] || "").split("/").pop() || rawName);
+      const meta = qaLib.parseName(displayName);
       const qaRow = {
         qid: "",
         问题标题: qaLib.buildTitle(meta, i),
