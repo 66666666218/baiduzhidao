@@ -222,13 +222,14 @@ $("startBatchTransfer").addEventListener("click", async () => {
   if (!await saveSettingsQuiet()) return;
   const filePath = $("batchExcelPath").value;
   if (!filePath) { appendLog("请先选择资源表格。"); return; }
-  const bitEnv = $("batchBitEnv").value.trim();
-  if (!bitEnv) { appendLog("请填写用于转存的比特环境名（该窗口需已登录百度网盘）。"); return; }
+  const bitEnvs = $("batchBitEnvs").value.split(/\r?\n|[,，]/).map((x) => x.trim()).filter(Boolean);
+  if (!bitEnvs.length) { appendLog("请填写至少一个比特环境名（多账号每行一个）。"); return; }
   try {
     appendLog(`批量转存启动：环境 ${bitEnv}，目标目录 ${$("batchDestDir").value || "/来自资源批量转存"}`);
     const result = await rpc.invoke("task:batch-transfer", {
       filePath,
-      bitEnv,
+      bitEnvs,
+      perEnv: Number($("batchPerEnv").value) || 50,
       destDir: $("batchDestDir").value.trim() || "/来自资源批量转存",
       limit: Number($("batchLimit").value) || 0,
     });

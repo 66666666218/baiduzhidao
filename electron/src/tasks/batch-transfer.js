@@ -36,7 +36,10 @@ async function runBatchTransferTask(ctx, deps) {
   const payload = ctx.livePayload ? ctx.livePayload() : ctx.payload;
   const filePath = String(payload.filePath || "").trim().replace(/^"|"$/g, "");
   if (!filePath || !fs.existsSync(filePath)) throw new Error("请先选择资源表格（xlsx 或 txt，一行一个链接）");
-  const bitEnv = String(payload.bitEnv || "").trim();
+  // 多账号：bitEnvs 数组（逗号分隔或数组），按窗口轮换；单账号兼容 bitEnv
+  const envList = (Array.isArray(payload.bitEnvs) ? payload.bitEnvs : String(payload.bitEnvs || payload.bitEnv || "").replace(/\，/g, ",").replace(/\n/g, ",").split(","))
+  if (!envList.length) throw new Error("请填写至少一个比特环境名（多账号每行一个）");
+  const perEnv = Math.max(1, Number(payload.perEnv) || 50); // 每窗口连续处理条数（轮换粒度）
   const destRoot = String(payload.destDir || "/来自资源批量转存").trim() || "/来自资源批量转存";
   const limit = Math.max(0, Number(payload.limit) || 0);
   const cc = Math.max(1, Number(payload.cc) || 4);
@@ -62,17 +65,25 @@ async function runBatchTransferTask(ctx, deps) {
   const pwdKey = keys.find((k) => /提取码|密码|访问码/.test(k)) || "";
   log(`资源表 ${rows.length} 行 | 名称列="${nameKey}" 链接列="${linkKey}"`);
 
-  // 从比特环境提取一次网盘凭证（之后全程纯协议，窗口无操作）
-  if (!bitEnv) throw new Error("请填写用于提取凭证的比特环境名（该窗口需已登录百度网盘）");
-  log(`提取网盘凭证：${bitEnv}`);
-  const handle = await browserPool.acquire(bitEnv);
-  const browser = await chromium.connectOverCDP(handle.cdpUrl);
-  const cookies = await browser.contexts()[0].cookies("https://pan.baidu.com");
-  const bduss = (cookies.find((c) => c.name === "BDUSS") || {}).value || "";
-  const stoken = (cookies.find((c) => c.name === "STOKEN") || {}).value || "";
-  await browserPool.release(bitEnv, { close: false });
-  if (!bduss) throw new Error("该比特环境窗口没有 pan.baidu.com 登录态（BDUSS）");
-  log(`凭证就绪：BDUSS(${bduss.length}字符) —— 全程纯协议批量`);
+  // 从各比特窗口提取一次网盘凭证（之后全程纯协议，窗口无操作）
+  const creds = []; // {env, bduss, stoken}
+  for (const env of envList) {
+    log(`提取网盘凭证：${env}`);
+    const h = await browserPool.acquire(env);
+    const b = await chromium.connectOverCDP(h.cdpUrl);
+    const cs = await b.contexts()[0].cookies("https://pan.baidu.com");
+    const bd = (cs.find((c) => c.name === "BDUSS") || {}).value || "";
+    const st = (cs.find((c) => c.name === "STOKEN") || {}).value || "";
+    await browserPool.release(env, { close: false });
+    await b.close().catch(() => {});
+    if (!bd) { log(`⚠️ 窗口 ${env} 无网盘登录态，跳过该账号`); continue; }
+    creds.push({ env, bduss: bd, stoken: st });
+    log(`✅ ${env} 凭证就绪 BDUSS(${bd.length}字符)`);
+  }
+  if (!creds.length) throw new Error("没有任何窗口具备 pan.baidu.com 登录态");
+  const bduss = creds[0].bduss;   // 兼容旧引用（分享创建用首个窗口凭证）
+  const stoken = creds[0].stoken;
+  log(`多账号就绪：${creds.length} 个窗口 —— 全程纯协议批量轮换`);
 
   // 断点状态
   const baseName = path.basename(filePath).replace(/\.(xlsx|txt)$/i, "").slice(0, 40);
@@ -95,15 +106,20 @@ async function runBatchTransferTask(ctx, deps) {
   let done = 0, failed = 0, consecutiveFails = 0, fatalStop = false;
   const qaRows = [];
 
-  // 每条完整链（独立 Jar 会话，并发安全）
+  // 每条完整链（独立 Jar 会话，并发安全）；窗口按轮换粒度切换
+  let envCursor = 0;
+  function pickEnv() { return creds[envCursor % creds.length]; }
   async function worker(workerId) {
     let cursor = 0;
-    // 简单游标分配（闭包共享）
+    let myCount = 0;
     const next = () => { const i = startIdx + (cursor++); return i < rows.length ? i : null; };
     while (!fatalStop && !ctx.shouldStop()) {
       if (limit > 0 && done >= limit) return;
+      if (myCount > 0 && myCount % perEnv === 0) { envCursor += 1; myCount = 0; } // 轮换下一窗口
+      const cred = pickEnv();
       const i = next();
       if (i === null) return;
+      myCount += 1;
       await ctx.pausePoint?.("批量转存·条间检查点");
       const rawName = String(rows[i][nameKey] || "").trim();
       const { link, pwd: cellPwd } = parseLinkCell(String(rows[i][linkKey] || "") + (pwdKey ? ` 提取码:${rows[i][pwdKey]}` : ""));
@@ -116,12 +132,12 @@ async function runBatchTransferTask(ctx, deps) {
 
       const meta = qaLib.parseName(rawName);
       const title = qaLib.buildTitle(meta, i);
-      const itemBase = { title, name: rawName.slice(0, 30), bitEnv };
+      const itemBase = { title, name: rawName.slice(0, 30), bitEnv: cred.env };
 
       try {
         const idx = String(i + 1).padStart(5, "0");
-        const destDir = `${destRoot}/${baseName}/${idx}`;
-        const jar = new Jar(bduss, stoken);
+        const destDir = `${destRoot}/${cred.env}/${baseName}/${idx}`;
+        const jar = new Jar(cred.bduss, cred.stoken);
         const { toPaths } = await processOne(jar, {
           link: srcLink, pwd: cellPwd, destDir,
         });
@@ -129,7 +145,7 @@ async function runBatchTransferTask(ctx, deps) {
         let ownLink = "", ownPwd = "";
         if (makeShare) {
           const ownPwdR = randomPwd();
-          const share = await createShare({ bduss, stoken, paths: toPaths, password: ownPwdR });
+          const share = await createShare({ bduss: cred.bduss, stoken: cred.stoken, paths: toPaths, password: ownPwdR });
           if (!share.link) throw new Error("创建分享失败");
           ownLink = `${share.link}?pwd=${share.password}`;
           ownPwd = share.password;

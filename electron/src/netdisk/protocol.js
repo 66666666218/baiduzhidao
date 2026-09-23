@@ -115,6 +115,15 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   const tBody = await tResp.json().catch(() => ({}));
   const infoErr = tBody.info && tBody.info[0] && Number(tBody.info[0].errno);
   if (tBody.errno === 12 || tBody.errno === -10) throw Object.assign(new Error("网盘容量不足"), { fatal: true });
+
+  // errno=4：文件此前已转存过 → 视为成功，复用已有路径
+  if (Number(tBody.errno) === 4) {
+    const dupPaths = ((tBody.duplicated && tBody.duplicated.list) || []).map((x) => x.path).filter(Boolean);
+    const alt = (tBody.info || []).map((x) => x.path).filter(Boolean);
+    const to = dupPaths.length ? dupPaths : alt;
+    if (!to.length) throw new Error("重复转存但未取得已有文件路径");
+    return { toPaths: to, dup: true };
+  }
   if (Number(tBody.errno) !== 0 && !(infoErr === 0)) throw new Error(`转存 errno=${tBody.errno} ${tBody.show_msg || ""}`);
 
   // 5) 权威落盘路径
