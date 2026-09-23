@@ -1,5 +1,6 @@
 # CHANGELOG
 
+- [2026-09-23 12:30] FEAT: pan-transfer-batch.js 纯协议批量转存管线（38条/分钟实测，全链路贯通：协议转存→确权分享→模板问答→平台上传38条成功） (Files: scripts/pan-transfer-batch.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-22 16:45] FIX: transfer.js 按 gitee 参考重写协议层（mset解析/fsidlist转存/errno=4复用/ensureDir/logid参数）——实测协议转存落盘成功（X战警4.6GB）；判定当日接口配额耗尽待明日重置 (Files: electron/src/netdisk/transfer.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-22 24:00] OPS: 新表首批上传成功——自有分享表8条+直接链接表5条（今日额度用尽）；余39397条待额度重置分4天上传 (Files: docs/自审日志.md, CHANGELOG.md)
 - [2026-09-22 15:00] FEAT: 批量转存功能内置软件——新任务 batch-transfer（真UI流程+确权分享+断点+熔断）+ 软件新视图「🔄 批量转存」+ IPC/preload 接线；冒烟与146单测通过 (Files: electron/src/tasks/batch-transfer.js, electron/app-context.js, electron/preload.js, electron/renderer/index.html, electron/renderer/renderer.js, docs/自审日志.md, CHANGELOG.md)
