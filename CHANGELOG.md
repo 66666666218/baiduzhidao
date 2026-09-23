@@ -1,5 +1,6 @@
 # CHANGELOG
 
+- [2026-09-23 21:00] FEAT: 软件内置批量上传任务（实测10行上传成功）——完整闭环界面化（转存→出表→上传）；修自检崩溃（mock-site入包） (Files: electron/src/tasks/upload-batch.js, electron/app-context.js, electron/preload.js, electron/renderer/*, package.json, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-23 20:20] FIX: 打包版二次崩溃（dataDir 顶层引用 app）修复+交付包终验流程建立；桌面完整包就地更新为修复版并验证通过 (Files: electron/src/tasks/batch-transfer.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-23 19:40] FIX: 打包版启动崩溃——qa-template-lib 移入 asar 树内+数据目录改 userData+懒加载 electron；重打包并验证（403MB 新包已放桌面） (Files: electron/src/netdisk/qa-template-lib.js, electron/src/tasks/batch-transfer.js, scripts/*(引用更新), docs/自审日志.md, CHANGELOG.md)
 - [2026-09-23 19:40] FIX: 打包版启动崩溃——qa-template-lib 移入 asar 树内+数据目录改 userData+懒加载 electron；重打包并验证（403MB 新包已放桌面） (Files: electron/src/netdisk/qa-template-lib.js, electron/src/tasks/batch-transfer.js, scripts/*(引用更新), docs/自审日志.md, CHANGELOG.md)

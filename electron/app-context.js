@@ -15,6 +15,7 @@ const { runGenerateTask } = require("./src/tasks/generate");
 const { runSubmitTask } = require("./src/tasks/submit");
 const { runPassedCountTask } = require("./src/tasks/passed-count");
 const { runBatchTransferTask } = require("./src/tasks/batch-transfer");
+const { runBatchUploadTask } = require("./src/tasks/upload-batch");
 const { randomPickQuestions } = require("./src/tasks/random-pick");
 const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
@@ -256,6 +257,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   // 当天通过数
   ipcMain.handle("task:passed-count", (_event, payload) => startTask("passed-count", payload, (ctx) => runPassedCountTask(ctx, deps())));
   ipcMain.handle("task:batch-transfer", (_event, payload) => startTask("batch-transfer", payload, (ctx) => runBatchTransferTask(ctx, deps())));
+  ipcMain.handle("task:batch-upload", (_event, payload) => startTask("batch-upload", payload, (ctx) => runBatchUploadTask(ctx, deps())));
 
   // 记录管理
   ipcMain.handle("answers:list", (_event, query) => {

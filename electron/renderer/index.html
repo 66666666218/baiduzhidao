@@ -22,6 +22,7 @@
         <button class="nav-item" data-view="results">📋 复制答案</button>
         <button class="nav-item" data-view="submit">🚀 自动提交</button>
         <button class="nav-item" data-view="batch-transfer">🔄 批量转存</button>
+        <button class="nav-item" data-view="batch-upload">📤 批量上传</button>
         <button class="nav-item" data-view="links">🔗 常用网址</button>
         <button class="nav-item" data-view="tutorial">📖 使用教程</button>
         <button class="nav-item" data-view="logs">📜 运行日志</button>
@@ -277,6 +278,28 @@
             <button class="btn primary" id="startBatchTransfer">开始批量转存</button>
           </div>
           <p class="hint">完成后上传专用表输出到「运行数据目录/批量转存/」内，可直接用于自动提交上传。</p>
+        </div>
+      </section>
+
+      <!-- 批量上传 -->
+      <section class="view" data-view="batch-upload">
+        <h2>批量上传（星链知道批量发布）</h2>
+        <div class="card">
+          <p class="hint">把「批量转存」生成的上传专用表分批上传到百度知道答主工作台。自动读取剩余额度、随机排序防查重，失败即停可重跑续传。</p>
+          <div class="field"><label>上传专用表（xlsx，含 问题标题 + 回答内容）</label>
+            <div class="pair">
+              <input type="text" id="uploadExcelPath" readonly placeholder="选择上传专用表" />
+              <button class="btn soft" id="pickUploadExcel">选择</button>
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field"><label>比特环境名（该账号需有批量发布权益）</label><input type="text" id="uploadBitEnv" placeholder="账号1" /></div>
+            <div class="field"><label>每批行数</label><input type="number" id="uploadBatchRows" min="1" value="500" /></div>
+            <div class="field"><label>批数上限</label><input type="number" id="uploadMaxBatches" min="1" value="999" /></div>
+          </div>
+          <div class="card-actions">
+            <button class="btn primary" id="startBatchUpload">开始批量上传</button>
+          </div>
         </div>
       </section>
 

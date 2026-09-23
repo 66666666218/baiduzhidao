@@ -239,6 +239,30 @@ $("startBatchTransfer").addEventListener("click", async () => {
   }
 });
 
+$("pickUploadExcel").addEventListener("click", async () => {
+  const result = await call("选择上传专用表", "path:pick-open-table", { title: "选择上传专用表" });
+  if (result && !result.canceled) $("uploadExcelPath").value = result.filePath;
+});
+
+$("startBatchUpload").addEventListener("click", async () => {
+  if (!await saveSettingsQuiet()) return;
+  const filePath = $("uploadExcelPath").value;
+  if (!filePath) { appendLog("请先选择上传专用表。"); return; }
+  const bitEnv = $("uploadBitEnv").value.trim();
+  if (!bitEnv) { appendLog("请填写用于上传的比特环境名。"); return; }
+  try {
+    const result = await rpc.invoke("task:batch-upload", {
+      filePath,
+      bitEnv,
+      batchRows: Number($("uploadBatchRows").value) || 500,
+      maxBatches: Number($("uploadMaxBatches").value) || 999,
+    });
+    appendLog(`批量上传结束：本次上传 ${result.uploaded} 行，共 ${result.batches} 批。`);
+  } catch (error) {
+    appendLog(`批量上传失败：${error.message}`);
+  }
+});
+
 $("fetchPassed").addEventListener("click", async () => {
   try {
     if (!await saveSettingsQuiet()) return;
@@ -414,7 +438,7 @@ function appendLog(text) {
   if (atBottom) view.scrollTop = view.scrollHeight;
 }
 
-const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "fetchPassed", "runSelfTest"];
+const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "startBatchUpload", "fetchPassed", "runSelfTest"];
 
 function setActionsEnabled(enabled) {
   for (const id of ACTION_BUTTON_IDS) {
