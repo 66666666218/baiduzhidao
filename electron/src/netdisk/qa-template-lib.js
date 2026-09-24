@@ -36,6 +36,7 @@ const REGIONS = ["中国大陆", "内地", "国产", "香港", "台湾", "美国
 /** 判断剧集类型：先剔除"剧情"这个类型词再找"剧"，避免电影被误判 */
 function detectKind(name, genres) {
   const text = (name + genres.join("")).replace(/剧情/g, "");
+  if (/\d+\s*[-~]\s*\d+\s*完整版|1-\d+完整版|全\d+集|\d+集完整/.test(name)) return "剧集";
   if (/动漫|动画|番/.test(text)) return "动漫";
   if (/纪录/.test(text)) return "纪录片";
   if (/日剧|韩剧|美剧|泰剧|港剧|国产剧|台剧|电视剧|连续剧|网剧/.test(text)) return "剧集";
@@ -79,10 +80,13 @@ function parseName(raw) {
 
   title = title
     .replace(/\.(rar|zip|7z|mp4|mkv|avi|ts|txt|pdf|jpg)$/i, "")
+    .replace(/[（(]\s*[）)]/g, "")          // 空括号（平台审核雷区）
+    .replace(/[（(]\s*[)）]/g, "")
     .replace(/\[|\]/g, "")
     .replace(/\b(1080p|720p|2160p|4K|HDR|WEB-?DL|BluRay|HDTV|x26[45])\b/gi, "")
     .replace(/(高清|官方中字|中日字幕|中英双字|中字|熟肉|国语中字|更新至.*?集|全\d+集|全\d+\+\d*集?)/g, "")
     .replace(/[.·]{2,}/g, ".")
+    .replace(/[（(]\s*[）)]/g, "")   // 清洗技术词后产生的空括号（次要清理，必须放最后）
     .replace(/\s{2,}/g, " ")
     .trim();
   if (title.length > 40) title = title.slice(0, 40).replace(/[\s.·]+$/, "");

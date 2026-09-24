@@ -34,8 +34,26 @@ async function runBatchUploadTask(ctx, deps) {
   if (!allRows.length) throw new Error("表格为空");
   const keys = Object.keys(allRows[0]);
   const kAnswer = keys.find((k) => k.includes("回答内容")) || keys[keys.length - 1];
-  const filled = allRows.filter((r) => String(r[kAnswer] || "").trim());
+  let filled = allRows.filter((r) => String(r[kAnswer] || "").trim());
   if (!filled.length) throw new Error("表格里没有已填写回答内容的行");
+
+  // 已提交链接台账：跳过平台已收过的链接（防 URL重复提交）
+  const ledgerFile = path.join(app.getPath("userData"), "已提交链接台账.jsonl");
+  const submitted = new Set();
+  try {
+    for (const line of fs.readFileSync(ledgerFile, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try { submitted.add(JSON.parse(line).link); } catch { /* 跳过 */ }
+    }
+  } catch { /* 首次 */ }
+  const linkOf = (row) => (String(row[kAnswer] || "").match(/https:\/\/pan\.baidu\.com\/s\/[\w-]+(?:\?pwd=[a-z0-9]{4})?/i) || [])[0] || "";
+  const before = filled.length;
+  filled = filled.filter((r) => {
+    const link = linkOf(r);
+    return !link || !submitted.has(link);
+  });
+  if (before !== filled.length) log(`去重：跳过已提交过的 ${before - filled.length} 行（台账）`);
+  if (!filled.length) { log("本表全部链接均已提交过，无需上传。"); return { uploaded: 0, batches: 0, quota: null }; }
   // 随机排序（服务端按文件内容哈希查重）
   for (let i = filled.length - 1; i > 0; i -= 1) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -115,6 +133,11 @@ async function runBatchUploadTask(ctx, deps) {
     ctx.emitItem({ title: `批次 ${b + 1}/${totalBatches}`, status: ok ? `上传成功 ${chunk.length} 行` : `上传失败：${msg}` });
     log(`批次 ${b + 1}/${totalBatches}: ${chunk.length} 行 → ${ok ? "成功" : `失败(${msg})`}`);
     if (!ok) { log("本批失败，停止（可稍后重跑续传）。"); break; }
+    // 成功后记台账（保守：记录本批所有链接，避免重复提交被拒）
+    for (const r of chunk) {
+      const link = linkOf(r);
+      if (link) fs.appendFileSync(ledgerFile, JSON.stringify({ link, at: new Date().toISOString() }) + "\n");
+    }
     uploaded += chunk.length;
     ctx.report({ done: b + 1, total: totalBatches, status: "running" });
     if (b < totalBatches - 1) await page.waitForTimeout(30000);
