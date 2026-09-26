@@ -41,7 +41,8 @@ for (const a of process.argv.slice(2)) {
 if (!args.input) { console.error("用法: node scripts/pan-transfer-batch.js --input=<txt|xlsx> [--limit=50] [--cc=4]"); process.exit(1); }
 const inputFile = path.resolve(args.input);
 const startIdx = Math.max(0, Number(args.start) || 0);
-const limit = args.limit !== undefined ? Math.max(0, Number(args.limit)) : 50;
+const _limN = Number(args.limit);
+const limit = args.limit !== undefined && Number.isFinite(_limN) ? Math.max(0, _limN) : 50;
 const CC = Math.max(1, Number(args.cc) || 4);
 const paceMs = Math.max(300, Number(args["pace-ms"]) || 1200);
 const destRoot = args.dest || "/来自资源批量转存";
@@ -245,7 +246,18 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   }
   console.log(`本轮任务 ${tasks.length} 条（脏/黑名单剔除 ${junk}）`);
 
+  // 规范化名称去重键（历史完成 + 本轮，跨写法/跨链接去重）
+  const seenKeys = new Set();
+  for (const st of state.values()) {
+    if (st.status === "done" && st.name) {
+      const k = qaLib.normalizeName(st.name);
+      if (k && k.length >= 2) seenKeys.add(k);
+    }
+  }
+  console.log(`去重键库：${seenKeys.size} 个`);
+
   // 3) 并发池执行
+  const pendingKeys = new Set();  // 在途预留（并发去重）
   let done = 0, failed = 0, consecutiveFails = 0, fatalStop = false;
   const startedAt = Date.now();
   const quota = async () => {
@@ -274,6 +286,14 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
       try {
         const idx = String(t.idx + 1).padStart(5, "0");
         const destDir = `${destRoot}/${baseName}/${idx}`;
+        // 预检去重：规范化名已存在或已被其他 worker 预留 → 跳过（并发安全）
+        const preKey = qaLib.normalizeName(t.rawName || "");
+        if (preKey && preKey.length >= 2 && (seenKeys.has(preKey) || pendingKeys.has(preKey))) {
+          console.log(`  ⏭ 跳过重复（${preKey}）：${(t.rawName || "").slice(0, 24)}`);
+          await sleep(paceMs);
+          continue;
+        }
+        if (preKey && preKey.length >= 2) pendingKeys.add(preKey);
         const { toPaths } = await processOne(jar, {
           link: t.link, pwd: t.pwd, rawName: t.rawName, idx: t.idx, destDir, bduss, stoken, makeShare: true,
         });
@@ -303,6 +323,9 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
         const okEntry = { srcLink: t.srcLink, name: displayName, status: "done", phase: "done", toPaths, ownLink, ownPwd: share.password, qaRow, at: new Date().toISOString() };
         state.set(t.srcLink, okEntry);
         saveState(okEntry);
+        const doneKey = qaLib.normalizeName(displayName);
+        if (doneKey && doneKey.length >= 2) { pendingKeys.delete(doneKey); seenKeys.add(doneKey); }
+        if (preKey) pendingKeys.delete(preKey);
         done += 1;
         consecutiveFails = 0;
         console.log(`  [W${workerId}][${now()}] ✅ ${displayName.slice(0, 26)} → ${ownLink}`);
@@ -310,6 +333,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
         failed += 1;
         consecutiveFails += 1;
         t.attempts = (t.attempts || 0) + 1;
+        if (typeof preKey !== "undefined" && preKey) pendingKeys.delete(preKey);
         saveState({ ...entryBase, status: "failed", attempts: t.attempts, error: (e.message || "").slice(0, 120), at: new Date().toISOString() });
         console.log(`  [W${workerId}][${now()}] ✗ ${t.rawName.slice(0, 26)} → ${e.message.slice(0, 70)}`);
         if (e.fatal) { console.log("⛔ 容量不足，管线停止（已完成部分完好）。"); fatalStop = true; break; }
@@ -324,6 +348,12 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   // 4) 导出上传专用表
   const allDone = [...state.values()].filter((s) => s.status === "done" && s.qaRow).map((s) => s.qaRow);
   fs.mkdirSync(outDir, { recursive: true });
+  // 清理上一轮分片（文件名含条数，重跑会残留旧片导致重复上传）
+  try {
+    for (const f of fs.readdirSync(outDir)) {
+      if (/^上传专用表-第\d+批-\d+条\.xlsx$/.test(f)) fs.rmSync(path.join(outDir, f), { force: true });
+    }
+  } catch { /* 忽略 */ }
   if (allDone.length) {
     const chunkRows = 5000;
     for (let c = 0; c < Math.ceil(allDone.length / chunkRows); c += 1) {

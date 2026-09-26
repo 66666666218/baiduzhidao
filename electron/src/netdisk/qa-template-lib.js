@@ -35,7 +35,7 @@ const REGIONS = ["中国大陆", "内地", "国产", "香港", "台湾", "美国
 /** 判断剧集类型：先剔除"剧情"再找"剧"；集数特征（1-47完整版/全X集）判为剧集 */
 function detectKind(name, genres) {
   const text = (name + genres.join("")).replace(/剧情/g, "");
-  if (/\d+\s*[-~]\s*\d+\s*完整版|1-\d+完整版|全\d+集|\d+集完整/.test(name)) return "剧集";
+  if (/\d+\s*[-~]\s*\d+\s*完整版|1-\d+完整版|全\d+集|\d+集完整|第\s*\d+\s*集|更新至\s*\d+\s*集/.test(name)) return "剧集";
   if (/动漫|动画|番/.test(text)) return "动漫";
   if (/纪录/.test(text)) return "纪录片";
   if (/日剧|韩剧|美剧|泰剧|港剧|国产剧|台剧|电视剧|连续剧|网剧/.test(text)) return "剧集";
@@ -55,7 +55,19 @@ function parseName(raw) {
   const genres = [];
   let country = "";
   if (segs.length >= 2) {
-    title = segs.find((s) => !/^(19\d{2}|20\d{2})$/.test(s.trim())) || segs[0];
+    // 优先：括号外剩余文本（真实片名常写在括号外）
+    const outside = name.replace(/\[[^\]]*\]/g, " ").replace(/\s{2,}/g, " ").trim();
+    const outsideCjk = (outside.match(/[一-龥]/g) || []).length;
+    if (outsideCjk >= 2) {
+      title = outside;
+    } else {
+      // 次选：括号内排除 年份/类型/国家 的段
+      const usable = segs.filter((x) => !/^(19\d{2}|20\d{2})$/.test(x.trim())
+        && !KNOWN_GENRES.some((g) => x.includes(g))
+        && !REGIONS.some((r) => x.includes(r))
+        && !/剧$|季$/.test(x.trim()));
+      title = usable[0] || segs.find((x) => !/^(19\d{2}|20\d{2})$/.test(x.trim())) || segs[0];
+    }
     for (const s of segs.slice(1)) {
       if (/^(19\d{2}|20\d{2})$/.test(s.trim())) continue;
       const dramaRegion = { "日剧": "日本", "韩剧": "韩国", "美剧": "美国", "泰剧": "泰国", "港剧": "香港", "台剧": "台湾" };
@@ -80,8 +92,11 @@ function parseName(raw) {
     .replace(/\[|\]/g, "")
     .replace(/\b(1080p|720p|2160p|4K|HDR|WEB-?DL|BluRay|HDTV|x26[45])\b/gi, "")
     .replace(/(高清|官方中字|中日字幕|中英双字|中字|熟肉|国语中字|更新至.*?集|全\d+集|全\d+\+\d*集?)/g, "")
-    .replace(/[（(]\s*[）)]/g, "")        // 清洗技术词后产生的空括号（必须放最后）
+    .replace(/[（(]\s*[）)]/g, "")        // 清洗技术词后产生的空括号
+    .replace(/【|】/g, "")                  // 装饰括号清除
+    .replace(/^(电影|电视剧|动漫|纪录片|影视)(?![一-龥])|^(电影|电视剧|动漫|纪录片|影视)(?=[一-龥])/, "")   // 首部类型词（【电影】前缀类，兼容无分隔）
     .replace(/[.·]{2,}/g, ".")
+    .replace(/\s*[（(]?\s*(19\d{2}|20\d{2})\s*[）)]?\s*$/, "")  // 末尾裸年份（防止标题拼年份出现"20212021"）
     .replace(/\s{2,}/g, " ")
     .trim();
   if (title.length > 40) title = title.slice(0, 40).replace(/[\s.·]+$/, "");
@@ -104,7 +119,7 @@ function isGarbledName(name) {
 }
 
 // ---------- 规范化去重键 ----------
-const TECH_WORDS = /(1080p|720p|2160p|4k|hdr|web[-_.]?dl|blu-?ray|bd|hdtv|hd|dvdrip|remux|x26[45]|hevc|aac|ac3|dts|中字|中英双字|国语|粤语|双语|无删减|未删减|高清|超清|蓝光|完整版|全集|全\d+集|\d+集)/gi;
+const TECH_WORDS = /(1080p|720p|2160p|4k|hdr|web[-_.]?dl|blu-?ray|bd|hdtv|hd|dvdrip|remux|x26[45]|hevc|aac|ac3|dts|中字|中英双字|国语|粤语|双语|无删减|未删减|高清|超清|蓝光|完整版|全集)/gi;
 const NOISE_WORDS = ["电影", "电视剧", "动漫", "纪录片", "资源", "下载", "在线观看", "百度云", "网盘"]
   .concat(GENRE_DESC ? Object.keys(GENRE_DESC) : [])
   .concat(REGIONS);
@@ -115,10 +130,15 @@ function normalizeName(name) {
   const year = (n.match(/(19\d{2}|20\d{2})/) || [])[1] || "";
   n = n.replace(/[（(][^）)]*[）)]/g, " ");   // 圆括号内容=站点/版本，去掉
   n = n.replace(/[[\]]/g, " ");              // 方括号只去符号，保留内容（中文名常在括号里）
-  const cjk = (n.match(/[一-龥]/g) || []).join("");
-  const core = cjk.replace(NOISE_RE, "");
+  // 核心字符：中文 + 韩文 + 假名（三者互相独立，避免韩/日名坍缩）
+  let core = (n.match(/[一-龥가-힯぀-ヿ0-9]/g) || []).join("").replace(NOISE_RE, "");
+  if (year) core = core.replace(year, "");
   if (core.length >= 2) return core + (year ? "_" + year : "");
-  return n.replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, 40);
+  // 拉丁回退：保留字母数字，剔除纯年份后仍太短则放弃去重（返回空键）
+  const compact = n.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const noYear = compact.replace(/(19\d{2}|20\d{2})/, "");
+  if (noYear.length >= 3 && !/^\d+$/.test(noYear)) return noYear.slice(0, 60) + (year ? "_" + year : "");
+  return "";
 }
 
 // ---------- 质量门槛 ----------

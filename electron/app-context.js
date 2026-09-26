@@ -64,6 +64,7 @@ eventBus.on("task.*", ({ event, taskName, taskId, to, error, label }) => {
 function deps() {
   return {
     browserPool, store, config,
+    dataDir,   // 与「打开数据目录」/批量转存输出一致的基准目录
     log: (message, extra) => logger.log(message, extra),
     llm,
     copy: (text) => (clipboardApi ? clipboardApi.writeText(String(text || "")) : Promise.resolve()),
@@ -80,7 +81,7 @@ function sendToRenderer(channel, payload) {
 
 logger.onLog((text) => sendToRenderer("task:log", text));
 // 构建标识：日志首行即可辨识版本（排查"装的旧包"问题）
-logger.log("软件构建版本：2026-09-27-D（新增：乱码名过滤/空文件不转存/按名称去重/重复自动跳过）");
+logger.log("软件构建版本：2026-09-27-E（深度审查修复版：并发重复/导出崩溃/台账统一/乱码去重等 20+ 项）");
 
 // ---------- 任务包装 ----------
 

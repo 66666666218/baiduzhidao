@@ -16,6 +16,7 @@ const { chromium } = require("playwright-core");
 async function runBatchUploadTask(ctx, deps) {
   const { browserPool, log } = deps;
   const { app } = require("electron");
+  const baseDataDir = deps.dataDir || app.getPath("userData"); // 与「打开数据目录」指向同一处
   const payload = ctx.livePayload ? ctx.livePayload() : ctx.payload;
   const filePath = String(payload.filePath || "").trim().replace(/^"|"$/g, "");
   if (!filePath || !fs.existsSync(filePath)) throw new Error("请先选择上传专用表（xlsx）");
@@ -23,7 +24,7 @@ async function runBatchUploadTask(ctx, deps) {
   if (!bitEnv) throw new Error("请填写用于上传的比特环境名（该窗口需已登录百度账号且有批量发布权益）");
   let batchRows = Math.max(1, Number(payload.batchRows) || 500);
   const maxBatches = Math.max(1, Number(payload.maxBatches) || 999);
-  const tmpDir = path.join(app.getPath("userData"), "上传分片");
+  const tmpDir = path.join(baseDataDir, "上传分片");
   fs.mkdirSync(tmpDir, { recursive: true });
 
   // 读取表格
@@ -38,7 +39,7 @@ async function runBatchUploadTask(ctx, deps) {
   if (!filled.length) throw new Error("表格里没有已填写回答内容的行");
 
   // 已提交链接台账：跳过平台已收过的链接（防 URL重复提交）
-  const ledgerFile = path.join(app.getPath("userData"), "已提交链接台账.jsonl");
+  const ledgerFile = path.join(baseDataDir, "已提交链接台账.jsonl");
   const submitted = new Set();
   try {
     for (const line of fs.readFileSync(ledgerFile, "utf8").split("\n")) {
@@ -86,16 +87,19 @@ async function runBatchUploadTask(ctx, deps) {
     batchRows = quotaNum;
     log(`额度小于批行数，本批调整为 ${quotaNum} 行`);
   }
-  if (Number.isFinite(quotaNum) && quotaNum === 0) {
+  if (quotaText && Number.isFinite(quotaNum) && quotaNum === 0) {
     await browserPool.release(bitEnv, { close: false });
     log("⛔ 今日剩余额度为 0（T+1 结算，明日重置）。");
+    ctx.report({ done: 0, total: 0, status: "done" });
     return { uploaded: 0, batches: 0, quota: 0 };
   }
+  if (!quotaText) log("⚠️ 未读到剩余额度（页面文案可能变化），按未知额度继续上传。");
 
   const totalBatches = Math.min(maxBatches, Math.ceil(filled.length / batchRows));
   ctx.report({ done: 0, total: totalBatches, status: "running" });
   let uploaded = 0;
 
+  try {
   for (let b = 0; b < totalBatches; b += 1) {
     if (ctx.shouldStop()) { log("收到停止信号，已上传部分保留。"); break; }
     await ctx.pausePoint?.("批量上传·批次检查点");
@@ -142,8 +146,17 @@ async function runBatchUploadTask(ctx, deps) {
     ctx.report({ done: b + 1, total: totalBatches, status: "running" });
     if (b < totalBatches - 1) await page.waitForTimeout(30000);
   }
-
-  await browserPool.release(bitEnv, { close: false });
+  } finally {
+    // 无论成功/异常：释放窗口 + 清理分片临时文件
+    try {
+      for (const f of fs.readdirSync(tmpDir)) {
+        if (/^upload-\d+-\d+\.xlsx$/.test(f)) fs.rmSync(path.join(tmpDir, f), { force: true });
+      }
+    } catch { /* 忽略 */ }
+    await browserPool.release(bitEnv, { close: false }).catch(() => {});
+  }
+  // 终止进度上报（缺此行 UI 按钮永久禁用）
+  ctx.report({ done: totalBatches, total: totalBatches, status: ctx.shouldStop() ? "stopped" : "done" });
   log(`=== 批量上传完成：共 ${uploaded} 行 ===`);
   return { uploaded, batches: Math.ceil(uploaded / Math.max(1, batchRows)), quota: quotaNum || null };
 }

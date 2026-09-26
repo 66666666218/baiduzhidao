@@ -203,6 +203,7 @@ $("startSubmit").addEventListener("click", async () => {
       filePath,
       submitLimit: Number($("submitLimit").value) || 0,
       accountDailyLimit: Number($("accountDailyLimit").value) || 0,
+      dailyAnswerLimit: Number(settings.dailyAnswerLimit) || 0,   // 本次总回答上限（设置项，0=不限）
       forceResubmit: $("forceResubmit").checked,
       checkCompletedEnvs: $("checkCompletedEnvs").checked,
       maxQuestionsPerEnv: settings.maxQuestionsPerEnv,

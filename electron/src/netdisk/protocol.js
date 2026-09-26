@@ -81,9 +81,9 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
     for (const f of entries) {
       if (Number(f.isdir) === 1) dirPaths.push(f.path);
       else if (f.fs_id) {
-        const size = Number(f.size) || 0;
-        if (size === 0) { zeroSize += 1; continue; }  // 空文件（占位垃圾）不转存
-        fsIds.push(Number(f.fs_id));
+        const hasSize = f.size !== undefined && f.size !== null && f.size !== "";
+        if (hasSize && Number(f.size) === 0) { zeroSize += 1; continue; }  // 显式 0 字节=占位垃圾
+        fsIds.push(Number(f.fs_id));                                        // 缺 size 字段按未知保留
       }
     }
   };
@@ -92,15 +92,33 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
     const qs = new URLSearchParams({ web: "5", app_id: "250528", desc: "1", showempty: "0", page: "1", num: "100", order: "time", view_mode: "1", channel: "chunlei", clienttype: "0", shorturl: surl, dir });
     if (bdstoken) qs.set("bdstoken", bdstoken);
     const j = await fetch(`${PAN}/share/list?${qs}`, { headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": rawUrl } }).then((r) => r.json()).catch(() => ({}));
-    if (j.errno === 0 && Array.isArray(j.list)) collect(j.list);
+    return j;
   };
-  for (const d of dirPaths.slice(0, 10)) await listDir(d);
+  // BFS 递归展开全部子目录（上限 100 个目录，超限告警防异常分享）
+  const walkDirs = async (seedDirs) => {
+    const queue = seedDirs.slice();
+    const seen = new Set(queue);
+    let visited = 0;
+    while (queue.length) {
+      if (visited >= 100) { console.warn(`[protocol] 分享目录超过 100 个，已截断（${surl}）`); break; }
+      const d = queue.shift();
+      visited += 1;
+      const j = await listDir(d);
+      if (j.errno === 0 && Array.isArray(j.list)) {
+        collect(j.list);
+        for (const f of j.list) {
+          if (Number(f.isdir) === 1 && f.path && !seen.has(f.path)) { seen.add(f.path); queue.push(f.path); }
+        }
+      }
+    }
+  };
+  await walkDirs(dirPaths);
   if (!fsIds.length) {
     const root = await fetch(`${PAN}/share/list?web=5&app_id=250528&desc=1&showempty=0&page=1&num=100&order=time&view_mode=1&channel=chunlei&clienttype=0${bdstoken ? "&bdstoken=" + bdstoken : ""}&shorturl=${encodeURIComponent(surl)}&root=1`, { headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": rawUrl } }).then((r) => r.json()).catch(() => ({}));
     if (root.errno === 0 && Array.isArray(root.list)) {
       dirPaths = [];
       collect(root.list);
-      for (const d of (root.list.filter((f) => Number(f.isdir) === 1).map((f) => f.path)).slice(0, 10)) await listDir(d);
+      await walkDirs(dirPaths.slice());
     }
   }
   if (!fsIds.length) {
@@ -133,10 +151,12 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   }
   if (Number(tBody.errno) !== 0 && !(infoErr === 0)) throw new Error(`转存 errno=${tBody.errno} ${tBody.show_msg || ""}`);
 
-  // 5) 权威落盘路径
-  const toPaths = ((tBody.extra && tBody.extra.list) || []).map((x) => x.to)
-    .concat((tBody.duplicated && tBody.duplicated.list) || []).filter(Boolean);
-  return { toPaths: toPaths.length ? toPaths : files.map(f => f.path), fsIds };
+  // 5) 权威落盘路径（extra.list 取 .to；duplicated.list 取 .path；全部字段化后合并）
+  const extraPaths = ((tBody.extra && tBody.extra.list) || []).map((x) => x && x.to).filter(Boolean);
+  const dupPaths = ((tBody.duplicated && tBody.duplicated.list) || []).map((x) => x && x.path).filter(Boolean);
+  const toPaths = extraPaths.concat(dupPaths);
+  if (!toPaths.length) throw new Error("转存返回成功但未取得落盘路径（extra/duplicated 均为空）");
+  return { toPaths, fsIds };
 }
 
 module.exports = { PAN, UA, Jar, processOne };

@@ -60,7 +60,11 @@ const buildAnswerHtml = (link, intro) => qaLib.buildAnswerHtml(link, intro, keep
   for (const row of raw) {
     const keys = Object.keys(row);
     const name = String(row[keys[0]] || "").trim();
-    const link = String(row[keys[1]] || "").trim();
+    const rawLinkCell = String(row[keys[1]] || "").trim();
+    // 兼容 "https://... 提取码: xxxx" 文本：抠出链接并在无 pwd 参数时补 ?pwd=
+    const urlOnly = (rawLinkCell.match(/https?:\/\/pan\.baidu\.com\/s\/[\w-]+/i) || [])[0] || "";
+    const pwdFromText = (rawLinkCell.match(/(?:提取码|密码|pwd)[:：\s]*([a-z0-9]{4})/i) || [])[1] || "";
+    const link = urlOnly && !/[?&]pwd=/i.test(urlOnly) && pwdFromText ? `${urlOnly}?pwd=${pwdFromText}` : urlOnly;
     const bad = reject(name, link);
     if (bad) { rejected.push({ name: name.slice(0, 30), reason: bad }); continue; }
     if (seenLinks.has(link)) { rejected.push({ name: name.slice(0, 30), reason: "重复链接" }); continue; }

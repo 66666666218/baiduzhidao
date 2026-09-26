@@ -90,14 +90,9 @@ async function runSubmitTask(ctx, deps) {
   }
 
   // AccountManager：集中校验账号可用性（封禁/额度），不可用的账号提前剔除
-  let accountManager = deps.accountManager;
-  if (!accountManager) {
-    const { AccountManager } = require("../browser/account-manager");
-    accountManager = new AccountManager({ store, dailyLimit: 0 });
-    accountManager.register(activeEnvs);
-  } else {
-    accountManager.register(activeEnvs);
-  }
+  const { AccountManager } = require("../browser/account-manager");
+  const accountManager = deps.accountManager || new AccountManager({ store, dailyLimit: 0 });
+  accountManager.register(activeEnvs);
   const usableEnvs = [];
   for (const label of activeEnvs) {
     try {

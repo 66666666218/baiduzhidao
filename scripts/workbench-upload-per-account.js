@@ -60,6 +60,11 @@ const { createAdapter, BrowserPool } = require("../electron/src/browser");
     batchRows = quotaNum;
     log(`额度小于批行数，本账号批行数调整为 ${quotaNum}`);
   }
+  if (quotaText && Number.isFinite(quotaNum) && quotaNum === 0) {
+    await browserPool.release(envLabel, { close: false });
+    log("⛔ 今日剩余额度为 0（T+1 结算，明日重置），本次不上传。");
+    process.exit(0);
+  }
 
   // 切分已填行
   const wb = XLSX.readFile(srcFile);
@@ -68,11 +73,32 @@ const { createAdapter, BrowserPool } = require("../electron/src/browser");
   const allRows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
   const keys = Object.keys(allRows[0]);
   const kAnswer = keys.find((k) => k.includes("回答内容"));
-  const filled = allRows.filter((r) => String(r[kAnswer] || "").trim());
+  let filled = allRows.filter((r) => String(r[kAnswer] || "").trim());
+  // 已提交链接台账：跳过平台已收过的链接（防 URL重复提交）
+    const ledgerNames = "已提交链接台账.jsonl";
+  const ledgerCandidates = [
+    path.join(process.env.APPDATA || "", "zhidao-answer-studio", ledgerNames),
+    path.join(process.env.APPDATA || "", "百度知道答题助手 v2", ledgerNames),
+    path.join(dataDir, ledgerNames),
+  ];
+  const ledgerFile = ledgerCandidates.find((f) => fs.existsSync(f)) || ledgerCandidates[2];
+  const submitted = new Set();
+  try {
+    for (const line of fs.readFileSync(ledgerFile, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try { submitted.add(JSON.parse(line).link); } catch { /* 跳过 */ }
+    }
+  } catch { /* 首次 */ }
+  const linkOf = (row) => (String(row[kAnswer] || "").match(/https:\/\/pan\.baidu\.com\/s\/[\w-]+(?:\?pwd=[a-z0-9]{4})?/i) || [])[0] || "";
+  const beforeDedupe = filled.length;
+  filled = filled.filter((r) => { const l = linkOf(r); return !l || !submitted.has(l); });
+  if (beforeDedupe !== filled.length) log(`去重：跳过已提交过的 ${beforeDedupe - filled.length} 行（台账）`);
+
+  let filtered = filled;
   // 随机排序防文件查重
-  for (let i = filled.length - 1; i > 0; i -= 1) {
+  for (let i = filtered.length - 1; i > 0; i -= 1) {
     const j = Math.floor(Math.random() * (i + 1));
-    [filled[i], filled[j]] = [filled[j], filled[i]];
+    [filtered[i], filtered[j]] = [filtered[j], filtered[i]];
   }
   log(`已填回答 ${filled.length} 行（随机排序），每批 ${batchRows} 行，批数上限 ${maxBatches}`);
 
@@ -114,6 +140,12 @@ const { createAdapter, BrowserPool } = require("../electron/src/browser");
       msg = "无 upload 响应";
     }
     console.log(`批次 ${b + 1}/${totalBatches}: ${chunk.length} 行 → ${ok ? "成功" : `失败(${msg})`}`);
+    if (ok) {
+      for (const r of chunk) {
+        const l = linkOf(r);
+        if (l) fs.appendFileSync(ledgerFile, JSON.stringify({ link: l, at: new Date().toISOString() }) + "\n");
+      }
+    }
     fs.rmSync(partFile, { force: true });
     if (!ok) {
       console.log("本批失败，停止（可重跑脚本从断点继续）。");

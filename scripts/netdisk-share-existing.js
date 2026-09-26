@@ -59,11 +59,11 @@ function saveState(entry) {
   const bduss = (cookies.find((c) => c.name === "BDUSS") || {}).value || "";
   const stoken = (cookies.find((c) => c.name === "STOKEN") || {}).value || "";
   if (!bduss) { console.error("❌ 无 pan.baidu.com 登录态"); process.exit(1); }
-  const list = async (dir) => context.pages().length && await (async () => {
+  const list = async (dir) => { if (!context.pages().length) { return []; } return await (async () => {
     let page = context.pages().find((p) => p.url().includes("pan.baidu.com"));
     if (!page) { page = await context.newPage(); await page.goto("https://pan.baidu.com/disk/main", { waitUntil: "domcontentloaded", timeout: 40000 }).catch(() => {}); await sleep(3000); }
     return page.evaluate(async (d) => (await (await fetch(`https://pan.baidu.com/api/list?dir=${encodeURIComponent(d)}&web=1`)).json()).list || [], dir);
-  })();
+  })(); };
 
   // 2) 收集分享单元：根目录文件夹（整folder一个分享）+ 根目录合规文件
   const rootItems = await list(dirArgNorm);

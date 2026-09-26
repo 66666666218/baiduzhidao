@@ -9,6 +9,7 @@ const { getWorkPage } = require("./crawl");
  * 逐个打开环境，滚动到账号进度区并解析 "x/y" 文本。
  */
 async function runPassedCountTask(ctx, deps) {
+  ctx.report({ done: 0, total: 1, status: "running" });
   const { browserPool, config, log } = deps;
   const rawEnvs = Array.isArray(ctx.payload.bitEnvs) ? ctx.payload.bitEnvs : [];
   const bitEnvs = rawEnvs.map((env) => (env && typeof env === "object" ? env.label : env) || "").filter(Boolean);
@@ -55,6 +56,7 @@ async function runPassedCountTask(ctx, deps) {
     }
   }
 
+  ctx.report({ done: 1, total: 1, status: "done" });
   return { stopped: ctx.shouldStop(), accounts };
 }
 

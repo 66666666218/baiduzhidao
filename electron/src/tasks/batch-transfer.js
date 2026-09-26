@@ -34,8 +34,9 @@ function randomPwd() {
 
 async function runBatchTransferTask(ctx, deps) {
   const { app } = require("electron"); // 主进程内可用：数据放用户数据目录（打包后安装目录不可写）
-  const dataDir = path.join(app.getPath("userData"), "\u6279量转存");
   const { browserPool, log } = deps;
+  const baseDataDir = deps.dataDir || app.getPath("userData"); // 与「打开数据目录」指向同一处
+  const dataDir = path.join(baseDataDir, "\u6279\u91cf\u8f6c\u5b58");
   const payload = ctx.livePayload ? ctx.livePayload() : ctx.payload;
   const filePath = String(payload.filePath || "").trim().replace(/^"|"$/g, "");
   if (!filePath || !fs.existsSync(filePath)) throw new Error("请先选择资源表格（xlsx 或 txt，一行一个链接）");
@@ -123,27 +124,36 @@ async function runBatchTransferTask(ctx, deps) {
   const qaRows = [];
 
   // 每条完整链（独立 Jar 会话，并发安全）；窗口按轮换粒度切换
+  // 【并发修复】游标与名额必须跨 worker 共享：此前每个 worker 各持 cursor=0，
+  // 默认 4 并发会把同一批资源重复处理 4 遍（表格出现重复行的根因）
   let envCursor = 0;
   function pickEnv() { return creds[envCursor % creds.length]; }
-  async function worker(workerId) {
-    let cursor = 0;
+  let sharedCursor = 0;
+  let reservedCount = 0;
+  function nextIndex() {
+    if (limit > 0 && reservedCount >= limit) return null;
+    const i = startIdx + sharedCursor;
+    if (i >= rows.length) return null;
+    sharedCursor += 1;
+    reservedCount += 1;
+    return i;
+  }
+  async function worker() {
     let myCount = 0;
-    const next = () => { const i = startIdx + (cursor++); return i < rows.length ? i : null; };
     while (!fatalStop && !ctx.shouldStop()) {
-      if (limit > 0 && done >= limit) return;
       if (myCount > 0 && myCount % perEnv === 0) { envCursor += 1; myCount = 0; } // 轮换下一窗口
       const cred = pickEnv();
-      const i = next();
+      const i = nextIndex();
       if (i === null) return;
       myCount += 1;
       await ctx.pausePoint?.("批量转存·条间检查点");
       const rawName = String(rows[i][nameKey] || "").trim();
       const { link, pwd: cellPwd } = parseLinkCell(String(rows[i][linkKey] || "") + (pwdKey ? ` 提取码:${rows[i][pwdKey]}` : ""));
       const srcLink = link + (link.includes("pwd=") ? "" : `?pwd=${cellPwd}`);
-      if (!link || !cellPwd) continue;
+      if (!link || !cellPwd) { log(`⏭ 行 ${i + 1} 缺链接或提取码，跳过`); continue; }
 
       const prev = state.get(srcLink);
-      if (prev && prev.status === "done" && prev.ownLink) { qaRows.push(prev.qaRow); continue; }
+      if (prev && prev.status === "done" && prev.ownLink) { if (prev.qaRow) qaRows.push(prev.qaRow); continue; }
       if (prev && (prev.attempts || 0) >= 3) continue;
 
       const meta = qaLib.parseName(rawName);
@@ -212,9 +222,17 @@ async function runBatchTransferTask(ctx, deps) {
         ctx.report({ done, total, status: "running" });
         log(`✅ [${done}/${total}] ${rawName.slice(0, 26)} → ${ownLink}`);
       } catch (e) {
+        if (e.risk) {
+          log(`⏸ 触发行控（${(e.message || "").slice(0, 40)}），全局暂停 10 分钟后继续…`);
+          await sleep(10 * 60 * 1000);
+          continue;
+        }
         failed += 1;
         consecutiveFails += 1;
-        saveState({ srcLink, name: rawName, status: "failed", attempts: ((prev && prev.attempts) || 0) + 1, error: (e.message || "").slice(0, 120), at: new Date().toISOString() });
+        const attempts = ((prev && prev.attempts) || 0) + 1;
+        const failEntry = { srcLink, name: rawName, status: "failed", attempts, error: (e.message || "").slice(0, 120), at: new Date().toISOString() };
+        state.set(srcLink, failEntry);
+        saveState(failEntry);
         ctx.emitItem({ ...itemBase, status: `转存失败：${(e.message || "").slice(0, 60)}` });
         log(`✗ ${rawName.slice(0, 26)} → ${e.message.slice(0, 70)}`);
         if (e.fatal) { log("⛔ 容量不足，停止本次任务（已完成部分完好）。"); fatalStop = true; break; }
@@ -223,7 +241,8 @@ async function runBatchTransferTask(ctx, deps) {
       await sleep((delayMin + Math.random() * (delayMax - delayMin)) * 1000);
     }
   }
-  await Promise.all(Array.from({ length: Math.min(cc, total || 1) }, (_, w) => worker(w + 1)));
+  await Promise.all(Array.from({ length: Math.min(cc, total || 1) }, () => worker()));
+  ctx.report({ done, total, status: (fatalStop || ctx.shouldStop()) ? "stopped" : "done" });
 
   // 导出上传专用表
   fs.mkdirSync(outDir, { recursive: true });

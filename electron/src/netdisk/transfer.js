@@ -236,7 +236,7 @@ async function transferFiles(exe, { shareid, from, sekey, files, destDir, bdstok
   });
   // info 层 errno 提升（首文件错误优先暴露）
   const infoErrno = r.info && r.info[0] && Number(r.info[0].errno);
-  const errno = Number(r.errno) !== 0 && infoErrno ? infoErrno : Number(r.errno);
+  const errno = Number(r.errno) !== 0 ? Number(r.errno) : (infoErrno || 0);
   // errno=4：全部文件已存在（重复转存）→ 视为成功，复用已有文件
   if (errno === 4) {
     return { errno: 0, dup: true, toFsIds: (r.duplicated && r.duplicated.list || []).map((x) => Number(x.fs_id)).filter(Boolean) };
