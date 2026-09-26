@@ -81,7 +81,7 @@ function sendToRenderer(channel, payload) {
 
 logger.onLog((text) => sendToRenderer("task:log", text));
 // 构建标识：日志首行即可辨识版本（排查"装的旧包"问题）
-logger.log("软件构建版本：2026-09-27-E（深度审查修复版：并发重复/导出崩溃/台账统一/乱码去重等 20+ 项）");
+logger.log("软件构建版本：2026-09-28-F（修复：资源名取网盘真实文件名/转存文件夹带资源名）");
 
 // ---------- 任务包装 ----------
 

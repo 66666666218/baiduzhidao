@@ -285,7 +285,8 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
       const entryBase = { srcLink: t.srcLink, name: t.rawName };
       try {
         const idx = String(t.idx + 1).padStart(5, "0");
-        const destDir = `${destRoot}/${baseName}/${idx}`;
+        const dirLabel = isGenericName(t.rawName) ? "" : String(t.rawName).replace(/[\/:*?"<>|\r\n]/g, " ").trim().slice(0, 20);
+        const destDir = `${destRoot}/${baseName}/${dirLabel ? idx + "_" + dirLabel : idx}`;
         // 预检去重：规范化名已存在或已被其他 worker 预留 → 跳过（并发安全）
         const preKey = qaLib.normalizeName(t.rawName || "");
         if (preKey && preKey.length >= 2 && (seenKeys.has(preKey) || pendingKeys.has(preKey))) {
@@ -302,9 +303,9 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
         const share = await createShare({ bduss, stoken, paths: toPaths, password: ownPwd });
         if (!share.link) throw new Error("创建分享失败");
         const ownLink = `${share.link}?pwd=${share.password}`;
-        let displayName = t.rawName && t.rawName.length >= 4 && !/^链接\d+$/.test(t.rawName)
-          ? t.rawName
-          : decodeURIComponent((toPaths[0] || "").split("/").pop() || "资源");
+        const landedBase = decodeURIComponent((toPaths[0] || "").split("/").pop() || "");
+        let displayName = isGenericName(t.rawName) ? (landedBase || "资源") : t.rawName;
+        if (isGenericName(displayName)) displayName = landedBase || displayName;
         // 名称质量门槛：广告词/压缩包等命名不得进入问答（资源已转存，仅跳过生成问答）
         if (qaLib.reject(displayName, ownLink)) {
           displayName = decodeURIComponent((toPaths[0] || "").split("/").pop() || "").replace(/\[([^\]]*)\]/g, "$1").trim();

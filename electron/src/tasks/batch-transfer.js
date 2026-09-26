@@ -27,6 +27,19 @@ function parseLinkCell(text) {
   if (!pwd) pwd = (s.match(/(?:提取码|密码|访问码)[:：\s]*([a-z0-9]{4})/i) || [])[1] || "";
   return { link, pwd };
 }
+/** 表格名是否为"通用/序号"占位（不能作为资源名）：序号、链接N、纯符号、通用词 */
+function isGenericName(n) {
+  const s = String(n || "").trim();
+  if (!s || s.length < 4) return true;
+  if (/^链接\d+$/.test(s)) return true;              // txt 模式占位
+  if (/^[\d\s\-_.、（）()]+$/.test(s)) return true;  // 纯数字/编号/符号
+  if (/^(资源|文件|附件|素材|下载|链接|文档|资料)\d*$/.test(s)) return true; // 通用词
+  const cjk = (s.match(/[一-龥]/g) || []).length;
+  const letters = (s.match(/[a-zA-Z]/g) || []).length;
+  if (cjk < 2 && letters < 4) return true;            // 无足够中文也无足够字母 → 非描述性
+  return false;
+}
+
 function randomPwd() {
   const c = "abcdefghjkmnpqrstuvwxyz23456789";
   return Array.from({ length: 4 }, () => c[Math.floor(Math.random() * c.length)]).join("");
@@ -168,7 +181,9 @@ async function runBatchTransferTask(ctx, deps) {
 
       try {
         const idx = String(i + 1).padStart(5, "0");
-        const destDir = `${destRoot}/${cred.env}/${baseName}/${idx}`;
+        // 目录名带资源名（非占位名时）：08104_资源名，便于网盘里辨识
+        const dirLabel = isGenericName(rawName) ? "" : rawName.replace(/[\/:*?"<>|\r\n]/g, " ").trim().slice(0, 20);
+        const destDir = `${destRoot}/${cred.env}/${baseName}/${dirLabel ? idx + "_" + dirLabel : idx}`;
         const jar = new Jar(cred.bduss, cred.stoken);
         const { toPaths } = await processOne(jar, {
           link: srcLink, pwd: cellPwd, destDir,
@@ -184,9 +199,10 @@ async function runBatchTransferTask(ctx, deps) {
         }
 
         // 名称质量门槛（不合规跳过问答，资源保留）
-        let displayName = rawName && rawName.length >= 4 && !/^链接\d+$/.test(rawName)
-          ? rawName
-          : decodeURIComponent((toPaths[0] || "").split("/").pop() || "资源");
+        const landedBase = decodeURIComponent((toPaths[0] || "").split("/").pop() || "");
+        // 表格名是序号/占位（如 1、1001、链接N）时，改用网盘落盘的真实文件名
+        let displayName = isGenericName(rawName) ? (landedBase || "资源") : rawName;
+        if (isGenericName(displayName)) displayName = landedBase || displayName;
         // 落盘真实文件名乱码 → 不进问答表（资源已转存，人工可在网盘处理）
         if (qaLib.isGarbledName(decodeURIComponent((toPaths[0] || "").split("/").pop() || ""))) {
           saveState({ srcLink, name: displayName, status: "done", phase: "done", toPaths, ownLink, note: "文件名乱码跳过问答", at: new Date().toISOString() });
