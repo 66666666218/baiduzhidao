@@ -225,7 +225,7 @@ $("startBatchTransfer").addEventListener("click", async () => {
   const bitEnvs = $("batchBitEnvs").value.split(/\r?\n|[,，]/).map((x) => x.trim()).filter(Boolean);
   if (!bitEnvs.length) { appendLog("请填写至少一个比特环境名（多账号每行一个）。"); return; }
   try {
-    appendLog(`批量转存启动：环境 ${bitEnv}，目标目录 ${$("batchDestDir").value || "/来自资源批量转存"}`);
+    appendLog(`批量转存启动：环境 ${bitEnvs.join("、")}，目标目录 ${$("batchDestDir").value || "/来自资源批量转存"}`);
     const result = await rpc.invoke("task:batch-transfer", {
       filePath,
       bitEnvs,

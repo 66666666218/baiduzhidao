@@ -80,7 +80,7 @@ function sendToRenderer(channel, payload) {
 
 logger.onLog((text) => sendToRenderer("task:log", text));
 // 构建标识：日志首行即可辨识版本（排查"装的旧包"问题）
-logger.log("软件构建版本：2026-09-25-A（含多账号/纯协议转存/批量上传/标题修复全量）");
+logger.log("软件构建版本：2026-09-26-B（修复：批量转存点击报错 bitEnv 变量名）");
 
 // ---------- 任务包装 ----------
 

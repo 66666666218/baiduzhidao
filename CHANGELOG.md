@@ -1,5 +1,6 @@
 # CHANGELOG
 
+- [2026-09-26 15:32] FIX: 批量转存真凶修复——renderer 启动日志行引用已删变量 bitEnv（点击必报错）；版本升至 2026-09-26-B，B修复版包出新 (Files: electron/renderer/renderer.js, electron/app-context.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-25 22:45] FEAT: 启动版本标识（日志首行构建日期，杜绝旧包混淆）+ 全盘旧包清理（保留最新包于桌面）；最新完整包 20260925最新版 (Files: electron/app-context.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-24 16:10] OPS: 网盘资源全量对账完成——全部上传（58条成功），补传4单元（玩具总动员1-3/超人特工队/狮子王/料理鼠王） (Files: docs/自审日志.md, CHANGELOG.md)
 - [2026-09-24 15:55] FIX: 平台拒绝原因分析（审核失败=标题空括号/URL重复提交）+ 三项修复（清洗顺序/集数识别/上传台账）+ 3条修复版重传成功；交付包更新 (Files: electron/src/netdisk/qa-template-lib.js, electron/src/tasks/upload-batch.js, docs/自审日志.md, CHANGELOG.md)
