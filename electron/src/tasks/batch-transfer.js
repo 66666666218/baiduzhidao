@@ -105,6 +105,16 @@ async function runBatchTransferTask(ctx, deps) {
   } catch { /* 首次 */ }
   const saveState = (e) => { fs.mkdirSync(workDir, { recursive: true }); fs.appendFileSync(stateFile, JSON.stringify(e) + "\n"); };
 
+  // 规范化名称去重键：历史已完成 + 本轮动态累积（同一资源不同链接也只转一次）
+  const seenKeys = new Set();
+  for (const st of state.values()) {
+    if (st.status === "done" && st.name) {
+      const k = qaLib.normalizeName(st.name);
+      if (k && k.length >= 2) seenKeys.add(k);
+    }
+  }
+  log(`去重键库载入：${seenKeys.size} 个（按规范化名称，跨写法/跨链接去重）`);
+
   const total = limit > 0 ? Math.min(limit, rows.length - startIdx) : rows.length - startIdx;
   log(`开始纯协议批量转存：目标 ${total} 条 | 并发 ${cc} | 目标目录 ${destRoot}`);
   ctx.report({ done: 0, total, status: "running" });
@@ -139,6 +149,12 @@ async function runBatchTransferTask(ctx, deps) {
       const meta = qaLib.parseName(rawName);
       const title = qaLib.buildTitle(meta, i);
       const itemBase = { title, name: rawName.slice(0, 30), bitEnv: cred.env };
+      // 预检去重：规范化名已存在（历史或本轮）→ 不再转存
+      const preKey = qaLib.normalizeName(rawName);
+      if (preKey && preKey.length >= 2 && seenKeys.has(preKey)) {
+        log(`⏭ 跳过重复（${preKey}）：${rawName.slice(0, 24)}`);
+        continue;
+      }
 
       try {
         const idx = String(i + 1).padStart(5, "0");
@@ -161,6 +177,14 @@ async function runBatchTransferTask(ctx, deps) {
         let displayName = rawName && rawName.length >= 4 && !/^链接\d+$/.test(rawName)
           ? rawName
           : decodeURIComponent((toPaths[0] || "").split("/").pop() || "资源");
+        // 落盘真实文件名乱码 → 不进问答表（资源已转存，人工可在网盘处理）
+        if (qaLib.isGarbledName(decodeURIComponent((toPaths[0] || "").split("/").pop() || ""))) {
+          saveState({ srcLink, name: displayName, status: "done", phase: "done", toPaths, ownLink, note: "文件名乱码跳过问答", at: new Date().toISOString() });
+          done += 1;
+          ctx.emitItem({ ...itemBase, status: "已转存（文件名乱码，跳过问答）" });
+          log(`⚠️ ${rawName.slice(0, 24)} 落盘文件名乱码，跳过问答`);
+          continue;
+        }
         if (qaLib.reject(displayName, ownLink)) {
           displayName = decodeURIComponent((toPaths[0] || "").split("/").pop() || "").replace(/\[([^\]]*)\]/g, "$1").trim();
           if (qaLib.reject(displayName, ownLink)) {
@@ -178,6 +202,8 @@ async function runBatchTransferTask(ctx, deps) {
         };
         const okEntry = { srcLink, name: rawName, status: "done", phase: "done", toPaths, ownLink, ownPwd, qaRow, at: new Date().toISOString() };
         state.set(srcLink, okEntry);
+        const doneKey = qaLib.normalizeName(displayName);
+        if (doneKey && doneKey.length >= 2) seenKeys.add(doneKey);
         saveState(okEntry);
         qaRows.push(qaRow);
         done += 1;

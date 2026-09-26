@@ -80,7 +80,7 @@ function sendToRenderer(channel, payload) {
 
 logger.onLog((text) => sendToRenderer("task:log", text));
 // 构建标识：日志首行即可辨识版本（排查"装的旧包"问题）
-logger.log("软件构建版本：2026-09-26-C（新增：输出表名自定义/生成后自动衔接上传/打开表格修改）");
+logger.log("软件构建版本：2026-09-27-D（新增：乱码名过滤/空文件不转存/按名称去重/重复自动跳过）");
 
 // ---------- 任务包装 ----------
 

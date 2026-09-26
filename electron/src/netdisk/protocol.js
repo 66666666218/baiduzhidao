@@ -76,10 +76,15 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   // 3) 递归收集 fs_id（root 空时走 /share/list）
   let fsIds = [];
   let dirPaths = [];
+  let zeroSize = 0;
   const collect = (entries) => {
     for (const f of entries) {
       if (Number(f.isdir) === 1) dirPaths.push(f.path);
-      else if (f.fs_id) fsIds.push(Number(f.fs_id));
+      else if (f.fs_id) {
+        const size = Number(f.size) || 0;
+        if (size === 0) { zeroSize += 1; continue; }  // 空文件（占位垃圾）不转存
+        fsIds.push(Number(f.fs_id));
+      }
     }
   };
   collect(rawList);
@@ -98,7 +103,9 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
       for (const d of (root.list.filter((f) => Number(f.isdir) === 1).map((f) => f.path)).slice(0, 10)) await listDir(d);
     }
   }
-  if (!fsIds.length) throw new Error("分享里没有文件");
+  if (!fsIds.length) {
+    throw new Error(zeroSize > 0 ? `分享仅含 ${zeroSize} 个空文件（占位垃圾），已跳过` : "分享里没有文件");
+  }
 
   // 4) 建目录 + 转存
   const cResp = await fetch(`${PAN}/api/create?a=commit&bdstoken=${encodeURIComponent(bdstoken)}&web=1&channel=chunlei&clienttype=0`, {

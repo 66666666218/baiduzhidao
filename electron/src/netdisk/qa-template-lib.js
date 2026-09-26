@@ -1,10 +1,9 @@
 "use strict";
 
 /**
- * 答题模板问答生成器（共享库）：
- *   从用户提供的答题模板（B202608100524375b57(1).xlsx）提炼——
- *   三列 qid/问题标题/回答内容；回答 HTML：点击链接+链接行+简介+空img。
- *   供 mass-qa-template.js（直发模式）与 pan-transfer-pipeline.js（转存模式）共用。
+ * 答题模板问答生成器（共享库 · 全量重写版）：
+ *   名称解析 / 乱码检测 / 规范化去重键 / 质量门槛 / 标题轮换 / 规则化简介 / 模板 HTML。
+ *   供 转存任务、批量上传、各脚本共用。
  */
 
 // ---------- 命名解析 ----------
@@ -33,7 +32,7 @@ const GENRE_DESC = {
 const KNOWN_GENRES = Object.keys(GENRE_DESC).concat(["灾难", "西部", "同性", "歌舞", "情色", "黑色电影"]);
 const REGIONS = ["中国大陆", "内地", "国产", "香港", "台湾", "美国", "英国", "日本", "韩国", "法国", "德国", "泰国", "印度", "俄罗斯", "意大利", "西班牙", "加拿大", "澳大利亚", "新西兰", "斯洛伐克", "捷克", "比利时", "丹麦", "瑞典", "挪威", "芬兰", "波兰", "荷兰", "葡萄牙", "希腊", "土耳其", "伊朗", "阿根廷", "巴西", "墨西哥", "欧盟"];
 
-/** 判断剧集类型：先剔除"剧情"这个类型词再找"剧"，避免电影被误判 */
+/** 判断剧集类型：先剔除"剧情"再找"剧"；集数特征（1-47完整版/全X集）判为剧集 */
 function detectKind(name, genres) {
   const text = (name + genres.join("")).replace(/剧情/g, "");
   if (/\d+\s*[-~]\s*\d+\s*完整版|1-\d+完整版|全\d+集|\d+集完整/.test(name)) return "剧集";
@@ -45,17 +44,15 @@ function detectKind(name, genres) {
 
 /**
  * 从混合命名格式抽取 { title, year, genres, country, kind }
- * 支持：[浪潮][2024][剧情惊悚][斯洛伐克捷克] / 火影.ほかげ.2023.1080p中日字幕 /
- *       午后乐事 Afternoon Delight (2013) / [爱情真善美][2011][国产剧]
  */
 function parseName(raw) {
-  let name = String(raw || "").trim();
+  const name = String(raw || "").trim();
   const yearMatch = name.match(/(19\d{2}|20\d{2})/);
   const year = yearMatch ? yearMatch[1] : "";
 
   const segs = [...name.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
   let title = "";
-  let genres = [];
+  const genres = [];
   let country = "";
   if (segs.length >= 2) {
     title = segs.find((s) => !/^(19\d{2}|20\d{2})$/.test(s.trim())) || segs[0];
@@ -75,39 +72,73 @@ function parseName(raw) {
     title = (parts.find((p) => !tech.test(p) && !/^(19\d{2}|20\d{2})$/.test(p)) || parts[0] || name).replace(/\((19\d{2}|20\d{2})\)\s*/g, "").trim();
   }
   const genreWords = Object.keys(GENRE_DESC).filter((g) => name.includes(g));
-  if (!genres.length && genreWords.length) genres = genreWords;
+  if (!genres.length && genreWords.length) genres.push(...genreWords);
   const kind = detectKind(name, genres);
 
   title = title
     .replace(/\.(rar|zip|7z|mp4|mkv|avi|ts|txt|pdf|jpg)$/i, "")
-    .replace(/[（(]\s*[）)]/g, "")          // 空括号（平台审核雷区）
-    .replace(/[（(]\s*[)）]/g, "")
     .replace(/\[|\]/g, "")
     .replace(/\b(1080p|720p|2160p|4K|HDR|WEB-?DL|BluRay|HDTV|x26[45])\b/gi, "")
     .replace(/(高清|官方中字|中日字幕|中英双字|中字|熟肉|国语中字|更新至.*?集|全\d+集|全\d+\+\d*集?)/g, "")
+    .replace(/[（(]\s*[）)]/g, "")        // 清洗技术词后产生的空括号（必须放最后）
     .replace(/[.·]{2,}/g, ".")
-    .replace(/[（(]\s*[）)]/g, "")   // 清洗技术词后产生的空括号（次要清理，必须放最后）
     .replace(/\s{2,}/g, " ")
     .trim();
   if (title.length > 40) title = title.slice(0, 40).replace(/[\s.·]+$/, "");
   return { title, year, genres, country, kind };
 }
 
+// ---------- 乱码检测 ----------
+const GARBLE_PATTERNS = /锟斤拷|烫烫烫|屯屯屯|锘匡拷|�|ï¿½/;
+// 乱码典型字符区：Latin-1 补充(U+00A0-FF)、Latin扩展A(U+0100-017F)、常用标点(U+2000-206F)、注音符号
+const SUSPECT = /[ -ÿĀ-ſ -⁯㄀-ㄯ]/g;
+function isGarbledName(name) {
+  const n = String(name || "");
+  if (!n) return false;
+  if (GARBLE_PATTERNS.test(n)) return true;
+  const repl = (n.match(/[�□■]/g) || []).length;
+  if (repl / n.length > 0.15) return true;
+  const suspect = (n.match(SUSPECT) || []).length;
+  if (n.length >= 6 && suspect / n.length > 0.25) return true;
+  return false;
+}
+
+// ---------- 规范化去重键 ----------
+const TECH_WORDS = /(1080p|720p|2160p|4k|hdr|web[-_.]?dl|blu-?ray|bd|hdtv|hd|dvdrip|remux|x26[45]|hevc|aac|ac3|dts|中字|中英双字|国语|粤语|双语|无删减|未删减|高清|超清|蓝光|完整版|全集|全\d+集|\d+集)/gi;
+const NOISE_WORDS = ["电影", "电视剧", "动漫", "纪录片", "资源", "下载", "在线观看", "百度云", "网盘"]
+  .concat(GENRE_DESC ? Object.keys(GENRE_DESC) : [])
+  .concat(REGIONS);
+const NOISE_RE = new RegExp(NOISE_WORDS.join("|"), "g");
+function normalizeName(name) {
+  let n = String(name || "");
+  n = n.replace(TECH_WORDS, " ");
+  const year = (n.match(/(19\d{2}|20\d{2})/) || [])[1] || "";
+  n = n.replace(/[（(][^）)]*[）)]/g, " ");   // 圆括号内容=站点/版本，去掉
+  n = n.replace(/[[\]]/g, " ");              // 方括号只去符号，保留内容（中文名常在括号里）
+  const cjk = (n.match(/[一-龥]/g) || []).join("");
+  const core = cjk.replace(NOISE_RE, "");
+  if (core.length >= 2) return core + (year ? "_" + year : "");
+  return n.replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, 40);
+}
+
 // ---------- 质量门槛 ----------
 const AD_PATTERNS = /微信号|加微信|VX[:：]?|公众号|二维码|代下|有偿|收费|付费获取|联系QQ|加群|引流|广告|www\./i;
 const BAD_EXT = /\.(rar|zip|7z|tar|gz)$/i;
-/** 校验资源行；返回拒绝原因，"" 为合格 */
+const JUNK_PATTERNS = /[\r\n]|提取码|复制$|\d{4}\/\d{1,2}\/\d{1,2} \d{2}:\d{2}(:\d{2})?|pwd=|[A-Za-z0-9_-]{8,}\?| {2,}/;
 function reject(rawName, link) {
   const n = String(rawName || "").trim();
   if (!n) return "空名称";
+  if (n.length < 4) return "名称过短";
+  if (n.length > 60) return "名称过长";
   if (BAD_EXT.test(n)) return "压缩包（SOP禁止）";
   if (AD_PATTERNS.test(n)) return "含广告词";
-  if (!/^https:\/\/pan\.baidu\.com\/s\/[\w-]+\?pwd=[a-z0-9]{4}$/i.test(String(link || "").trim())) return "链接格式无效或缺提取码";
-  if (n.length > 60) return "名称过长";
+  if (JUNK_PATTERNS.test(n)) return "名称含UI杂质";
+  if (isGarbledName(n)) return "文件名乱码";
+  if (link && !/^https:\/\/pan\.baidu\.com\/s\/[\w-]+\?pwd=[a-z0-9]{4}$/i.test(String(link).trim())) return "链接格式无效或缺提取码";
   return "";
 }
 
-// ---------- 标题生成（多模板轮换，5~49 字） ----------
+// ---------- 标题生成 ----------
 const TITLE_PATTERNS = [
   (t, y, k) => `哪里有${t}${y}${k === "剧集" ? "电视剧" : "电影"}的百度云资源分享`,
   (t, y) => `求${t}${y}完整版网盘资源下载`,
@@ -118,7 +149,6 @@ const TITLE_PATTERNS = [
   (t) => `${t}网盘资源获取 完整版`,
   (t, y) => `哪里能下到${t}${y}的完整资源`,
 ];
-/** 顺序生成标题；titleIdx 递归轮换模板。 */
 function buildTitle(meta, idx) {
   const { title, year, kind } = meta;
   const fn = TITLE_PATTERNS[idx % TITLE_PATTERNS.length];
@@ -128,7 +158,7 @@ function buildTitle(meta, idx) {
   return t;
 }
 
-// ---------- 简介生成（200 字内，按元数据规则化） ----------
+// ---------- 简介 ----------
 function buildIntro(meta) {
   const { title, year, genres, country, kind } = meta;
   const uniqGenres = [...new Set(genres)].slice(0, 2);
@@ -146,7 +176,7 @@ function buildIntro(meta) {
   return lines.filter(Boolean).join("").slice(0, 200);
 }
 
-// ---------- 组装（严格对齐用户答题模板） ----------
+// ---------- 模板 HTML ----------
 function buildAnswerHtml(link, intro, keepImg = true) {
   const parts = [
     "<p><strong>点击链接获取网盘资源：</strong><br/></p>",
@@ -159,6 +189,6 @@ function buildAnswerHtml(link, intro, keepImg = true) {
 
 module.exports = {
   GENRE_DESC, KNOWN_GENRES, REGIONS,
-  detectKind, parseName, reject, buildTitle, buildIntro, buildAnswerHtml,
-  TITLE_PATTERNS,
+  detectKind, parseName, isGarbledName, normalizeName, reject,
+  buildTitle, buildIntro, buildAnswerHtml, TITLE_PATTERNS,
 };

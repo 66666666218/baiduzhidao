@@ -1,5 +1,6 @@
 # CHANGELOG
 
+- [2026-09-26 20:05] FEAT: 源数据质量治理——空文件不转存/乱码名过滤/规范化名称去重（跨写法）/重复自动跳过；qa-template-lib 全量重写；D版包出新 (Files: electron/src/netdisk/qa-template-lib.js, electron/src/netdisk/protocol.js, electron/src/tasks/batch-transfer.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-26 15:50] FEAT: 转存→上传衔接（生成表自动填入上传视图/输出表名自定义/打开表格修改/打开文件夹）；版本 2026-09-26-C (Files: electron/src/tasks/batch-transfer.js, electron/app-context.js, electron/preload.js, electron/renderer/*, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-26 15:32] FIX: 批量转存真凶修复——renderer 启动日志行引用已删变量 bitEnv（点击必报错）；版本升至 2026-09-26-B，B修复版包出新 (Files: electron/renderer/renderer.js, electron/app-context.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-25 22:45] FEAT: 启动版本标识（日志首行构建日期，杜绝旧包混淆）+ 全盘旧包清理（保留最新包于桌面）；最新完整包 20260925最新版 (Files: electron/app-context.js, docs/自审日志.md, CHANGELOG.md)
