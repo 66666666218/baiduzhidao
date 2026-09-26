@@ -60,8 +60,7 @@ async function runGenerateTask(ctx, deps) {
   let skippedExisting = 0;
   let lastWriteAt = 0;
   let budgetExhausted = false;
-
-  const total = slots.length;
+const total = slots.length;
   log(`开始批量生成回答：共 ${total} 行（去重后 ${byKey.size} 题${duplicateCount ? `，重复行 ${duplicateCount}` : ""}），并发 ${llm.semaphore.limit}。`);
   if (filePath) log(`生成结果将写回表格：${filePath}`);
 

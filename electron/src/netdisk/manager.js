@@ -59,7 +59,9 @@ function loadAccounts(dataDir) {
 
 function saveAccounts(dataDir, accounts) {
   fs.mkdirSync(path.dirname(credFile(dataDir)), { recursive: true });
-  fs.writeFileSync(credFile(dataDir), JSON.stringify({ accounts: accounts, savedAt: new Date().toISOString() }, null, 1), "utf8");
+  var tmp = credFile(dataDir) + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify({ accounts: accounts, savedAt: new Date().toISOString() }, null, 1), "utf8");
+  fs.renameSync(tmp, credFile(dataDir));
 }
 
 function findAccount(dataDir, name) {
@@ -124,7 +126,7 @@ function emptyRecycleBin(account) {
 
 // 转存记录聚合：扫描 dataDir 下各管线的 state.jsonl
 function collectStateFiles(dataDir, files) {
-  var roots = ["批量转存", "transfer-batch", "transfer-ui", "网盘已有资源QA"];
+  var roots = ["批量转存", "transfer-batch", "transfer-ui", "transfer-pipeline", "网盘已有资源QA"];
   roots.forEach(function (r) {
     var dir = path.join(dataDir, r);
     try {

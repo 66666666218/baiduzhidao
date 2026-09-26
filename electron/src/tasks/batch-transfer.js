@@ -264,11 +264,13 @@ async function runBatchTransferTask(ctx, deps) {
   fs.mkdirSync(outDir, { recursive: true });
   let outputPath = "";
   if (qaRows.length) {
+    outputPath = path.join(outDir, `${outName}.xlsx`);
+    const excel = require("../storage/excel");
     const ws = XLSX.utils.json_to_sheet(qaRows, { header: ["qid", "问题标题", "回答内容"] });
     const wbOut = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wbOut, ws, "百度知道问答");
-    outputPath = path.join(outDir, `${outName}.xlsx`);
-    XLSX.writeFile(wbOut, outputPath);
+    const used = excel.writeWorkbookSafe(outputPath, qaRows, "百度知道问答", ["qid", "问题标题", "回答内容"], log);
+    if (used !== outputPath) outputPath = used; // 表格被占用时自动备份
   }
   const totalOk = [...state.values()].filter((s) => s.status === "done").length;
   log(`=== 批量转存完成 === 本轮成功 ${done} | 失败 ${failed} | 历史累计 ${totalOk}`);

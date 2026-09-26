@@ -5,7 +5,7 @@ module.exports = function initNetdiskManager(deps) {
   var appendLog = deps.appendLog;
   var nmPath = "/";
   var nmAccount = "";
-  function esc(s) { return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  function esc(s) { return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
   function sz(n) { return n > 1073741824 ? (n / 1073741824).toFixed(1) + " GB" : n > 1048576 ? (n / 1048576).toFixed(0) + " MB" : (n / 1024).toFixed(0) + " KB"; }
 
   async function loadAccounts() {

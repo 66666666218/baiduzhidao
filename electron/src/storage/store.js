@@ -432,6 +432,7 @@ class Store {
   // ---------- AI 用量 ----------
 
   addUsage(entry) {
+    this._usageCache = null; // 使缓存失效
     const usage = this.readObject(this.files.usage);
     usage.total = usage.total || { calls: 0, promptTokens: 0, completionTokens: 0 };
     usage.log = Array.isArray(usage.log) ? usage.log : [];
@@ -471,6 +472,10 @@ class Store {
 
   /** 今日 token 用量（按天独立累计，缺失时回退到日志扫描），供日预算上限判断 */
   getUsageToday() {
+    // 性能优化：缓存 1 秒内有效（避免万行循环逐行 readFileSync）
+    if (this._usageCache && Date.now() - this._usageCache.at < 1000 && this._usageCache.dirty !== true) {
+      return this._usageCache.value;
+    }
     const usage = this.readObject(this.files.usage);
     const todayKey = dayKeyOf(nowText());
     const byDay = usage.byDay && typeof usage.byDay === "object" ? usage.byDay : {};
@@ -482,14 +487,19 @@ class Store {
       hasDay = true;
       total += Number(day?.promptTokens || 0) + Number(day?.completionTokens || 0);
     }
-    if (hasDay) return total;
+    if (hasDay) {
+      this._usageCache = { value: total, at: Date.now() };
+      return total;
+    }
     const log = Array.isArray(usage.log) ? usage.log : [];
-    return log.reduce((sum, entry) => {
+    const result = log.reduce((sum, entry) => {
       if (dayKeyOf(entry?.at) === todayKey) {
         return sum + Number(entry?.promptTokens || 0) + Number(entry?.completionTokens || 0);
       }
       return sum;
     }, 0);
+    this._usageCache = { value: result, at: Date.now() };
+    return result;
   }
 
   // ---------- 底层 ----------
