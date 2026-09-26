@@ -107,7 +107,7 @@ async function runBatchTransferTask(ctx, deps) {
 
   // 断点状态
   const baseName = path.basename(filePath).replace(/\.(xlsx|txt)$/i, "").slice(0, 40);
-  const workDir = path.join(dataDir, "批量转存", baseName);
+  const workDir = path.join(dataDir, baseName);  // dataDir 已含"批量转存"层，不再重复
   const stateFile = path.join(workDir, "state.jsonl");
   const outDir = path.join(workDir, "上传专用表");
   const state = new Map();

@@ -65,7 +65,13 @@ async function runBatchUploadTask(ctx, deps) {
   // 打开比特窗口
   log(`打开比特窗口：${bitEnv}`);
   const handle = await browserPool.acquire(bitEnv);
-  const browser = await chromium.connectOverCDP(handle.cdpUrl);
+  let browser;
+  try {
+    browser = await chromium.connectOverCDP(handle.cdpUrl);
+  } catch (e) {
+    await browserPool.release(bitEnv, { close: false });
+    throw e;
+  }
   const context = browser.contexts()[0];
   const cookies = await context.cookies();
   if (!cookies.some((c) => c.name === "BDUSS")) {
@@ -153,6 +159,7 @@ async function runBatchUploadTask(ctx, deps) {
         if (/^upload-\d+-\d+\.xlsx$/.test(f)) fs.rmSync(path.join(tmpDir, f), { force: true });
       }
     } catch { /* 忽略 */ }
+    if (browser) await browser.close().catch(() => {});
     await browserPool.release(bitEnv, { close: false }).catch(() => {});
   }
   // 终止进度上报（缺此行 UI 按钮永久禁用）

@@ -23,6 +23,7 @@
         <button class="nav-item" data-view="submit">🚀 自动提交</button>
         <button class="nav-item" data-view="batch-transfer">🔄 批量转存</button>
         <button class="nav-item" data-view="batch-upload">📤 批量上传</button>
+        <button class="nav-item" data-view="netdisk-manager">🗂 网盘管理</button>
         <button class="nav-item" data-view="links">🔗 常用网址</button>
         <button class="nav-item" data-view="tutorial">📖 使用教程</button>
         <button class="nav-item" data-view="logs">📜 运行日志</button>
@@ -306,6 +307,41 @@
         </div>
       </section>
 
+      <!-- 网盘管理 -->
+      <section class="view" data-view="netdisk-manager">
+        <h2>网盘管理</h2>
+        <div class="card">
+          <h3>网盘账号</h3>
+          <div class="field-grid">
+            <div class="field"><label>从比特窗口提取</label><div class="pair"><input type="text" id="nmWindowName" placeholder="窗口名" /><button class="btn soft" id="nmExtract">提取</button></div></div>
+            <div class="field"><label>账号备注名</label><input type="text" id="nmAccountName" placeholder="如：测试组1" /></div>
+          </div>
+          <div class="card-actions"><button class="btn primary" id="nmAddAccount">添加账号</button><button class="btn soft" id="nmRefreshAccounts">刷新</button></div>
+          <div class="table-wrap"><table id="nmAccountsTable"><thead><tr><th>名称</th><th>总容量</th><th>剩余</th><th>操作</th></tr></thead><tbody id="nmAccountsBody"></tbody></table></div>
+        </div>
+        <div class="card">
+          <h3>网盘浏览</h3>
+          <div class="field-row">
+            <select id="nmSelectAccount" style="max-width:160px"></select>
+            <input type="text" id="nmPath" value="/" style="flex:1" placeholder="路径" />
+            <button class="btn soft" id="nmGo">进入</button>
+            <button class="btn soft" id="nmUp">上级</button>
+            <button class="btn soft" id="nmRefresh">刷新</button>
+          </div>
+          <div class="card-actions">
+            <button class="btn danger outline" id="nmDeleteSelected">删除选中（进回收站）</button>
+            <button class="btn danger outline" id="nmClearRecycle">清空回收站</button>
+            <span class="hint" id="nmQuota"></span>
+          </div>
+          <div class="table-wrap"><table id="nmFilesTable"><thead><tr><th><input type="checkbox" id="nmCheckAll" /></th><th>名称</th><th>类型</th><th>大小</th></tr></thead><tbody id="nmFilesBody"></tbody></table></div>
+        </div>
+        <div class="card">
+          <h3>转存记录</h3>
+          <div class="card-actions"><button class="btn soft" id="nmRefreshRecords">刷新记录</button><span class="hint" id="nmRecordsInfo"></span></div>
+          <div class="table-wrap" style="max-height:300px;overflow:auto"><table id="nmRecordsTable"><thead><tr><th>时间</th><th>资源名</th><th>状态</th><th>来源</th><th>链接</th></tr></thead><tbody id="nmRecordsBody"></tbody></table></div>
+        </div>
+      </section>
+
       <!-- 使用教程 -->
       <section class="view" data-view="tutorial">
         <h2>使用教程</h2>
@@ -385,5 +421,6 @@
     </main>
   </div>
   <script src="renderer.js"></script>
+    <script src="netdisk-manager-view.js"></script>
 </body>
 </html>
