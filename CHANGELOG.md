@@ -1,5 +1,6 @@
 # CHANGELOG
 
+- [2026-09-27 20:40] FEAT: 网盘管理视图——账号管理/浏览/删除/清空回收站/转存记录；manager.js 纯协议服务；确认管理层仅需 Cookie (Files: electron/renderer/netdisk-manager-view.js, electron/src/netdisk/manager.js, electron/app-context.js, electron/preload.js, electron/renderer/index.html, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-28 20:45] FIX: 资源命名——序号/占位表格名改用网盘真实文件名；转存文件夹带资源名；F版包出新 (Files: electron/src/tasks/batch-transfer.js, scripts/pan-transfer-batch.js, electron/app-context.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-27 20:20] FIX: 深度架构审查 20 项修复——并发重复处理/导出崩溃/目录递归/UI 卡死/台账统一/去重键治理/契约测试新增；E修复版包出新 (Files: electron/src/tasks/*, electron/src/netdisk/*, electron/renderer/*, electron/app-context.js, scripts/*, tests/unit/contract.test.js, docs/自审日志.md, CHANGELOG.md)
 - [2026-09-26 20:05] FEAT: 源数据质量治理——空文件不转存/乱码名过滤/规范化名称去重（跨写法）/重复自动跳过；qa-template-lib 全量重写；D版包出新 (Files: electron/src/netdisk/qa-template-lib.js, electron/src/netdisk/protocol.js, electron/src/tasks/batch-transfer.js, docs/自审日志.md, CHANGELOG.md)

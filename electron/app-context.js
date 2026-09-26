@@ -272,6 +272,61 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     shell.showItemInFolder(target);
     return { ok: true };
   });
+  // 网盘管理（纯 Cookie 协议）
+  const manager = require("./src/netdisk/manager");
+  ipcMain.handle("netdisk:accounts:list", () => manager.loadAccounts(dataDir));
+  ipcMain.handle("netdisk:accounts:add", async (_e, acc) => {
+    const name = String(acc && acc.name || "").trim();
+    const bduss = String(acc && acc.bduss || "").trim();
+    if (!name || !bduss) throw new Error("名称与 BDUSS 必填");
+    const stoken = String(acc && acc.stoken || "").trim();
+    const account = { name, bduss, stoken, addedAt: new Date().toISOString() };
+    const check = await manager.quota(account).catch(() => ({ valid: false }));
+    if (!check.valid) throw new Error("凭证无效（BDUSS 失效或格式错误）");
+    const accounts = manager.loadAccounts(dataDir).filter((a) => a.name !== name);
+    accounts.push({ ...account, totalGB: check.totalGB, freeGB: check.freeGB });
+    manager.saveAccounts(dataDir, accounts);
+    return check;
+  });
+  ipcMain.handle("netdisk:accounts:extract-from-window", async (_e, p) => {
+    const env = String(p && p.bitEnv || "").trim();
+    if (!env) throw new Error("请填写比特窗口名");
+    const h = await browserPool.acquire(env);
+    const b = await chromium.connectOverCDP(h.cdpUrl);
+    const cs = await b.contexts()[0].cookies("https://pan.baidu.com");
+    await browserPool.release(env, { close: false });
+    await b.close().catch(() => {});
+    const bd = (cs.find((c) => c.name === "BDUSS") || {}).value || "";
+    if (!bd) throw new Error(`窗口 ${env} 无百度网盘登录态`);
+    return { bduss: bd, stoken: (cs.find((c) => c.name === "STOKEN") || {}).value || "" };
+  });
+  ipcMain.handle("netdisk:accounts:remove", (_e, p) => {
+    const name = String(p && p.name || "");
+    const rest = manager.loadAccounts(dataDir).filter((a) => a.name !== name);
+    manager.saveAccounts(dataDir, rest);
+    return { removed: rest.length };
+  });
+  ipcMain.handle("netdisk:accounts:check", async (_e, p) => {
+    const name = String(p && p.name || "");
+    const acc = manager.loadAccounts(dataDir).find((a) => a.name === name);
+    if (!acc) throw new Error("账号不存在");
+    return manager.quota(acc);
+  });
+  ipcMain.handle("netdisk:list", async (_e, p) => {
+    const name = String(p && p.name || "");
+    const acc = manager.loadAccounts(dataDir).find((a) => a.name === name);
+    if (!acc) throw new Error("账号不存在");
+    return manager.listDir(acc, String(p && p.dir || "/"));
+  });
+  ipcMain.handle("netdisk:delete", async (_e, p) => {
+    const name = String(p && p.name || "");
+    const acc = manager.loadAccounts(dataDir).find((a) => a.name === name);
+    if (!acc) throw new Error("账号不存在");
+    const paths = Array.isArray(p && p.paths) ? p.paths : [];
+    if (!paths.length) throw new Error("未选择要删除的项");
+    return manager.deleteItems(acc, paths);
+  });
+  ipcMain.handle("netdisk:records", () => manager.transferRecords(dataDir));
   ipcMain.handle("task:batch-upload", (_event, payload) => startTask("batch-upload", payload, (ctx) => runBatchUploadTask(ctx, deps())));
 
   // 记录管理
