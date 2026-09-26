@@ -80,7 +80,7 @@ function sendToRenderer(channel, payload) {
 
 logger.onLog((text) => sendToRenderer("task:log", text));
 // 构建标识：日志首行即可辨识版本（排查"装的旧包"问题）
-logger.log("软件构建版本：2026-09-26-B（修复：批量转存点击报错 bitEnv 变量名）");
+logger.log("软件构建版本：2026-09-26-C（新增：输出表名自定义/生成后自动衔接上传/打开表格修改）");
 
 // ---------- 任务包装 ----------
 
@@ -259,6 +259,18 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   // 当天通过数
   ipcMain.handle("task:passed-count", (_event, payload) => startTask("passed-count", payload, (ctx) => runPassedCountTask(ctx, deps())));
   ipcMain.handle("task:batch-transfer", (_event, payload) => startTask("batch-transfer", payload, (ctx) => runBatchTransferTask(ctx, deps())));
+  ipcMain.handle("file:open", async (_event, payload) => {
+    const target = String(payload && payload.filePath || "").replace(/^"|"$/g, "");
+    if (!target || !fs.existsSync(target)) return { ok: false, error: "文件不存在" };
+    const err = await shell.openPath(target);
+    return { ok: !err, error: err || "" };
+  });
+  ipcMain.handle("file:reveal", async (_event, payload) => {
+    const target = String(payload && payload.filePath || "").replace(/^"|"$/g, "");
+    if (!target || !fs.existsSync(target)) return { ok: false, error: "文件不存在" };
+    shell.showItemInFolder(target);
+    return { ok: true };
+  });
   ipcMain.handle("task:batch-upload", (_event, payload) => startTask("batch-upload", payload, (ctx) => runBatchUploadTask(ctx, deps())));
 
   // 记录管理

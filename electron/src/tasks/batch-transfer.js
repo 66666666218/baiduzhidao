@@ -50,6 +50,9 @@ async function runBatchTransferTask(ctx, deps) {
   const delayMax = Math.max(delayMin, Number(payload.delayMax) || 2);
   const makeShare = payload.makeShare !== false;
   const startIdx = Math.max(0, Number(payload.start) || 0);
+  // 自定义输出表名（默认 上传专用表-已转存）
+  const outNameRaw = String(payload.outName || "").trim().replace(/[\/:*?"<>|]/g, "_").slice(0, 60);
+  const outName = outNameRaw || "上传专用表-已转存";
 
   // 读表 / 链接清单
   const XLSX = require("xlsx");
@@ -198,16 +201,18 @@ async function runBatchTransferTask(ctx, deps) {
 
   // 导出上传专用表
   fs.mkdirSync(outDir, { recursive: true });
+  let outputPath = "";
   if (qaRows.length) {
     const ws = XLSX.utils.json_to_sheet(qaRows, { header: ["qid", "问题标题", "回答内容"] });
     const wbOut = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wbOut, ws, "百度知道问答");
-    XLSX.writeFile(wbOut, path.join(outDir, "上传专用表-已转存.xlsx"));
+    outputPath = path.join(outDir, `${outName}.xlsx`);
+    XLSX.writeFile(wbOut, outputPath);
   }
   const totalOk = [...state.values()].filter((s) => s.status === "done").length;
   log(`=== 批量转存完成 === 本轮成功 ${done} | 失败 ${failed} | 历史累计 ${totalOk}`);
-  if (qaRows.length) log(`上传专用表已生成：${path.join(outDir, "上传专用表-已转存.xlsx")}（${qaRows.length} 条）`);
-  return { count: done, failed, totalOk };
+  if (outputPath) log(`上传专用表已生成：${outputPath}（${qaRows.length} 条，可在 Excel 修改后直接上传）`);
+  return { count: done, failed, totalOk, outputPath };
 }
 
 module.exports = { runBatchTransferTask };

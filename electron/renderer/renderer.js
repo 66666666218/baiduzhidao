@@ -232,8 +232,14 @@ $("startBatchTransfer").addEventListener("click", async () => {
       perEnv: Number($("batchPerEnv").value) || 50,
       destDir: $("batchDestDir").value.trim() || "/来自资源批量转存",
       limit: Number($("batchLimit").value) || 0,
+      outName: $("batchOutName").value.trim(),
     });
-    appendLog(`批量转存结束：本轮成功 ${result.count} 条，失败 ${result.failed} 条，历史累计 ${result.totalOk} 条。上传专用表见运行数据目录/批量转存/。`);
+    appendLog(`批量转存结束：本轮成功 ${result.count} 条，失败 ${result.failed} 条，历史累计 ${result.totalOk} 条。`);
+    if (result.outputPath) {
+      $("uploadExcelPath").value = result.outputPath;   // 自动衔接「批量上传」
+      appendLog(`✅ 上传专用表已生成并自动填入「批量上传」视图：${result.outputPath}`);
+      appendLog("可直接切到「📤 批量上传」点开始；也可点「打开表格修改」先用 Excel 编辑后再传。");
+    }
   } catch (error) {
     appendLog(`批量转存失败：${error.message}`);
   }
@@ -242,6 +248,19 @@ $("startBatchTransfer").addEventListener("click", async () => {
 $("pickUploadExcel").addEventListener("click", async () => {
   const result = await call("选择上传专用表", "path:pick-open-table", { title: "选择上传专用表" });
   if (result && !result.canceled) $("uploadExcelPath").value = result.filePath;
+});
+
+$("editUploadExcel").addEventListener("click", async () => {
+  const filePath = $("uploadExcelPath").value;
+  if (!filePath) { appendLog("请先选择/生成上传专用表。"); return; }
+  const r = await rpc.invoke("file:open", { filePath });
+  if (!r.ok) appendLog(`打开表格失败：${r.error}`);
+});
+
+$("revealUploadExcel").addEventListener("click", async () => {
+  const filePath = $("uploadExcelPath").value;
+  if (!filePath) { appendLog("请先选择/生成上传专用表。"); return; }
+  await rpc.invoke("file:reveal", { filePath });
 });
 
 $("startBatchUpload").addEventListener("click", async () => {

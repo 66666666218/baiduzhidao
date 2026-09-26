@@ -273,6 +273,7 @@
             <div class="field"><label>每窗口连续条数（轮换粒度）</label><input type="number" id="batchPerEnv" min="1" value="50" /></div>
             <div class="field"><label>转存目标目录</label><input type="text" id="batchDestDir" value="/来自资源批量转存" /></div>
             <div class="field"><label>数量上限（0=全部）</label><input type="number" id="batchLimit" min="0" value="20" /></div>
+            <div class="field"><label>输出表格名称（可自定义）</label><input type="text" id="batchOutName" placeholder="上传专用表-已转存" /></div>
           </div>
           <div class="card-actions">
             <button class="btn primary" id="startBatchTransfer">开始批量转存</button>
@@ -299,6 +300,8 @@
           </div>
           <div class="card-actions">
             <button class="btn primary" id="startBatchUpload">开始批量上传</button>
+            <button class="btn soft" id="editUploadExcel">打开表格修改</button>
+            <button class="btn soft" id="revealUploadExcel">打开所在文件夹</button>
           </div>
         </div>
       </section>
