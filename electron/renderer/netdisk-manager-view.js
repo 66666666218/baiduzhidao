@@ -1,8 +1,10 @@
 "use strict";
-module.exports = function initNetdiskManager(deps) {
-  var $ = deps.$;
-  var rpc = deps.rpc;
-  var appendLog = deps.appendLog;
+// 浏览器脚本，在 renderer.js 之后加载：直接自初始化（此前用 module.exports 工厂
+// 却被 <script> 加载，首行即 ReferenceError，整个视图事件从未绑定过）
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var rpc = window.api;
+  var appendLog = window.appendLog;
   var nmPath = "/";
   var nmAccount = "";
   function esc(s) { return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
@@ -17,7 +19,7 @@ module.exports = function initNetdiskManager(deps) {
       sel.innerHTML = "";
       list.forEach(function (a) {
         var tr = document.createElement("tr");
-        tr.innerHTML = "<td>" + esc(a.name) + "</td><td>" + (a.totalGB || "-") + " GB</td><td>" + (a.freeGB != null ? a.freeGB + " GB" : "-") + "</td>";
+        tr.innerHTML = "<td>" + esc(a.name) + "</td><td>" + (a.totalGB || "-") + " GB</td><td>" + (a.freeGB != null ? a.freeGB + " GB" : "-") + "</td><td><button class='btn danger outline nm-del' data-name='" + esc(a.name) + "'>删除</button></td>";
         body.appendChild(tr);
         var opt = document.createElement("option");
         opt.value = a.name;
@@ -63,6 +65,49 @@ module.exports = function initNetdiskManager(deps) {
     } catch (e) { appendLog('记录加载失败：' + e.message); }
   }
 
+  // 解析用户粘贴的 Cookie 文本 → { bduss, stoken }
+  // 支持三种写法：完整 Cookie 串（BDUSS=xx; STOKEN=yy）、换行/分号分隔的两个纯值、单个纯 BDUSS 值
+  function parseCookie(text) {
+    var s = String(text || "").trim();
+    if (!s) return { bduss: "", stoken: "" };
+    var mBd = s.match(/BDUSS\s*=\s*([^;,\s]+)/i);
+    var mSt = s.match(/STOKEN\s*=\s*([^;,\s]+)/i);
+    if (mBd) return { bduss: mBd[1], stoken: mSt ? mSt[1] : "" };
+    var parts = s.split(/[\n;,\s]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    if (parts.length === 1) return { bduss: parts[0], stoken: "" };
+    if (parts.length >= 2) {
+      // BDUSS 约 190 位、STOKEN 约 32 位，按长度判别避免粘贴顺序干扰
+      return parts[0].length >= parts[1].length ? { bduss: parts[0], stoken: parts[1] } : { bduss: parts[1], stoken: parts[0] };
+    }
+    return { bduss: "", stoken: "" };
+  }
+
+  async function addAccountFromCookie() {
+    var name = document.getElementById("nmAccountName").value.trim();
+    var cookieText = document.getElementById("nmCookie").value.trim();
+    if (!cookieText) { appendLog("请先粘贴 Cookie：浏览器登录 pan.baidu.com 后 F12 → 网络 → 复制任意请求头里的整串 Cookie。"); return; }
+    var creds = parseCookie(cookieText);
+    if (!creds.bduss) { appendLog("未解析到 BDUSS，请检查粘贴内容（需含 BDUSS，或直接粘贴纯 BDUSS 值）。"); return; }
+    if (!name) name = "账号" + new Date().toISOString().slice(5, 16).replace(/[-:T]/g, "");
+    try {
+      var q = await rpc.invoke("netdisk:accounts:add", { name: name, bduss: creds.bduss, stoken: creds.stoken });
+      appendLog("✅ " + name + " 添加成功（总 " + q.totalGB + " GB | 剩余 " + q.freeGB + " GB）");
+      document.getElementById("nmCookie").value = "";
+      loadAccounts();
+    } catch (e) { appendLog("添加账号失败：" + e.message); }
+  }
+
+  async function removeAccount(name) {
+    if (!confirm("移除账号「" + name + "」？（仅从软件移除，不删除网盘文件）")) return;
+    try {
+      await rpc.invoke("netdisk:accounts:remove", { name: name });
+      appendLog("✅ 已移除账号 " + name);
+      loadAccounts();
+    } catch (e) { appendLog("移除账号失败：" + e.message); }
+  }
+
+  document.getElementById("nmAddAccount").addEventListener("click", addAccountFromCookie);
+
   document.getElementById("nmExtract").addEventListener("click", async function () {
     var win = document.getElementById("nmWindowName").value.trim();
     var name = document.getElementById("nmAccountName").value.trim() || win;
@@ -76,6 +121,10 @@ module.exports = function initNetdiskManager(deps) {
   });
 
   document.getElementById("nmRefreshAccounts").addEventListener("click", loadAccounts);
+  document.getElementById("nmAccountsBody").addEventListener("click", function (e) {
+    var btn = e.target.closest(".nm-del");
+    if (btn) removeAccount(btn.dataset.name);
+  });
   document.getElementById("nmGo").addEventListener("click", function () { browse(document.getElementById("nmPath").value.trim() || "/"); });
   document.getElementById("nmUp").addEventListener("click", function () {
     var p = nmPath.replace(/\/+$/, "");
@@ -99,5 +148,8 @@ module.exports = function initNetdiskManager(deps) {
   });
   document.getElementById("nmRefreshRecords").addEventListener("click", loadRecords);
 
-  return { loadAccounts: loadAccounts, browse: browse, loadRecords: loadRecords };
-};
+  loadAccounts();
+  loadRecords();
+
+  window.netdiskManager = { loadAccounts: loadAccounts, browse: browse, loadRecords: loadRecords };
+})();
