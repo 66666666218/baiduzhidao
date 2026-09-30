@@ -70,3 +70,49 @@ test("采样策略：未知策略回退 random", () => {
   const result = randomPickQuestions(bank, [], { categories: ["三类一起"], count: 2, strategy: "nonsense" });
   assert.equal(result.picked.length, 2);
 });
+
+// ---------- 已提交题永久出池（防重复答题） ----------
+
+test("已提交题被 excludeKeys 排除，不再进入抽题池", () => {
+  const bank = makeBank(5);
+  const exclude = new Set([bank[0], bank[2]].map((b) => `url:${b.questionUrl}`));
+  const result = randomPickQuestions(bank, [], { categories: ["三类一起"], count: 10, excludeKeys: exclude });
+  assert.equal(result.picked.length, 3, "只抽未提交的 3 条");
+  assert.equal(result.excludedSubmitted, 2);
+  assert.ok(result.picked.every((p) => p.questionUrl !== bank[0].questionUrl && p.questionUrl !== bank[2].questionUrl));
+});
+
+test("全部题目均已提交时出空池，不因重开轮复活已提交题", () => {
+  const bank = makeBank(3);
+  const exclude = new Set(bank.map((b) => `url:${b.questionUrl}`));
+  const result = randomPickQuestions(bank, [], { categories: ["三类一起"], count: 5, excludeKeys: exclude });
+  assert.equal(result.picked.length, 0);
+  assert.equal(result.excludedSubmitted, 3);
+});
+
+test("重开一轮时 usedKeys 清空，但已提交题仍被排除", () => {
+  const bank = makeBank(6);
+  const submitted = bank.slice(0, 2);
+  const exclude = new Set(submitted.map((b) => `url:${b.questionUrl}`));
+  // usedKeys 覆盖全部未提交题 → available 为空 → 触发重开轮
+  const usedKeys = bank.slice(2).map((b) => `url:${b.questionUrl}`);
+  const result = randomPickQuestions(bank, usedKeys, { categories: ["三类一起"], count: 10, excludeKeys: exclude });
+  assert.equal(result.resetRound, true, "应触发重开轮");
+  assert.ok(result.picked.every((p) => !submitted.some((s) => s.questionUrl === p.questionUrl)), "重开轮后已提交题不得复活");
+});
+
+test("excludeKeys 支持无链接题的 title 键（与抽题键同构）", () => {
+  const bank = [{ title: "同一道题", category: "情感类" }, { title: "另一道题", category: "情感类" }];
+  const result = randomPickQuestions(bank, [], { categories: ["三类一起"], count: 10, excludeKeys: new Set(["title:同一道题"]) });
+  assert.equal(result.picked.length, 1);
+  assert.equal(result.picked[0].title, "另一道题");
+});
+
+test("不传 excludeKeys 时行为与旧版一致（兼容）", () => {
+  const bank = makeBank(5);
+  const r1 = randomPickQuestions(bank, [], { categories: ["情感类"], count: 3 });
+  assert.equal(r1.picked.length, 3);
+  assert.equal(r1.excludedSubmitted, 0);
+  const r2 = randomPickQuestions(bank, r1.usedKeys, { categories: ["情感类"], count: 5 });
+  assert.equal(r2.picked.length, 2, "usedKeys 跨轮去重不受影响");
+});

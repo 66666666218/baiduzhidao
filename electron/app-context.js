@@ -176,12 +176,29 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   ipcMain.handle("questions:random-pick", async (_event, payload) => {
     const bank = store.loadBank();
     if (!bank.length) throw new Error("题库为空，请先爬题或导入题库表格。");
+    // 已提交的题以 answers 台账为准永久出池：此前只靠 usedKeys 去重，
+    // 重开轮（题库抽满一轮自动清空）或题库重爬导致键失配时，答过的题会被再次抽中。
+    const pickKeyOf = (item) => {
+      const url = String(item.questionUrl || "").trim().toLowerCase();
+      return url ? `url:${url}` : `title:${String(item.title || "").replace(/\s+/g, "").toLowerCase()}`;
+    };
+    const submittedKeys = new Set(
+      store.loadAnswers()
+        .filter((a) => a && a.status === "已提交")
+        .map(pickKeyOf)
+        .filter(Boolean)
+    );
     const result = randomPickQuestions(bank, store.loadUsedKeys(), {
       categories: payload && payload.categories,
       count: (payload && payload.count) || config.load().randomCount,
       strategy: payload && payload.strategy,
+      excludeKeys: submittedKeys,
     });
-    if (!result.picked.length) throw new Error("当前分类下没有可抽的题目。");
+    if (!result.picked.length) {
+      if (result.excludedSubmitted > 0) throw new Error("当前分类下的题目均已提交过，没有可抽的新题（可先爬题扩充题库）。");
+      throw new Error("当前分类下没有可抽的题目。");
+    }
+    if (result.excludedSubmitted > 0) emit("task:log", `去重：已排除 ${result.excludedSubmitted} 条已提交过的题目，不会重复作答`);
 
     // 先确定输出路径（用户取消则直接返回，不消耗去重额度）
     let outputPath = String((payload && payload.outputPath) || config.load().randomOutputPath || "").trim().replace(/^"|"$/g, "");

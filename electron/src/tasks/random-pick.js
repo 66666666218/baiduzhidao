@@ -6,6 +6,8 @@ const { normalizeCategories } = require("../config");
  * 随机抽题（纯函数，可测）：
  * - 按分类过滤题库
  * - 跨轮次去重（usedKeys）；全部用完后自动重开一轮
+ * - excludeKeys：已提交题的永久出池名单（以 answers 台账为准）。
+ *   此前重开轮会清空 usedKeys，已答过的题重新进池导致重复作答。
  * - 采样策略：
  *     random        随机（默认）
  *     newest        最新入库优先
@@ -18,17 +20,23 @@ const STRATEGIES = new Set(["random", "newest", "oldest", "unanswered", "categor
 
 function randomPickQuestions(bank, usedKeys, options) {
   // options 显式传 null 时解构默认值不生效（只对 undefined 生效），会直接 TypeError
-  const { categories, count, strategy = "random" } = options || {};
+  const { categories, count, strategy = "random", excludeKeys } = options || {};
   const selectedCategories = new Set(normalizeCategories(categories));
-  const pool = (Array.isArray(bank) ? bank : []).filter((item) => {
-    if (!item || typeof item !== "object") return false; // 题库 JSON 被半写坏时数组里可能混进 null
-    const category = String(item.category || "").trim();
-    return !category || selectedCategories.has(category);
-  });
+  const exclude = excludeKeys instanceof Set ? excludeKeys : new Set(Array.isArray(excludeKeys) ? excludeKeys : []);
   const keyOf = (item) => {
     const url = String(item.questionUrl || "").trim().toLowerCase();
     return url ? `url:${url}` : `title:${String(item.title || "").replace(/\s+/g, "").toLowerCase()}`;
   };
+
+  let excludedSubmitted = 0;
+  const pool = (Array.isArray(bank) ? bank : []).filter((item) => {
+    if (!item || typeof item !== "object") return false; // 题库 JSON 被半写坏时数组里可能混进 null
+    const category = String(item.category || "").trim();
+    if (category && !selectedCategories.has(category)) return false;
+    // 已提交过的题永久出池：usedKeys 失配或重开轮都不能让它们复活（防重复答题）
+    if (exclude.has(keyOf(item))) { excludedSubmitted += 1; return false; }
+    return true;
+  });
 
   const bankKeys = new Set(pool.map(keyOf));
   // 用 Set 而不是数组 includes：万级题库 × 千级已用键时，逐项线性扫描会在主进程里
@@ -53,6 +61,7 @@ function randomPickQuestions(bank, usedKeys, options) {
     total: pool.length,
     remainingAfter,
     resetRound,
+    excludedSubmitted,
     strategy: normalizeStrategy(strategy),
   };
 }

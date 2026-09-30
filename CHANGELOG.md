@@ -1,5 +1,6 @@
 # CHANGELOG
 
+- [2026-09-30 23:30] FIX: 重复答题修复——随机抽题以 answers 台账为准将「已提交」题永久出池（此前仅靠 usedKeys 去重：题库抽满一轮自动清空重开轮、或题库重爬致键失配时，答过的题会再次被抽中作答）；新增 excludedSubmitted 统计与日志，全部答完时明确提示"没有可抽的新题" (Files: electron/src/tasks/random-pick.js, electron/app-context.js, tests/unit/random-pick.test.js, CHANGELOG.md, docs/自审日志.md)
 - [2026-09-30 12:00] FIX: 「添加账号」按钮补接线（nmAddAccount 从未绑定点击事件——点击无反应无日志的根因）+ 新增 Cookie 粘贴添加账号（免比特浏览器，支持完整 Cookie 串/纯 BDUSS 值，自动解析 BDUSS+STOKEN 并验证额度）+ 账号表「操作」列补删除按钮接线（netdisk:accounts:remove 此前无前端入口）+ 修复 netdisk-manager-view.js CommonJS 外壳被 script 加载致整个模块从未执行（module is not defined，冒烟 rendererErrors 清零，网盘管理视图按钮此前全部无响应） (Files: electron/renderer/index.html, electron/renderer/netdisk-manager-view.js, CHANGELOG.md, docs/自审日志.md)
 - [2026-09-27 21:00] FIX: 深度架构审查高优 5 项修复——网盘管理接线/路径双嵌套/脚本未定义变量/submit熔断/CDP泄漏 + 契约测试 (Files: electron/renderer/index.html, electron/renderer/netdisk-manager-view.js, electron/src/tasks/batch-transfer.js, electron/src/tasks/submit.js, electron/src/tasks/upload-batch.js, scripts/pan-transfer-batch.js, tests/unit/contract.test.js, docs/自审日志.md)
 - [2026-09-27 20:40] FEAT: 网盘管理视图——账号管理/浏览/删除/清空回收站/转存记录；manager.js 纯协议服务；确认管理层仅需 Cookie (Files: electron/renderer/netdisk-manager-view.js, electron/src/netdisk/manager.js, electron/app-context.js, electron/preload.js, electron/renderer/index.html, docs/自审日志.md, CHANGELOG.md)
