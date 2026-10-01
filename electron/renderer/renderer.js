@@ -219,6 +219,26 @@ $("pickBatchExcel").addEventListener("click", async () => {
   if (result && !result.canceled) $("batchExcelPath").value = result.filePath;
 });
 
+// ---------- 从答主主页找资源 → 自动衔接批量转存 ----------
+$("startCrawlHome").addEventListener("click", async () => {
+  const homepages = $("chHomepages").value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+  if (!homepages.length) { appendLog("请先粘贴至少一个答主主页地址（问题页点对方头像可得 usercenter 链接）。"); return; }
+  appendLog(`主页找资源启动：${homepages.length} 个主页，资源上限 ${Number($("chLimit").value) || "不限"}，问题页兜底 ${Number($("chEnrich").value)} 次。`);
+  try {
+    const result = await rpc.invoke("task:crawl-home", {
+      homepages,
+      limit: Number($("chLimit").value) || 0,
+      enrichLimit: Number($("chEnrich").value),
+    });
+    appendLog(`✅ 主页找资源完成：产出 ${result.count} 条资源（摘要直提 ${result.stats.direct}、问题页兜底 ${result.stats.enriched}、问题页失败跳过 ${result.stats.failed}）。`);
+    $("batchExcelPath").value = result.outputPath;   // 自动衔接「批量转存」
+    appendLog(`资源表格已自动填入「资源表格」：${result.outputPath}`);
+    appendLog("确认下方比特环境名后点「开始批量转存」即可转存为自己的资源。");
+  } catch (error) {
+    appendLog(`主页找资源失败：${error.message}`);
+  }
+});
+
 $("startBatchTransfer").addEventListener("click", async () => {
   if (!await saveSettingsQuiet()) return;
   const filePath = $("batchExcelPath").value;

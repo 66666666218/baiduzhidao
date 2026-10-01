@@ -19,6 +19,7 @@ const invokeChannels = new Set([
   "task:passed-count",
   "task:batch-transfer",
   "task:batch-upload",
+  "task:crawl-home",
   "netdisk:accounts:list",
   "netdisk:accounts:add",
   "netdisk:accounts:extract-from-window",

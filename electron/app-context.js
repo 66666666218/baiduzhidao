@@ -277,6 +277,29 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   // 当天通过数
   ipcMain.handle("task:passed-count", (_event, payload) => startTask("passed-count", payload, (ctx) => runPassedCountTask(ctx, deps())));
   ipcMain.handle("task:batch-transfer", (_event, payload) => startTask("batch-transfer", payload, (ctx) => runBatchTransferTask(ctx, deps())));
+  // 主页找资源：答主主页 → 网盘资源表格（纯协议爬取，只取资源链接与问题地址，回答内容不落盘）
+  const homeCrawler = require("./src/netdisk/home-crawler");
+  ipcMain.handle("task:crawl-home", (_event, payload) => startTask("crawl-home", payload, async (ctx) => {
+    const { log } = deps();
+    const homepages = (Array.isArray(ctx.payload.homepages) ? ctx.payload.homepages : [])
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+    if (!homepages.length) throw new Error("请填写至少一个答主主页地址（usercenter 链接，每行一个）");
+    const enrichLimit = Number(ctx.payload.enrichLimit);
+    const result = await homeCrawler.crawlHomeResources({
+      homepages,
+      limit: Number(ctx.payload.limit) || 0,
+      enrichLimit: Number.isFinite(enrichLimit) && enrichLimit > 0 ? enrichLimit : 50,
+      onLog: log,
+      onPage: (p) => ctx.report({ done: p.accumulated, total: p.total, status: "running" }),
+      shouldStop: () => ctx.shouldStop(),
+    });
+    const rows = result.rows.map((r) => ({ 资源名: r.name, 链接: r.link, 提取码: r.pwd, 问题链接: r.questionUrl }));
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+    const outputPath = path.join(dataDir, "主页找资源", `主页资源_${stamp}.xlsx`);
+    const savedPath = excel.writeWorkbookSafe(outputPath, rows, "主页资源", ["资源名", "链接", "提取码", "问题链接"], log);
+    return { count: rows.length, stats: result.stats, outputPath: savedPath };
+  }));
   ipcMain.handle("file:open", async (_event, payload) => {
     const target = String(payload && payload.filePath || "").replace(/^"|"$/g, "");
     if (!target || !fs.existsSync(target)) return { ok: false, error: "文件不存在" };

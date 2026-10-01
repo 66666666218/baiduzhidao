@@ -1,5 +1,7 @@
 # CHANGELOG
 
+- [2026-10-01 00:30] FEAT: 「从答主主页找资源」——纯协议爬取同行答主 usercenter 回答列表（ihome/api/myanswer 接口免登录翻页），摘要直提网盘链接+疑似资源题开问题页 SSR 全文兜底（pwd=/提取码 正则），产出「资源名/链接/提取码/问题链接」表格自动填入批量转存；只取资源与问题地址不搬运回答内容（平台搬运封号红线）；新增 probe-usercenter.js 探测脚本供页面改版复测 (Files: electron/src/netdisk/home-crawler.js, electron/app-context.js, electron/preload.js, electron/renderer/index.html, electron/renderer/renderer.js, scripts/probe-usercenter.js, tests/unit/home-crawler.test.js, CHANGELOG.md, docs/自审日志.md)
+
 - [2026-09-30 23:30] FIX: 重复答题修复——随机抽题以 answers 台账为准将「已提交」题永久出池（此前仅靠 usedKeys 去重：题库抽满一轮自动清空重开轮、或题库重爬致键失配时，答过的题会再次被抽中作答）；新增 excludedSubmitted 统计与日志，全部答完时明确提示"没有可抽的新题" (Files: electron/src/tasks/random-pick.js, electron/app-context.js, tests/unit/random-pick.test.js, CHANGELOG.md, docs/自审日志.md)
 - [2026-09-30 12:00] FIX: 「添加账号」按钮补接线（nmAddAccount 从未绑定点击事件——点击无反应无日志的根因）+ 新增 Cookie 粘贴添加账号（免比特浏览器，支持完整 Cookie 串/纯 BDUSS 值，自动解析 BDUSS+STOKEN 并验证额度）+ 账号表「操作」列补删除按钮接线（netdisk:accounts:remove 此前无前端入口）+ 修复 netdisk-manager-view.js CommonJS 外壳被 script 加载致整个模块从未执行（module is not defined，冒烟 rendererErrors 清零，网盘管理视图按钮此前全部无响应） (Files: electron/renderer/index.html, electron/renderer/netdisk-manager-view.js, CHANGELOG.md, docs/自审日志.md)
 - [2026-09-27 21:00] FIX: 深度架构审查高优 5 项修复——网盘管理接线/路径双嵌套/脚本未定义变量/submit熔断/CDP泄漏 + 契约测试 (Files: electron/renderer/index.html, electron/renderer/netdisk-manager-view.js, electron/src/tasks/batch-transfer.js, electron/src/tasks/submit.js, electron/src/tasks/upload-batch.js, scripts/pan-transfer-batch.js, tests/unit/contract.test.js, docs/自审日志.md)

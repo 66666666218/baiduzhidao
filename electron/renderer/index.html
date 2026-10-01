@@ -262,6 +262,16 @@
       <section class="view" data-view="batch-transfer">
         <h2>批量转存</h2>
         <div class="card">
+          <h3>从答主主页找资源（推荐入口）</h3>
+          <p class="hint">粘贴同行答主的主页链接（问题页点对方头像可得，形如 zhidao.baidu.com/usercenter?uid=xxx，每行一个），自动翻页拉取 TA 回答过的问答，筛出带百度网盘资源的，产出资源表格并自动填入下方「资源表格」，接着直接批量转存即可。只取资源链接与问题地址，不搬运任何回答内容。</p>
+          <div class="field-grid">
+            <div class="field" style="grid-column: 1 / -1;"><label>答主主页地址（每行一个）</label><textarea id="chHomepages" rows="3" placeholder="https://zhidao.baidu.com/usercenter?uid=xxxxxxxx&#10;https://zhidao.baidu.com/usercenter?uid=yyyyyyyy"></textarea></div>
+            <div class="field"><label>资源条数上限（0=不限）</label><input type="number" id="chLimit" min="0" value="0" /></div>
+            <div class="field"><label>问题页兜底上限（摘要没链接时开问题页找，0=不兜底）</label><input type="number" id="chEnrich" min="0" value="50" /></div>
+          </div>
+          <div class="card-actions"><button class="btn primary" id="startCrawlHome">开始找资源</button><span class="hint">爬取有限速，50 个问题页约 2 分钟</span></div>
+        </div>
+        <div class="card">
           <p class="hint">纯协议批量转存：把表格/链接清单里的资源批量转存到自己的网盘（无需窗口点击），转存成功后自动创建自己的永久分享，并生成可直接上传的上传专用表。仅启动时从指定窗口提取一次网盘登录凭证。</p>
           <div class="field"><label>资源表格（xlsx，含 名称/链接/提取码 列，自动识别）</label>
             <div class="pair">
