@@ -126,6 +126,53 @@ $("exportBank").addEventListener("click", async () => {
   }
 });
 
+// ---------- 软件更新（GitHub Releases） ----------
+(async () => {
+  try {
+    const info = await rpc.invoke("update:info");
+    $("updateInfo").textContent = `当前版本 v${info.version}`;
+    $("checkUpdate").disabled = !info.supported;
+    if (!info.supported) $("updateInfo").textContent += "（开发模式不支持在线更新）";
+  } catch { /* 通道异常不影响其他功能 */ }
+})();
+
+$("checkUpdate").addEventListener("click", async () => {
+  $("checkUpdate").disabled = true;
+  $("updateInfo").textContent = "检查更新中…";
+  try {
+    const r = await rpc.invoke("update:check");
+    $("updateInfo").textContent = `当前版本 v${r.currentVersion}`;
+  } catch (error) {
+    $("updateInfo").textContent = "检查失败，详见运行日志";
+    appendLog(`检查更新失败：${error.message}`);
+  } finally {
+    $("checkUpdate").disabled = false;
+  }
+});
+
+$("installUpdate").addEventListener("click", async () => {
+  try {
+    await rpc.invoke("update:install");
+  } catch (error) {
+    appendLog(`安装失败：${error.message}`);
+  }
+});
+
+// 下载完成后启用「重启并安装」按钮：监听运行日志里的完成标记（与主进程 update-downloaded 同步）
+rpc.on("task:log", (text) => {
+  if (typeof text === "string" && text.includes("下载完成。重启软件即自动安装")) $("installUpdate").disabled = false;
+});
+
+$("openReleases").addEventListener("click", async () => {
+  try {
+    const info = await rpc.invoke("update:info");
+    // link:open 的 handler 接收纯字符串 URL（不是对象）
+    await rpc.invoke("link:open", String(info.releasesUrl || ""));
+  } catch (error) {
+    appendLog(`打开发布页失败：${error.message}`);
+  }
+});
+
 $("refreshStats").addEventListener("click", refreshBankStats);
 
 $("randomPick").addEventListener("click", async () => {

@@ -522,6 +522,55 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   // AI 用量
   ipcMain.handle("ai:usage", () => store.getUsage());
 
+  // 软件更新（GitHub Releases；仅打包版可用，开发模式直接拒绝）
+  // 下载有 20%~100% 节流日志；下载完成后退出软件即自动安装（也可在界面点「重启并安装」）。
+  // 国内直连 GitHub 不稳定，失败时日志会给出发布页链接，可用浏览器手动下载兜底。
+  const RELEASES_URL = "https://github.com/66666666218/baiduzhidao/releases/latest";
+  let updateReady = false;
+  let lastProgressLog = 0;
+  try {
+    const { autoUpdater } = require("electron-updater");
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on("checking-for-update", () => emit("task:log", "检查更新中…"));
+    autoUpdater.on("update-available", (info) => emit("task:log", `发现新版本 v${info.version}，开始下载（约 85MB）…`));
+    autoUpdater.on("update-not-available", (info) => emit("task:log", `已是最新版本（v${info.version}），无需更新。`));
+    autoUpdater.on("download-progress", (p) => {
+      if (p.percent - lastProgressLog >= 20 || p.percent >= 100) {
+        lastProgressLog = p.percent;
+        emit("task:log", `新版本下载中：${Math.round(p.percent)}%（${(p.transferred / 1048576).toFixed(0)}/${(p.total / 1048576).toFixed(0)} MB）`);
+      }
+    });
+    autoUpdater.on("update-downloaded", (info) => {
+      updateReady = true;
+      emit("task:log", `✅ 新版本 v${info.version} 下载完成。重启软件即自动安装；也可在「使用教程 → 软件更新」点「重启并安装新版」立即完成。`);
+    });
+    autoUpdater.on("error", (e) => {
+      emit("task:log", `⚠️ 更新失败：${e.message}`);
+      emit("task:log", `可改用手动更新：浏览器打开发布页 ${RELEASES_URL} 下载最新安装包直接安装（答题数据不受影响）。`);
+    });
+  } catch (e) {
+    logger.log(`更新模块初始化失败（不影响其他功能）：${e.message}`);
+  }
+  ipcMain.handle("update:check", async () => {
+    if (!app.isPackaged) throw new Error("开发模式不支持在线检查更新（仅打包版可用）。");
+    const { autoUpdater } = require("electron-updater");
+    lastProgressLog = 0;
+    await autoUpdater.checkForUpdates();
+    return { currentVersion: app.getVersion() };
+  });
+  ipcMain.handle("update:install", () => {
+    if (!updateReady) throw new Error("新版尚未下载完成，请先「检查更新」并等待下载完成。");
+    const { autoUpdater } = require("electron-updater");
+    autoUpdater.quitAndInstall();
+    return { ok: true };
+  });
+  ipcMain.handle("update:info", () => ({
+    version: app.getVersion(),
+    supported: Boolean(app.isPackaged),
+    releasesUrl: RELEASES_URL,
+  }));
+
   // 数据目录
   ipcMain.handle("app:data-dir", () => dataDir);
   ipcMain.handle("app:open-data-dir", async () => {

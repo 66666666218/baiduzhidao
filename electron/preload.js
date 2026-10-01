@@ -48,6 +48,9 @@ const invokeChannels = new Set([
   "app:data-dir",
   "app:open-data-dir",
   "app:selftest",
+  "update:check",
+  "update:install",
+  "update:info",
 ]);
 
 const listenerChannels = new Set(["task:log", "task:progress", "task:item"]);

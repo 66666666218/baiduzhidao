@@ -369,6 +369,17 @@
         </div>
 
         <div class="card">
+          <h3>🔄 软件更新</h3>
+          <div class="card-actions">
+            <button class="btn primary" id="checkUpdate">检查更新</button>
+            <button class="btn soft" id="installUpdate" disabled>重启并安装新版</button>
+            <button class="btn soft" id="openReleases">打开发布页（手动下载）</button>
+            <span class="hint" id="updateInfo">当前版本检测中…</span>
+          </div>
+          <p class="hint">新版发布后点「检查更新」即可自动下载安装，答题数据不受影响。若下载失败（国内网络波动），点「打开发布页」用浏览器手动下载安装包，直接安装即可覆盖升级。</p>
+        </div>
+
+        <div class="card">
           <h3>① 准备工作（一次性）</h3>
           <ol class="tutorial-steps">
             <li>安装比特浏览器（bitbrowser.cn）并注册登录；打开「系统设置 → 本地设置」→ 开启 API 服务（默认端口 54345，无需改动）。</li>
