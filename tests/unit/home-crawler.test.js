@@ -133,3 +133,70 @@ test("端到端：同资源跨问答/跨主页只出一次；全部无资源时�
     /没有找到/
   );
 });
+
+// ---------- 审查修复回归（2026-10-01） ----------
+
+test("enrichLimit=0 时不开问题页兜底（UI 承诺 0=不兜底）", async () => {
+  const apiPages = [{ listNum: 1, list: [{ qid: "222", title: "求资源B全集", replyContent: "摘要没链接", isDeleted: 0 }] }];
+  let questionPageOpened = 0;
+  const fetchImpl = async (url) => {
+    if (url.includes("/question/")) { questionPageOpened += 1; return "<div>pan.baidu.com/s/fullB2</div>"; }
+    return JSON.stringify({ errno: 0, data: { question: apiPages[0] } });
+  };
+  // 摘要无链接+不兜底 → 无产出报"没有找到"；关键断言是问题页一次都没开
+  await assert.rejects(
+    () => crawlHomeResources({ homepages: ["abcdef0123456789"], enrichLimit: 0, fetchImpl, questionDelayMs: 0 }),
+    /没有找到/
+  );
+  assert.equal(questionPageOpened, 0, "不兜底：问题页一次都不开");
+});
+
+test("同一问题被多个答主回答：各自的摘要链接都不丢（qid 去重不挡摘要直提）", async () => {
+  const pageOf = (qid, link) => ({ listNum: 1, list: [{ qid, title: "求资源X", replyContent: `pan.baidu.com/s/${link}`, isDeleted: 0 }] });
+  const fetchImpl = async (url) => {
+    const uid = new URL(url).searchParams.get("uid");
+    return JSON.stringify({ errno: 0, data: { question: uid === "aaaa0000bbbb1111" ? pageOf("777", "fromA") : pageOf("777", "fromB") } });
+  };
+  const { rows } = await crawlHomeResources({
+    homepages: ["aaaa0000bbbb1111", "cccc0000dddd2222"],
+    fetchImpl, questionDelayMs: 0,
+  });
+  assert.deepEqual(rows.map((r) => r.link), ["https://pan.baidu.com/s/fromA", "https://pan.baidu.com/s/fromB"], "两个答主对同一问题的不同资源都要保留");
+});
+
+test("单个主页接口失败只跳过该答主，其余主页照常产出", async () => {
+  const okPages = { listNum: 1, list: [{ qid: "888", title: "求资源OK", replyContent: "pan.baidu.com/s/okLink", isDeleted: 0 }] };
+  const fetchImpl = async (url) => {
+    const uid = new URL(url).searchParams.get("uid");
+    if (uid === "badbad0000badbad1") throw new Error("模拟风控");
+    return JSON.stringify({ errno: 0, data: { question: okPages } });
+  };
+  const { rows, stats } = await crawlHomeResources({
+    homepages: ["badbad0000badbad1", "feed0000face0001"],
+    fetchImpl, questionDelayMs: 0,
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].link, "https://pan.baidu.com/s/okLink");
+  assert.equal(stats.failed, 1, "失败主页计入 failed");
+});
+
+test("用户主动停止且无产出时返回 stopped 标记，不抛错", async () => {
+  const apiPages = { listNum: 1, list: [{ qid: "999", title: "如何安慰", replyContent: "没有链接", isDeleted: 0 }] };
+  const result = await crawlHomeResources({
+    homepages: ["abcdef0123456789"],
+    fetchImpl: makeE2EFetch({ apiPages: [apiPages], questionHtml: {} }),
+    questionDelayMs: 0,
+    shouldStop: () => true,
+  });
+  assert.equal(result.stopped, true);
+  assert.equal(result.rows.length, 0);
+});
+
+test("翻页截断标记：总数超安全上限时 truncated=true", async () => {
+  const bigPage = { listNum: 3000, list: Array.from({ length: 20 }, (_v, i) => ({ qid: String(i) })) };
+  const { truncated, items } = await crawlHomeAnswers("abcdef0123456789", {
+    fetchImpl: makeApiFetch([bigPage, bigPage, bigPage]), pageDelayMs: 0, maxPages: 3,
+  });
+  assert.equal(truncated, true);
+  assert.equal(items.length, 60);
+});

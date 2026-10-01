@@ -51,6 +51,7 @@ async function defaultFetch(url) {
   const res = await fetch(url, {
     headers: { "User-Agent": UA, "Referer": `${PAN_HOST}/` },
     redirect: "follow",
+    signal: AbortSignal.timeout(20000), // 无默认超时：单个请求挂起会卡死整个任务且无法停止
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}：${url.slice(0, 100)}`);
   return res.text();
@@ -67,10 +68,11 @@ async function fetchMyAnswerPage(uid, pn, rn, fetchImpl) {
   return { list: Array.isArray(q.list) ? q.list : [], listNum: Number(q.listNum) || 0 };
 }
 
-/** 翻页聚合全部回答（终止：空页 / 取满 / 安全上限 / shouldStop） */
+/** 翻页聚合全部回答（终止：空页 / 取满 / 安全上限 / shouldStop；pn=偏移量，已实测确认） */
 async function crawlHomeAnswers(uid, { onPage, shouldStop, pageSize = 20, maxPages = 100, fetchImpl = defaultFetch, pageDelayMs = 800 } = {}) {
   const all = [];
   let total = 0;
+  let truncated = false;
   for (let pn = 0; pn < maxPages; pn += 1) {
     if (shouldStop && shouldStop()) break;
     const { list, listNum } = await fetchMyAnswerPage(uid, pn * pageSize, pageSize, fetchImpl);
@@ -81,7 +83,9 @@ async function crawlHomeAnswers(uid, { onPage, shouldStop, pageSize = 20, maxPag
     if (all.length >= listNum) break;
     await sleep(pageDelayMs);
   }
-  return { items: all, total };
+  // 安全上限截断时显式标记，避免静默丢数据
+  if (total && all.length < total) truncated = true;
+  return { items: all, total, truncated };
 }
 
 /** 问题页（SSR）全文兜底提取：摘要被截断时从完整回答正文找链接 */
@@ -98,16 +102,33 @@ async function fetchQuestionResources(qid, fetchImpl = defaultFetch) {
 async function crawlHomeResources({ homepages, limit = 0, enrichLimit = 50, onLog = () => {}, onPage, shouldStop, fetchImpl = defaultFetch, questionDelayMs = 1500 } = {}) {
   if (!Array.isArray(homepages) || !homepages.length) throw new Error("请填写至少一个答主主页地址");
   const rows = [];
-  const seenLinks = new Set();   // 同一资源跨主页/跨问答只出一次
-  const seenAnswers = new Set(); // 同一问题（同人重复出现）只处理一次
+  const seenLinks = new Set();          // 同一资源跨主页/跨问答只出一次
+  const enrichedQuestions = new Set();  // 开过问题页的 qid（跨主页复用，避免重复开页）；不影响摘要直提
   const stats = { answers: 0, direct: 0, enriched: 0, failed: 0 };
   let enrichUsed = 0;
 
   for (const hp of homepages) {
     if (shouldStop && shouldStop()) break;
-    const uid = parseHomepage(hp);
+    let uid;
+    try {
+      uid = parseHomepage(hp);
+    } catch (e) {
+      stats.failed += 1;
+      onLog(`⚠️ 跳过无效主页：${e.message}`);
+      continue;
+    }
     onLog(`拉取主页回答列表：uid=${uid}`);
-    const { items, total } = await crawlHomeAnswers(uid, { onPage, shouldStop, fetchImpl });
+    let answerBatch;
+    try {
+      answerBatch = await crawlHomeAnswers(uid, { onPage, shouldStop, fetchImpl });
+    } catch (e) {
+      // 单主页失败（网络/风控）只跳过该答主，不丢掉已爬主页的成果
+      stats.failed += 1;
+      onLog(`⚠️ 该主页拉取失败（跳过此答主，继续下一个）：${e.message}`);
+      continue;
+    }
+    const { items, total, truncated } = answerBatch;
+    if (truncated) onLog(`⚠️ 该答主回答超过 ${(100 * 20)} 条上限，只处理前 ${items.length} 条`);
     onLog(`该答主共 ${total || items.length} 条回答，开始筛选资源型问答`);
     stats.answers += items.length;
 
@@ -115,16 +136,17 @@ async function crawlHomeResources({ homepages, limit = 0, enrichLimit = 50, onLo
       if (shouldStop && shouldStop()) break;
       if (limit && rows.length >= limit) break;
       const qid = String(item.qid || "");
-      if (!qid || seenAnswers.has(qid)) continue;
-      seenAnswers.add(qid);
+      if (!qid) continue;
       if (Number(item.isDeleted) === 1) continue;
 
       const title = String(item.title || "").trim() || `问题${qid}`;
-      // 第一优先：回答摘要里直接带链接
+      // 第一优先：回答摘要里直接带链接（不做 qid 去重——不同答主答同一问题，
+      // 摘要里可能是不同资源，跳过会漏）
       let links = extractPanLinks(item.replyContent);
       const fromSummary = links.length > 0;
-      // 兜底：摘要被截断的疑似资源问答，开问题页全文提取
-      if (!links.length && looksResourceful(title) && enrichUsed < enrichLimit) {
+      // 兜底：摘要被截断的疑似资源问答，开问题页全文提取（同一问题页只开一次）
+      if (!links.length && looksResourceful(title) && enrichUsed < enrichLimit && !enrichedQuestions.has(qid)) {
+        enrichedQuestions.add(qid);
         enrichUsed += 1;
         try {
           links = await fetchQuestionResources(qid, fetchImpl);
@@ -136,6 +158,7 @@ async function crawlHomeResources({ homepages, limit = 0, enrichLimit = 50, onLo
         }
       }
       for (const { link, pwd } of links) {
+        if (limit && rows.length >= limit) break;
         if (seenLinks.has(link)) continue;
         seenLinks.add(link);
         rows.push({ name: title, link, pwd, questionUrl: `${PAN_HOST}/question/${qid}`, source: uid });
@@ -145,9 +168,16 @@ async function crawlHomeResources({ homepages, limit = 0, enrichLimit = 50, onLo
     if (limit && rows.length >= limit) break;
   }
 
-  if (!rows.length) throw new Error("这些主页里没有找到带百度网盘资源的问答（或都已被处理过）");
-  onLog(`筛选完成：浏览回答 ${stats.answers} 条，产出资源 ${rows.length} 条（摘要直提 ${stats.direct} 处、问题页兜底 ${stats.enriched} 次）`);
-  return { rows, stats };
+  if (!rows.length) {
+    // 用户主动停止≠失败：正常收尾，不抛错误导为任务失败
+    if (shouldStop && shouldStop()) {
+      onLog("已按要求停止，未产出资源。");
+      return { rows, stats, stopped: true };
+    }
+    throw new Error("这些主页里没有找到带百度网盘资源的问答（或都已被处理过）");
+  }
+  onLog(`筛选完成：浏览回答 ${stats.answers} 条，产出资源 ${rows.length} 条（摘要直提 ${stats.direct} 处、问题页兜底 ${stats.enriched} 次、失败跳过 ${stats.failed} 次）`);
+  return { rows, stats, stopped: false };
 }
 
 module.exports = {

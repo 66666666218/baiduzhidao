@@ -285,11 +285,13 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       .map((x) => String(x || "").trim())
       .filter(Boolean);
     if (!homepages.length) throw new Error("请填写至少一个答主主页地址（usercenter 链接，每行一个）");
-    const enrichLimit = Number(ctx.payload.enrichLimit);
+    // 0 是合法值（UI 承诺"0=不兜底"），只有缺省/非法输入才回退默认 50
+    const enrichRaw = Number(ctx.payload.enrichLimit);
+    const enrichLimit = Number.isFinite(enrichRaw) && enrichRaw >= 0 ? enrichRaw : 50;
     const result = await homeCrawler.crawlHomeResources({
       homepages,
       limit: Number(ctx.payload.limit) || 0,
-      enrichLimit: Number.isFinite(enrichLimit) && enrichLimit > 0 ? enrichLimit : 50,
+      enrichLimit,
       onLog: log,
       onPage: (p) => ctx.report({ done: p.accumulated, total: p.total, status: "running" }),
       shouldStop: () => ctx.shouldStop(),

@@ -230,7 +230,9 @@ $("startCrawlHome").addEventListener("click", async () => {
       limit: Number($("chLimit").value) || 0,
       enrichLimit: Number($("chEnrich").value),
     });
+    if (result.stopped) { appendLog("主页找资源已停止。"); return; }
     appendLog(`✅ 主页找资源完成：产出 ${result.count} 条资源（摘要直提 ${result.stats.direct}、问题页兜底 ${result.stats.enriched}、问题页失败跳过 ${result.stats.failed}）。`);
+    if (!result.count) { appendLog("未产出资源，跳过转存衔接。"); return; }
     $("batchExcelPath").value = result.outputPath;   // 自动衔接「批量转存」
     appendLog(`资源表格已自动填入「资源表格」：${result.outputPath}`);
     appendLog("确认下方比特环境名后点「开始批量转存」即可转存为自己的资源。");
