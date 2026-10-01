@@ -137,6 +137,7 @@ $("randomPick").addEventListener("click", async () => {
       count: Number($("randomCount").value) || 20,
       strategy: $("samplingStrategy").value,
       outputPath: $("randomOutputPath").value,
+      skipGenerated: $("skipGenerated").checked,
     });
     if (result && !result.canceled) {
       appendLog(`已抽题 ${result.count} 条 → ${result.filePath}（题库剩余可用 ${result.remainingAfter} 条${result.resetRound ? "，已重开新一轮" : ""}）`);

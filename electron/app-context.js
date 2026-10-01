@@ -178,13 +178,18 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     if (!bank.length) throw new Error("题库为空，请先爬题或导入题库表格。");
     // 已提交的题以 answers 台账为准永久出池：此前只靠 usedKeys 去重，
     // 重开轮（题库抽满一轮自动清空）或题库重爬导致键失配时，答过的题会被再次抽中。
+    // 另外把"已生成过回答"的题一并出池（skipGenerated 默认开）：生成记录比提交记录
+    // 更容易留存（换机/手动提交/批量上传等任何答题方式，只要在软件里生成过就有标记），
+    // 这是防重复答题的主要防线；"已提交"是强标记，双保险。
     const pickKeyOf = (item) => {
       const url = String(item.questionUrl || "").trim().toLowerCase();
       return url ? `url:${url}` : `title:${String(item.title || "").replace(/\s+/g, "").toLowerCase()}`;
     };
+    // 默认开：显式传 false（勾选框取消）才允许重抽已生成过的题
+    const skipGenerated = !(payload && payload.skipGenerated === false);
     const submittedKeys = new Set(
       store.loadAnswers()
-        .filter((a) => a && a.status === "已提交")
+        .filter((a) => a && (a.status === "已提交" || (skipGenerated && String(a.answer || "").trim())))
         .map(pickKeyOf)
         .filter(Boolean)
     );
@@ -195,10 +200,10 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       excludeKeys: submittedKeys,
     });
     if (!result.picked.length) {
-      if (result.excludedSubmitted > 0) throw new Error("当前分类下的题目均已提交过，没有可抽的新题（可先爬题扩充题库）。");
+      if (result.excludedSubmitted > 0) throw new Error("当前分类下的题目均已答过（已提交或已生成过回答），没有可抽的新题（可先爬题扩充题库）。");
       throw new Error("当前分类下没有可抽的题目。");
     }
-    if (result.excludedSubmitted > 0) emit("task:log", `去重：已排除 ${result.excludedSubmitted} 条已提交过的题目，不会重复作答`);
+    if (result.excludedSubmitted > 0) emit("task:log", `去重：已排除 ${result.excludedSubmitted} 条答过的题目（已提交/已生成过回答），不会重复作答`);
 
     // 先确定输出路径（用户取消则直接返回，不消耗去重额度）
     let outputPath = String((payload && payload.outputPath) || config.load().randomOutputPath || "").trim().replace(/^"|"$/g, "");

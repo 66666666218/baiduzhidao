@@ -177,6 +177,7 @@
           </div>
           <div class="card-actions">
             <button class="btn primary" id="randomPick">随机生成表格</button>
+            <label class="check"><input type="checkbox" id="skipGenerated" checked /> 跳过答过的题（已提交/已生成过回答，防重复答题）</label>
             <span class="hint" id="pickStats"></span>
             <span class="hint">跨轮次自动去重；全部抽完自动重开一轮。</span>
           </div>
@@ -356,6 +357,16 @@
       <!-- 使用教程 -->
       <section class="view" data-view="tutorial">
         <h2>使用教程</h2>
+
+        <div class="card">
+          <h3>⭐ 换电脑 / 重装后防重复答题（重要）</h3>
+          <ol class="tutorial-steps">
+            <li>软件的答题历史（答过哪些题、抽题进度、题库）存在<b>数据目录</b>，不在软件文件夹里：按 <b>Win+R</b> 输入 <b>%APPDATA%\zhidao-answer-studio</b> 回车即可打开。</li>
+            <li>换电脑/重装前，把该文件夹整体拷贝到新电脑的同一位置（<b>%APPDATA%\zhidao-answer-studio</b>），再安装/解压新软件——历史答题记录全部恢复，抽题不会重复。</li>
+            <li>不拷贝的话，新电脑会当作全新开始：重新爬题爬回来的还是活动页那批题，答过的会被再次抽中（软件会在抽题时尽量排除已提交/已生成过的，但前提是数据目录里有历史）。</li>
+            <li>更新软件版本时<b>不需要</b>动数据目录：安装新版或替换软件文件夹即可，答题历史始终保留。</li>
+          </ol>
+        </div>
 
         <div class="card">
           <h3>① 准备工作（一次性）</h3>
