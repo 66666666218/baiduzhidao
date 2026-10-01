@@ -48,11 +48,20 @@ function looksResourceful(title) {
 }
 
 async function defaultFetch(url) {
-  const res = await fetch(url, {
-    headers: { "User-Agent": UA, "Referer": `${PAN_HOST}/` },
-    redirect: "follow",
-    signal: AbortSignal.timeout(20000), // 无默认超时：单个请求挂起会卡死整个任务且无法停止
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: { "User-Agent": UA, "Referer": `${PAN_HOST}/` },
+      redirect: "follow",
+      signal: AbortSignal.timeout(20000), // 无默认超时：单个请求挂起会卡死整个任务且无法停止
+    });
+  } catch (e) {
+    // 超时的原生报错是 "The operation was aborted..."，用户看不懂
+    if (e && (e.name === "TimeoutError" || /timeout|abort/i.test(e.message || ""))) {
+      throw new Error("请求超时（20 秒无响应）");
+    }
+    throw e;
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}：${url.slice(0, 100)}`);
   return res.text();
 }
@@ -69,13 +78,26 @@ async function fetchMyAnswerPage(uid, pn, rn, fetchImpl) {
 }
 
 /** 翻页聚合全部回答（终止：空页 / 取满 / 安全上限 / shouldStop；pn=偏移量，已实测确认） */
-async function crawlHomeAnswers(uid, { onPage, shouldStop, pageSize = 20, maxPages = 100, fetchImpl = defaultFetch, pageDelayMs = 800 } = {}) {
+async function crawlHomeAnswers(uid, { onPage, shouldStop, pageSize = 20, maxPages = 100, fetchImpl = defaultFetch, pageDelayMs = 800, onLog = () => {} } = {}) {
   const all = [];
   let total = 0;
   let truncated = false;
+  let partial = false;
   for (let pn = 0; pn < maxPages; pn += 1) {
     if (shouldStop && shouldStop()) break;
-    const { list, listNum } = await fetchMyAnswerPage(uid, pn * pageSize, pageSize, fetchImpl);
+    let page;
+    try {
+      page = await fetchMyAnswerPage(uid, pn * pageSize, pageSize, fetchImpl);
+    } catch (e) {
+      // 翻页中途失败：保留已拉取的部分继续筛，不整主页作废（用户不知情的数据截断最危险）
+      if (all.length) {
+        partial = true;
+        onLog(`⚠️ 翻页中断（已取 ${all.length}/${total || "?"} 条，按已取部分继续）：${e.message}`);
+        break;
+      }
+      throw e; // 第一页就失败：没有任何部分成果，向上抛由调用方跳过该答主
+    }
+    const { list, listNum } = page;
     if (!total) total = listNum;
     if (!list.length) break;
     all.push(...list);
@@ -83,9 +105,9 @@ async function crawlHomeAnswers(uid, { onPage, shouldStop, pageSize = 20, maxPag
     if (all.length >= listNum) break;
     await sleep(pageDelayMs);
   }
-  // 安全上限截断时显式标记，避免静默丢数据
-  if (total && all.length < total) truncated = true;
-  return { items: all, total, truncated };
+  // 仅"达到安全上限仍有剩余"才标 truncated（停止/数据波动不算，避免日志文案误导）
+  if (total && all.length < total && !(shouldStop && shouldStop())) truncated = true;
+  return { items: all, total, truncated, partial };
 }
 
 /** 问题页（SSR）全文兜底提取：摘要被截断时从完整回答正文找链接 */
@@ -120,15 +142,16 @@ async function crawlHomeResources({ homepages, limit = 0, enrichLimit = 50, onLo
     onLog(`拉取主页回答列表：uid=${uid}`);
     let answerBatch;
     try {
-      answerBatch = await crawlHomeAnswers(uid, { onPage, shouldStop, fetchImpl });
+      answerBatch = await crawlHomeAnswers(uid, { onPage, shouldStop, fetchImpl, onLog });
     } catch (e) {
       // 单主页失败（网络/风控）只跳过该答主，不丢掉已爬主页的成果
       stats.failed += 1;
       onLog(`⚠️ 该主页拉取失败（跳过此答主，继续下一个）：${e.message}`);
       continue;
     }
-    const { items, total, truncated } = answerBatch;
-    if (truncated) onLog(`⚠️ 该答主回答超过 ${(100 * 20)} 条上限，只处理前 ${items.length} 条`);
+    const { items, total, truncated, partial } = answerBatch;
+    if (truncated) onLog(`⚠️ 该答主回答超过安全上限（${100 * 20} 条），只处理前 ${items.length} 条`);
+    else if (partial) onLog(`该答主翻页中断，按已取得的 ${items.length} 条继续筛选`);
     onLog(`该答主共 ${total || items.length} 条回答，开始筛选资源型问答`);
     stats.answers += items.length;
 

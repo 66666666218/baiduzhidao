@@ -200,3 +200,34 @@ test("翻页截断标记：总数超安全上限时 truncated=true", async () =>
   assert.equal(truncated, true);
   assert.equal(items.length, 60);
 });
+
+// ---------- 二轮审查回归（2026-10-01） ----------
+
+test("翻页中途失败：保留已拉取部分继续（partial=true），第一页失败才向上抛", async () => {
+  const p1 = { listNum: 60, list: Array.from({ length: 20 }, (_v, i) => ({ qid: `a${i}` })) };
+  let calls = 0;
+  const flakyFetch = async (url) => {
+    calls += 1;
+    if (calls === 1) return JSON.stringify({ errno: 0, data: { question: p1 } });
+    throw new Error("模拟中途网络断开");
+  };
+  const logs = [];
+  const r1 = await crawlHomeAnswers("abcdef0123456789", { fetchImpl: flakyFetch, pageDelayMs: 0, onLog: (m) => logs.push(m) });
+  assert.equal(r1.partial, true);
+  assert.equal(r1.items.length, 20, "中断后保留第一页成果");
+  assert.ok(logs.some((m) => m.includes("翻页中断")), "中断要写日志");
+
+  const alwaysFail = async () => { throw new Error("首页即失败"); };
+  await assert.rejects(
+    () => crawlHomeAnswers("abcdef0123456789", { fetchImpl: alwaysFail, pageDelayMs: 0 }),
+    /首页即失败/
+  );
+});
+
+test("shouldStop 中断不算 truncated（截断特指达安全上限）", async () => {
+  const page = { listNum: 100, list: Array.from({ length: 20 }, (_v, i) => ({ qid: String(i) })) };
+  const { truncated } = await crawlHomeAnswers("abcdef0123456789", {
+    fetchImpl: makeApiFetch([page, page, page]), pageDelayMs: 0, shouldStop: () => true,
+  });
+  assert.equal(truncated, false);
+});

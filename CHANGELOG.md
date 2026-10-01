@@ -1,5 +1,7 @@
 # CHANGELOG
 
+- [2026-10-01 13:50] FIX: 「主页找资源」二轮审查修复 4 项——翻页中途失败保留已取部分继续（partial 标记，不再整主页作废）/ truncated 判定精确化（仅达 2000 安全上限，停止与数据波动不误标）/ 请求超时错误消息本地化（原来显示 "The operation was aborted"）/ 兜底上限输入框清空被 Number("") 变 0 误关兜底（留空=默认 50，显式 0 才不兜底）；+2 单测（168 全绿）；端到端验证产出表格被批量转存正确识别（linkKey 命中网盘链接列而非问题链接列） (Files: electron/src/netdisk/home-crawler.js, electron/renderer/renderer.js, tests/unit/home-crawler.test.js, CHANGELOG.md, docs/自审日志.md)
+
 - [2026-10-01 12:10] FIX: 「主页找资源」审查修复 7 项——enrichLimit=0 被回退成 50（UI 承诺 0=不兜底失效）/ 跨主页同问题 qid 去重误杀摘要直提的差异化资源 / 单主页失败致整任务失败（改逐主页跳过）/ fetch 无超时可卡死任务（20s AbortSignal）/ 主动停止且无产出误报失败（stopped 标记）/ 超 2000 条回答截断无提示（truncated 标记+日志）/ limit 问答级检查致轻微超限（链接级）；实测确认 pn=偏移量语义翻页无误 (Files: electron/src/netdisk/home-crawler.js, electron/app-context.js, electron/renderer/renderer.js, tests/unit/home-crawler.test.js, CHANGELOG.md, docs/自审日志.md)
 
 - [2026-10-01 00:30] FEAT: 「从答主主页找资源」——纯协议爬取同行答主 usercenter 回答列表（ihome/api/myanswer 接口免登录翻页），摘要直提网盘链接+疑似资源题开问题页 SSR 全文兜底（pwd=/提取码 正则），产出「资源名/链接/提取码/问题链接」表格自动填入批量转存；只取资源与问题地址不搬运回答内容（平台搬运封号红线）；新增 probe-usercenter.js 探测脚本供页面改版复测 (Files: electron/src/netdisk/home-crawler.js, electron/app-context.js, electron/preload.js, electron/renderer/index.html, electron/renderer/renderer.js, scripts/probe-usercenter.js, tests/unit/home-crawler.test.js, CHANGELOG.md, docs/自审日志.md)

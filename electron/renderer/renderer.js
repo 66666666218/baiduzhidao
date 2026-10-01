@@ -223,12 +223,17 @@ $("pickBatchExcel").addEventListener("click", async () => {
 $("startCrawlHome").addEventListener("click", async () => {
   const homepages = $("chHomepages").value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
   if (!homepages.length) { appendLog("请先粘贴至少一个答主主页地址（问题页点对方头像可得 usercenter 链接）。"); return; }
-  appendLog(`主页找资源启动：${homepages.length} 个主页，资源上限 ${Number($("chLimit").value) || "不限"}，问题页兜底 ${Number($("chEnrich").value)} 次。`);
+  // 兜底上限留空 = 用默认 50；显式填 0 才是"不兜底"（防止清空输入框被 Number("") 变成 0 误关兜底）
+  const enrichRaw = $("chEnrich").value.trim();
+  const enrichLimit = enrichRaw === "" ? 50 : Number(enrichRaw);
+  const limitRaw = $("chLimit").value.trim();
+  const limit = limitRaw === "" ? 0 : Number(limitRaw) || 0;
+  appendLog(`主页找资源启动：${homepages.length} 个主页，资源上限 ${limit || "不限"}，问题页兜底 ${enrichLimit} 次。`);
   try {
     const result = await rpc.invoke("task:crawl-home", {
       homepages,
-      limit: Number($("chLimit").value) || 0,
-      enrichLimit: Number($("chEnrich").value),
+      limit,
+      enrichLimit,
     });
     if (result.stopped) { appendLog("主页找资源已停止。"); return; }
     appendLog(`✅ 主页找资源完成：产出 ${result.count} 条资源（摘要直提 ${result.stats.direct}、问题页兜底 ${result.stats.enriched}、问题页失败跳过 ${result.stats.failed}）。`);
