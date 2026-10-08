@@ -37,3 +37,51 @@ test("buildAnswerHtml：简介原文保留", () => {
   const html = qaLib.buildAnswerHtml("https://pan.baidu.com/s/1", "剧情扎实");
   assert.match(html, /简介：剧情扎实/);
 });
+
+// ---------- 标题质量（照被拒条目修的三处） ----------
+const { parseName, buildTitle } = require("../../electron/src/netdisk/qa-template-lib");
+
+test("标题不再年份重复（实测事故：同一个年份出现三次）", () => {
+  // 资源名「兰香如故《2026》1-47完整版2026电影」原本产出
+  // 「哪里有兰香如故《2026》1-47完整版2026电影2026电视剧的…」
+  const meta = parseName("兰香如故《2026》1-47完整版2026电影");
+  for (let i = 0; i < 8; i += 1) {
+    const t = buildTitle(meta, i);
+    assert.ok((t.match(/2026/g) || []).length <= 1, `模板 ${i} 年份重复了：${t}`);
+  }
+});
+
+test("标题清掉书名号年份与集数残渣", () => {
+  const meta = parseName("兰香如故《2026》1-47完整版2026");
+  assert.doesNotMatch(meta.title, /[《》]/, "书名号年份是元数据，标题不需要");
+  assert.doesNotMatch(meta.title, /\d+\s*[-~]\s*\d+\s*完整版/, "集数残渣要清掉");
+  assert.match(meta.title, /兰香如故/);
+});
+
+test("非影视资源不套「电影/电视剧」模板（实测：抖音技术资源被拼成「…电影…」）", () => {
+  for (const raw of ["抖音最新注册跳核对技术", "Photoshop 绿色版软件下载", "三体全集小说txt电子书"]) {
+    const meta = parseName(raw);
+    assert.equal(meta.kind, "资源", `${raw} 不该被判成影视`);
+    for (let i = 0; i < 8; i += 1) {
+      const t = buildTitle(meta, i);
+      assert.doesNotMatch(t, /电影|电视剧|动漫全集/, `模板 ${i} 仍写了影视词：${t}`);
+    }
+  }
+});
+
+test("影视资源照常写「电影/电视剧」（别把上一条修过头）", () => {
+  assert.equal(parseName("流浪地球（2019）").kind, "电影");
+  assert.match(buildTitle(parseName("流浪地球（2019）"), 0), /电影/);
+  assert.equal(parseName("兰香如故1-47完整版").kind, "剧集");
+  assert.match(buildTitle(parseName("兰香如故1-47完整版"), 0), /电视剧/);
+});
+
+test("标题长度仍在平台要求的 5~49 字之间", () => {
+  for (const raw of ["流浪地球（2019）", "抖音最新注册跳核对技术", "短", "很长很长很长很长很长很长很长很长很长很长很长很长的资源名字测试用"]) {
+    const meta = parseName(raw);
+    for (let i = 0; i < 8; i += 1) {
+      const t = buildTitle(meta, i);
+      assert.ok(t.length >= 5 && t.length <= 49, `模板 ${i} 长度越界(${t.length})：${t}`);
+    }
+  }
+});
