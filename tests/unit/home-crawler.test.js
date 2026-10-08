@@ -79,8 +79,11 @@ function makeE2EFetch({ apiPages, questionHtml }) {
       const page = apiPages[pn / 20] || { list: [], listNum: 0 };
       return JSON.stringify({ errno: 0, data: { question: { list: page.list, listNum: page.listNum } } });
     }
-    const qid = url.match(/question\/(\d+)/)[1];
-    return questionHtml[qid] || "<html></html>";
+    // 问题页兜底现在走 JSON 接口（swan/ajax/replies）：把 fixture 里的纯文本塞进 contentList。
+    // 以前这里返回 HTML——正说明旧测试是从"抓页面 HTML"那个已失效的实现倒推出来的。
+    const qid = new URL(url).searchParams.get("qid");
+    const text = questionHtml[qid];
+    return JSON.stringify({ errno: 0, replies: text ? [{ contentList: [[{ value: text }]] }] : [] });
   };
 }
 
@@ -230,4 +233,114 @@ test("shouldStop 中断不算 truncated（截断特指达安全上限）", async
     fetchImpl: makeApiFetch([page, page, page]), pageDelayMs: 0, shouldStop: () => true,
   });
   assert.equal(truncated, false);
+});
+
+// ---------- 问题页被拦截的识别（回归：这条通道曾静默失效） ----------
+//
+// 背景：百度拦截时返回 HTTP 200 + 「百度知道 - 信息提示」占位页，里面自然没有链接。
+// 旧代码把它当成"这题没资源"继续跑，兜底通道整条失效而日志里一个字都没有。
+// 下面用的 fixture 是**真实抓下来的拦截页**，不是手写的合成 HTML——
+// 原测试正是因为用合成 HTML，才让这个 bug 一路绿着进了生产。
+
+const fs = require("fs");
+const path = require("path");
+const { fetchQuestionResources, detectBlockedPage, replyTextOf } = require("../../electron/src/netdisk/home-crawler");
+
+const BLOCKED_PAGE = fs.readFileSync(path.join(__dirname, "..", "fixtures", "blocked-question-page.html"), "utf8");
+
+test("detectBlockedPage：认出真实拦截页（信息提示占位页）", () => {
+  assert.match(BLOCKED_PAGE, /百度知道 - 信息提示/, "fixture 应该是真实的拦截页");
+  assert.notEqual(detectBlockedPage(BLOCKED_PAGE), "", "必须识别为异常页，不能返回空串");
+});
+
+test("detectBlockedPage：正常问题页不误判", () => {
+  const normal = "<html><head><title>如何安慰失恋的朋友_百度知道</title></head><body><div class=\"question-content\">…</div></body></html>";
+  assert.equal(detectBlockedPage(normal), "");
+});
+
+test("detectBlockedPage：空响应单独识别", () => {
+  assert.equal(detectBlockedPage(""), "空响应");
+  assert.equal(detectBlockedPage("   "), "空响应");
+  assert.equal(detectBlockedPage(null), "空响应");
+});
+
+test("fetchQuestionResources：接口返回拦截页时必须抛错，不能静默返回空数组", async () => {
+  const fetchImpl = async () => BLOCKED_PAGE;
+  await assert.rejects(
+    () => fetchQuestionResources("2988409911", fetchImpl),
+    /拦截页/,
+    "拦截时抛错——旧行为是返回 []，调用方误判为『这题没资源』"
+  );
+});
+
+test("replyTextOf：从 contentList 二维结构里取出回答正文", () => {
+  const reply = { contentList: [[{ ctype: 1, value: "第一段" }], [{ ctype: 1, value: "第二段" }]] };
+  assert.equal(replyTextOf(reply), "第一段\n第二段");
+  assert.equal(replyTextOf({}), "");
+  assert.equal(replyTextOf(null), "");
+});
+
+test("fetchQuestionResources：接口正常返回时提取链接", async () => {
+  const fetchImpl = async () => JSON.stringify({
+    errno: 0,
+    replies: [{ contentList: [[{ value: "资源在这 pan.baidu.com/s/okLink 提取码：ab12" }]] }],
+  });
+  const links = await fetchQuestionResources("111", fetchImpl);
+  assert.equal(links.length, 1);
+});
+
+test("fetchQuestionResources：接口正常但没有回答时返回空数组（不是错误）", async () => {
+  const fetchImpl = async () => JSON.stringify({ errno: 0, replies: [] });
+  assert.deepEqual(await fetchQuestionResources("111", fetchImpl), []);
+});
+
+test("fetchQuestionResources：Referer 必须指向具体问题页", async () => {
+  // 指向根路径时接口返回 0 条回复（已实测），这个参数不能省
+  let seen = null;
+  const fetchImpl = async (url, opts) => { seen = opts; return JSON.stringify({ replies: [] }); };
+  await fetchQuestionResources("2988409911", fetchImpl);
+  assert.match(seen.referer, /\/question\/hx\/2988409911$/);
+});
+
+test("兜底全被拦截时：计入 enrichFailed、写日志、并给出通道失效告警", async () => {
+  const logs = [];
+  const apiPage = {
+    listNum: 3,
+    list: [
+      { qid: "1", title: "求资源A", replyContent: "摘要没有链接", isDeleted: 0 },
+      { qid: "2", title: "求资源B", replyContent: "摘要没有链接", isDeleted: 0 },
+      { qid: "3", title: "求资源C", replyContent: "摘要没有链接", isDeleted: 0 },
+    ],
+  };
+  const fetchImpl = async (url) => (url.includes("/swan/ajax/replies") ? BLOCKED_PAGE : JSON.stringify({ errno: 0, data: { question: apiPage } }));
+
+  await assert.rejects(
+    () => crawlHomeResources({ homepages: ["abcdef0123456789"], fetchImpl, questionDelayMs: 0, onLog: (m) => logs.push(m) }),
+    /没有找到/,
+    "三条全被拦截 → 无产出，报『没有找到』"
+  );
+
+  const joined = logs.join("\n");
+  assert.match(joined, /问题页打开失败/, "每次拦截都要有失败日志，不再静默");
+  assert.match(joined, /一条链接都没取到/, "必须发出通道整体失效的告警");
+  assert.match(joined, /只来自回答摘要/, "告警要说清楚产出只有半条腿在工作");
+});
+
+test("兜底有效时不误报告警", async () => {
+  const logs = [];
+  const apiPage = {
+    listNum: 3,
+    list: [
+      { qid: "1", title: "求资源A", replyContent: "摘要没有链接", isDeleted: 0 },
+      { qid: "2", title: "求资源B", replyContent: "摘要没有链接", isDeleted: 0 },
+      { qid: "3", title: "求资源C", replyContent: "摘要没有链接", isDeleted: 0 },
+    ],
+  };
+  const fetchImpl = async (url) => (url.includes("/swan/ajax/replies")
+    ? JSON.stringify({ errno: 0, replies: [{ contentList: [[{ value: "资源在这 pan.baidu.com/s/full1 提取码：aa11" }]] }] })
+    : JSON.stringify({ errno: 0, data: { question: apiPage } }));
+
+  const r = await crawlHomeResources({ homepages: ["abcdef0123456789"], fetchImpl, questionDelayMs: 0, onLog: (m) => logs.push(m) });
+  assert.ok(r.rows.length > 0, "兜底取到了链接");
+  assert.doesNotMatch(logs.join("\n"), /一条链接都没取到/, "正常工作不能误报告警");
 });

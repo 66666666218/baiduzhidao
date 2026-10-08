@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<!--STATUS OK-->
+<html>
+<head>
+<meta http-equiv="X-UA-Compatible" content="IE=Edge" />
+<meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+<meta property="wb:webmaster" content="3aababe5ed22e23c" />
+<meta name="referrer" content="always" />
+<title>百度知道 - 信息提示</title>
+<link rel="shortcut icon" href="//www.baidu.com/favicon.ico?t=20171027" type="image/x-icon" />
+<link rel="icon" sizes="any" mask href="//www.baidu.com/img/baidu.svg" />
+<script>
+	!function(document, window){
+		var log = {
+			list: [],
+			host: 'https://' + location.host + '/api/httpscheck',
+			log: function(param) {
+				var a = [];
+		    	for(var k in param) {
+		    		a.push(k + '=' + param[k]);
+		    	}
+		    	var msg = a.join('&');
+		    	if(~this.list.indexOf(msg)){
+		    		return;
+		    	}
+		    	this.list.push(msg);
+		  		var img = new Image();
+		    	var key = '_ik_log_' + (Math.random()*2147483648 ^ 0).toString(36);
+		    	window[key] = img;
+		    		img.onload = img.onerror = img.onabort = function() {
+		        		img.onload = img.onerror = img.onabort = null;
+		        		window[key] = null;
+			    		img = null;
+		    	};
+		  		img.src = this.host + '?' + msg;
+			}
+		};
+
+		function HTTPSWarningLog(){
+			this.selector = [
+				'link',
+				'script',
+				'img',
+				'embed',
+				'iframe'
+			];
+			this.warningCounter = 0;
+			this.init();
+		};
+
+		HTTPSWarningLog.prototype = {
+			init: function(){
+				this.fetch();
+			},
+
+			fetch: function(){
+				for(var tags = this.selector, i =0, len = tags.length; i < len;i++) {
+					this.getTag(tags[i]);
+				}
+			},
+
+			getTag: function(tag) {
+				var domList = document.getElementsByTagName(tag);
+				if(!domList.length) {
+					return;
+				}
+				for(var i = 0,len = domList.length;i<len;i++) {
+					var el = domList[i];
+					var url = el.getAttribute(el.tagName==='LINK' ? 'href' : 'src');
+                    if(el.getAttribute('rel') === 'canonical') {
+                        continue;
+                    }
+					if(url && 'https:' === location.protocol && !url.indexOf('http:')){
+						this.sendLog(el, el.tagName.toLowerCase(),url);
+						this.warningCounter++;
+					}
+				}
+			},
+			
+			sendLog: function(el, type, url){
+				log.log({
+					url: location.href,
+					wtype: type,
+					wurl: url
+				});
+			}
+		};
+
+		function domReady(fn){
+		    if(document.addEventListener) {
+		        document.addEventListener('DOMContentLoaded', function() {
+		            document.removeEventListener('DOMContentLoaded',arguments.callee, false);
+		            fn();
+		        }, false);
+		    }else if(document.attachEvent) {
+		        document.attachEvent('onreadystatechange', function() {
+		            if(document.readyState == 'complete') {
+		                document.detachEvent('onreadystatechange', arguments.callee);
+		                fn();
+		            }
+		        });
+		    }
+		};
+
+		domReady(function(){
+			new HTTPSWarningLog();
+			for(var i=1; i<6; i++) {
+				!function(i){
+					setTimeout(function(){
+						new HTTPSWarningLog();
+					}, i*i*i*1000);
+				}(i);
+			}
+		});
+	}(document, window);
+</script>
+
+<style type="text/css">
+.wgt-none{
+    margin-top: 60px;
+    margin-left: 38px;
+    margin-bottom: 400px;
+}
+.wgt-none .right-wraper{
+	margin-left: 47px;
+	margin-top: 63px;
+	font-family: "Microsoft YaHei", SimHei, arial, "\5b8b\4f53";
+}
+
+.wgt-loading {
+    margin-bottom: 200px;
+    margin-left: 0;
+    text-align: center;
+}
+.wgt-loading .loading-icon {
+    padding: 30px 0;
+}
+.wgt-none .btn-re-index{
+	width:106px;
+	height:29px;
+	line-height:29px;
+	display:inline-block;
+	font-size:14px;
+	color:#fff;
+	text-align:center;
+	text-decoration: none;
+	background:#4ec83b;
+}
+</style>
+
+<script type="text/javascript">
+			!function(){var n={},t={};n.context=function(n,e){var i=arguments.length;if(i>1)t[n]=e;else if(1==i){if("object"!=typeof n)return t[n];for(var o in n)n.hasOwnProperty(o)&&(t[o]=n[o])}},"F"in window||(window.F=n)}();;
+			
+            
+																																	
+			F.context('user', {"isLogin":"","isRealName":"","stoken":"","name":"","imId":"","id":"","euid":"","wealth":"","gradeIndex":"","isMavin":""});
+			F.context('user')['internalAdmin'] = null;
+
+			
+			            F.context('now', 1791463206);
+		</script>
+<script>F.context('sysTaskAutoInit', 1);</script>
+
+<script type="text/javascript">
+	/**
+	 * @description 当前登录用户信息
+	 * @application CASE 
+	 */
+	F.context('user', {
+		isLogin: ''
+        ,name: ''
+        ,id:   ''
+        ,gradeIndex: ''
+        ,isReplyer: ''
+        ,isAsker: ''
+    });
+</script>
+
+<!--[if lte IE 8]>
+<script>
+                (function(){
+                    var e="abbr,article,aside,audio,canvas,datalist,details,dialog,eventsource,figure,footer,header,hgroup,mark,menu,meter,nav,output,progress,section,time,video".split(","),
+                    i=e.length;
+                    while(i--){document.createElement(e[i])}
+                 })();
+            </script>
+<![endif]-->
+<link rel="stylesheet" type="text/css" href="https://iknow-zhidao.bdimg.com/static/common-new/pkg/common.886fb30.css" /><link rel="stylesheet" type="text/css" href="https://iknow-zhidao.bdimg.com/static/common-new/widget/aria/aria.7124e7d.css" />
+</head>
+<body class="layout-center">
+
+
+<div id="userbar" left-width="" win-min-width="" width="" class="userbar userbar-renew   " data="">
+<ul class="aside-list">
+<li>
+<a href="http://www.baidu.com/" class="toindex">百度首页</a>
+</li>
+<li class="shop-entrance">
+<a href="/shop" title="知道商城" log="type:2026,pos:top-right,target:shop-entrance">商城<i class="i-house" style="display: none;"></i></a>
+<span class="lucky-try" style="display: none"></span>
+</li>
+<li><a rel="nofollow" alog-alias="usrbar-reg" id="userbar-reg" href="https://passport.baidu.com/v2/?reg&tpl=ik&color=green&u=" target="_blank">注册</a></li>
+<li><a rel="nofollow" alog-alias="usrbar-login" href="javascript:;" id="userbar-login" log="type:2026,pname:account,mod:login,action:show,pos:pop">登录</a></li>
+</ul>
+</div>
+
+
+
+<div class="head-wrap">
+<header id="header" class="container">
+
+<div id="search-box" class="search-box-new line search-box-new-all ">
+<ul class="channel grid">
+<li><a log="sc_pos:c_baidu" data-type='baidu' rel="nofollow" href="http://www.baidu.com/s?cl=3&wd=">网页</a></li>
+<li><a log="sc_pos:c_news" data-type='news' rel="nofollow" href="https://www.baidu.com/s?rtt=1&bsst=1&cl=2&tn=news&word=&fr=zhidao">资讯</a></li>
+<li><a log="sc_pos:c_video" data-type='video' rel="nofollow" href="https://www.baidu.com/sf/vsearch?pd=video&tn=vsearch&wd=&rsv_spt=16">视频</a></li>
+<li><a log="sc_pos:c_pic" data-type='pic' rel="nofollow" href="http://image.baidu.com/search/index?tn=baiduimage&ct=201326592&lm=-1&cl=2&word=&t=3&ie=gbk">图片</a></li>
+<li><strong>知道</strong></li>
+<li><a log="sc_pos:c_wenku" data-type='wenku' rel="nofollow" href="http://wenku.baidu.com/search?word=&lm=0&od=0">文库</a></li>
+<li><a log="sc_pos:c_tieba" data-type='tieba' rel="nofollow" href="http://tieba.baidu.com/f?kw=&t=4">贴吧</a></li><li><a log="sc_pos:c_b2b" data-type='b2b' rel="nofollow" href="https://b2b.baidu.com/s?q=&fr=www">采购</a></li>
+<li><a log="sc_pos:c_map" data-type='map' rel="nofollow" href="http://map.baidu.com/m?word=&fr=map007">地图</a></li><li><a log="sc_pos:c_more" data-type="more" href="http://www.baidu.com/more/">更多</a></li>
+</ul>
+<div class="search-block clearfix">
+<div class="search-cont clearfix">
+<a class="logo" href="/" title="百度知道"></a>
+<form action="/search" name="search-form" method="get" id="search-form-new" class="search-form">
+<input class="hdi" id="kw" maxlength="256" tabindex="1" size="46" name="word" value="" autocomplete="off" placeholder=""/>
+<button alog-action="g-search-anwser" type="submit" id="search-btn" hidefocus="true"  tabindex="2" class="btn-global">搜索答案</button>
+<a href="#" alog-action="g-i-ask" class="i-ask-link" id="ask-btn-new">我要提问</a>
+</form>
+</div>
+</div>
+</div>
+
+
+</header>
+</div>
+<div id="body" class="container">
+
+<nav class="wgt-nav f-12">
+<a href="/">百度知道</a><span class="f-simsun">&gt;</span>提示信息</nav>
+<div class="wgt-none line">
+<img class="grid" src="http://img.iknow.bdimg.com/question/question-invalid.png"></img>
+<div class="grid right-wraper">
+<div class="f-yahei f-20 mb-20">知道宝贝找不到问题了&gt;_&lt;!!</div>
+<div class="f-yahei f-20 mb-20">该问题可能已经失效。</div><a class="btn-re-index" href="/">返回首页</a>
+<span id="countdown-timer" class="f-green ml-5">15</span><span class="ml-5">秒以后自动返回</span>
+</div>
+</div>
+</div>
+</div>
+
+<footer id="footer" class="wgt-footer">
+<p>
+<a target="_blank" rel="nofollow" href="http://help.baidu.com/question?prod_id=9&class=337">帮助</a>
+&nbsp;|&nbsp;<a target="_blank" rel="nofollow" href="javascript:;" id="footer-feedback">意见反馈</a>
+&nbsp;|&nbsp;<a target="_blank" rel="nofollow" href="http://help.baidu.com/newadd?prod_id=9&category=1">投诉举报</a>
+</p>
+<p>
+京ICP证030173号-1&nbsp;&nbsp;&nbsp;京网文【2023】1034-029号&nbsp;&nbsp;&nbsp;&nbsp;    &copy;2026Baidu&nbsp;&nbsp;<a rel="nofollow" href="http://www.baidu.com/duty/" target="_blank">使用百度前必读</a>&nbsp;|&nbsp;<a rel="nofollow" href="http://help.baidu.com/question?prod_id=9&class=325&id=2760" target="_blank">知道协议</a>&nbsp;</p>
+</footer>
+
+
+
+
+
+
+
+
+
+
+
+
+<script>
+				var _hmt = _hmt || [];
+				(function() {
+					var hm = document.createElement("script");
+					hm.src = "https://hm.baidu.com/hm.js?6859ce5aaf00fb00387e6434e4fcc925";
+					var s = document.getElementsByTagName("script")[0];
+					s.parentNode.insertBefore(hm, s);
+				})();
+			</script>
+
+<script type="text/javascript"> window.tt = 1791463206;</script>
+</body><script type="text/javascript" src="https://iknow-zhidao.bdimg.com/static/common-new/lib/mod.75d1f98.js"></script><script nonce="" type="text/javascript">(window.__IKNOW_GLOBAL__ || window).require.resourceMap({"res":{"common-new:widget\/lib\/jquery\/jquery.origin.js":{"pkg":"common-new:p2"},"common-new:widget\/js\/ui\/address\/sitedata_bas.js":{"url":"https:\/\/iknow-zhidao.bdimg.com\/static\/common-new\/widget\/js\/ui\/address\/sitedata_bas.b19a351.js"},"common-new:widget\/js\/util\/event\/event.js":{"pkg":"common-new:p5","deps":["common-new:widget\/lib\/jquery\/jquery.js"]},"common-new:widget\/help-team-navigation\/popup.es.js":{"pkg":"common-new:p4"},"common-new:widget\/js\/logic\/msg-new\/listrender.es.js":{"pkg":"common-new:p4"},"common-new:widget\/js\/logic\/msg-new\/msg-new.es.js":{"pkg":"common-new:p4","deps":["common-new:widget\/js\/util\/tangram\/tangram.js","common-new:widget\/js\/util\/event\/event.js","common-new:widget\/js\/util\/log\/log.js","common-new:widget\/js\/logic\/msg-new\/listrender.es.js"]},"common-new:widget\/js\/logic\/tip-template\/tipTemplate.es.js":{"pkg":"common-new:p4","deps":["common-new:widget\/lib\/jquery\/jquery.js"]},"common-new:widget\/js\/logic\/usergrade\/threshold.es.js":{"pkg":"common-new:p4"},"common-new:widget\/js\/logic\/usergrade\/gradedata.es.js":{"pkg":"common-new:p4","deps":["common-new:widget\/js\/logic\/usergrade\/threshold.es.js"]},"common-new:widget\/js\/ui\/eff-reply-entry-dialog\/eff-reply-entry-dialog.es.js":{"pkg":"common-new:p4","deps":["common-new:widget\/js\/util\/tangram\/tangram.js"]},"common-new:widget\/js\/ui\/newDialog\/newDialog.es.js":{"pkg":"common-new:p4","deps":["common-new:widget\/js\/util\/tangram\/tangram.js"]},"common-new:widget\/js\/ui\/v-flash\/js\/v-icon.es.js":{"pkg":"common-new:p4"},"common-new:widget\/js\/ui\/v-flash\/js\/flash.es.js":{"pkg":"common-new:p4","deps":["common-new:widget\/js\/ui\/v-flash\/js\/v-icon.es.js"]},"common-new:widget\/js\/util\/domToImage\/dom-to-image.es.js":{"pkg":"common-new:p4"},"common-new:widget\/js\/util\/monitor\/monitor.es.js":{"pkg":"common-new:p4","deps":["common-new:widget\/js\/util\/log\/log.js"]},"common-new:widget\/js\/util\/observer\/observer.es.js":{"pkg":"common-new:p4","deps":["common-new:widget\/js\/util\/observer\/intersection-observer.js","common-new:widget\/js\/util\/log\/log.js"]},"common-new:widget\/js\/util\/reptile\/captcha.es.js":{"pkg":"common-new:p4","deps":["common-new:widget\/js\/util\/reptile\/util.js","common-new:widget\/js\/util\/reptile\/event.js"]},"common-new:widget\/js\/util\/reptile\/passMkd.es.js":{"pkg":"common-new:p4","deps":["common-new:widget\/js\/util\/reptile\/util.js"]},"common-new:widget\/js\/util\/today\/today.es.js":{"pkg":"common-new:p4","deps":["common-new:widget\/js\/util\/store\/store.js"]},"common-new:widget\/userbar-renew\/userbar-renew.js":{"url":"https:\/\/iknow-zhidao.bdimg.com\/static\/common-new\/widget\/userbar-renew\/userbar-renew.aca92b1.js","deps":["common-new:widget\/js\/util\/tangram\/tangram.js","common-new:widget\/js\/util\/event\/event.js","common-new:widget\/js\/util\/log\/log.js","common-new:widget\/js\/util\/store\/store.js"]},"common-new:widget\/search-box-new\/search-box-new.js":{"url":"https:\/\/iknow-zhidao.bdimg.com\/static\/common-new\/widget\/search-box-new\/search-box-new.1880a1b.js","deps":["common-new:widget\/js\/util\/tangram\/tangram.js","common-new:widget\/js\/ui\/suggestion-new\/suggestion-new.js","common-new:widget\/js\/util\/event\/event.js","common-new:widget\/js\/util\/form\/form.js","common-new:widget\/js\/util\/log\/log.js","common-new:widget\/js\/ui\/dialog\/dialog.js","common-new:widget\/lib\/jquery.placeholder\/jquery.placeholder.js"]},"common-new:widget\/footer\/footer.js":{"url":"https:\/\/iknow-zhidao.bdimg.com\/static\/common-new\/widget\/footer\/footer.614e7c1.js"}},"pkg":{"common-new:p4":{"url":"https:\/\/iknow-zhidao.bdimg.com\/static\/common-new\/pkg\/esmod.e3dab0f.js","has":["common-new:widget\/help-team-navigation\/popup.es.js","common-new:widget\/js\/logic\/msg-new\/listrender.es.js","common-new:widget\/js\/logic\/msg-new\/msg-new.es.js","common-new:widget\/js\/logic\/tip-template\/tipTemplate.es.js","common-new:widget\/js\/logic\/usergrade\/threshold.es.js","common-new:widget\/js\/logic\/usergrade\/gradedata.es.js","common-new:widget\/js\/ui\/eff-reply-entry-dialog\/eff-reply-entry-dialog.es.js","common-new:widget\/js\/ui\/newDialog\/newDialog.es.js","common-new:widget\/js\/ui\/v-flash\/js\/v-icon.es.js","common-new:widget\/js\/ui\/v-flash\/js\/flash.es.js","common-new:widget\/js\/util\/domToImage\/dom-to-image.es.js","common-new:widget\/js\/util\/monitor\/monitor.es.js","common-new:widget\/js\/util\/observer\/observer.es.js","common-new:widget\/js\/util\/reptile\/captcha.es.js","common-new:widget\/js\/util\/reptile\/passMkd.es.js","common-new:widget\/js\/util\/today\/today.es.js"]}}});</script><script type="text/javascript" src="https://iknow-zhidao.bdimg.com/static/common-new/pkg/lib.f7ce958.js"></script><script type="text/javascript" src="https://iknow-zhidao.bdimg.com/static/common-new/pkg/commonjs.b2b174e.js"></script><script nonce="" type="text/javascript">
+!function(){var F = (window.__IKNOW_GLOBAL__ || window).F;var require = (window.__IKNOW_GLOBAL__ || window).require;			window['__abbaidu_2016_subidgetf'] = function () {
+                var currentUrlArray = window.location.href.split("//");
+                var start = currentUrlArray[1].indexOf("/");
+                if (start == -1) {
+                    return 'iknow-pc-home';
+				}
+                var currentPath = currentUrlArray[1].substring(start);
+                if(currentPath.indexOf("?") != -1) {
+                    currentPath = currentPath.split("?")[0];
+                }
+                if (currentPath == "/") {
+                    return 'iknow-pc-home';
+				}
+				var pagePathMap = {
+					"/question": "iknow-pc-qb",
+					"/search": "iknow-pc-search",
+					"/list": "iknow-pc-list",
+					"/usercenter": "iknow-pc-usercenter",
+					"/special/columndetail": "iknow-pc-special-detail",
+					"/uteam/packageshop": "iknow-pc-packageshop",
+					"/daily": {
+						"subid": "iknow-pc-daily-index",
+						"subPage": {
+							"/daily/index": "iknow-pc-daily-index",
+							"/daily/view": "iknow-pc-daily-view",
+							"/daily/square": "iknow-pc-daily-square",
+							"/daily/hotauthor": "iknow-pc-daily-hotauthor",
+							"/daily/hotorg": "iknow-pc-daily-hotorg",
+							"/daily/search": "iknow-pc-daily-search",
+							"/daily/authorcenter": "iknow-pc-daily-authorcenter"
+						}
+					}
+				};
+				for (var key in pagePathMap) {
+					if (pagePathMap.hasOwnProperty(key)) {
+						var subPage = pagePathMap[key]["subPage"];
+						if (typeof subPage === "object") {
+							for (var subKey in subPage) {
+								if (subPage.hasOwnProperty(subKey)) {
+									if (currentPath.indexOf(subKey) === 0) {
+										if (typeof subPage[subKey] === "string") {
+											return subPage[subKey];
+										} else if (typeof subPage[subKey] === "object" && subPage[subKey]["subid"]) {
+											return subPage[subKey]["subid"];
+										}
+									}
+								}
+							}
+						}
+						if (currentPath.indexOf(key) === 0) {
+							if (typeof pagePathMap[key] === "string") {
+								return pagePathMap[key];
+							} else if (typeof pagePathMap[key] === "object" && pagePathMap[key]["subid"]) {
+								return pagePathMap[key]["subid"];
+							}
+						}
+					}
+				}
+				return 'iknow-pc-other';
+			}
+			window['__abbaidu_2016_cb'] = function (responseData) {
+                try {
+                    var respJSON = JSON.parse(responseData);
+
+                    var d = new Date();
+                    d.setTime(d.getTime()+(60*60*1000));
+                    var expires = "expires="+d.toGMTString();
+                    document.cookie = 'shitong_key_id=' + respJSON.key_id + '; ' + expires + '; path=/';
+                    document.cookie = 'shitong_data=' + respJSON.data + '; ' + expires + '; path=/';
+                    document.cookie = 'shitong_sign=' + respJSON.sign + '; ' + expires + '; path=/';
+                } catch (err) {
+                }
+   			};
+		}();
+!function(){var F = (window.__IKNOW_GLOBAL__ || window).F;var require = (window.__IKNOW_GLOBAL__ || window).require;    F.context('sfrom', '');
+    require.async(['common-new:widget/userbar-renew/userbar-renew']);
+}();
+!function(){var F = (window.__IKNOW_GLOBAL__ || window).F;var require = (window.__IKNOW_GLOBAL__ || window).require;    require.async(['common-new:widget/search-box-new/search-box-new']);
+}();
+!function(){var F = (window.__IKNOW_GLOBAL__ || window).F;var require = (window.__IKNOW_GLOBAL__ || window).require;            require.async(['common-new:widget/lib/jquery/jquery','common-new:widget/js/util/log/log'], function($, log){
+                var counter = 15;
+                function runCounter(){
+                    if (counter == 0) {
+                        location.href = '/';
+                    }else{
+                        $('#countdown-timer').html(--counter);
+                        setTimeout(runCounter, 1000);
+                    }
+                }
+                runCounter();
+                var qid = location.pathname && location.pathname.match(/\d+/);
+                qid = qid && qid[0];
+                var params = {type: 2014, page: 'question-none', qid: qid};
+                log.send(params);
+            });
+        }();
+!function(){var F = (window.__IKNOW_GLOBAL__ || window).F;var require = (window.__IKNOW_GLOBAL__ || window).require;    require('common-new:widget/js/logic/ie-prompt/ie-prompt');
+    require.async(['common-new:widget/footer/footer']);
+}();
+!function(){var F = (window.__IKNOW_GLOBAL__ || window).F;var require = (window.__IKNOW_GLOBAL__ || window).require;    var $ = require('common-new:widget/js/util/tangram/tangram');
+    (function() {
+
+        // 计算悬浮框的位置
+        function countPosition () {
+            var cw = document.body.clientWidth;
+            if (cw < 1230) {
+                $('.aria-div').css({
+                    display: 'block',
+                    right: 0 + 'px',
+                    bottom: 60 + 'px'
+                });
+            }  else { 
+                $('.aria-div').css({
+                    display: 'block',
+                    right: (cw - 1070)/2 - 80 + 'px',
+                    top: '80%'
+                });
+            }
+        }
+        countPosition();
+
+        // 当页面宽度发生变化 则重新计算位置
+        $(window).on('resize', function () {
+            countPosition();    
+        });
+    })();
+}();
+!function(){var F = (window.__IKNOW_GLOBAL__ || window).F;var require = (window.__IKNOW_GLOBAL__ || window).require;								                																					require.async(['common-new:widget/js/logic/dom-ready/dom-ready'], function(D){ D.init({"isNotPgc":"1"}) });
+            }();
+!function(){var F = (window.__IKNOW_GLOBAL__ || window).F;var require = (window.__IKNOW_GLOBAL__ || window).require;        require.async(["common-new:widget/js/logic/duration/duration"],function(dur){
+            dur.init();
+        });
+    }();
+!function(){var F = (window.__IKNOW_GLOBAL__ || window).F;var require = (window.__IKNOW_GLOBAL__ || window).require;			require.async(['common-new:widget/js/util/monitor/monitor.es'], function(m) {
+				window.iPerformance && m.monitor && m.monitor.init();
+			});
+		}();
+!function(){var F = (window.__IKNOW_GLOBAL__ || window).F;var require = (window.__IKNOW_GLOBAL__ || window).require;		require.async(['common-new:widget/js/util/log/log'], function(log) {
+			var ssrEnd = Date.now();
+			var cost = ssrEnd - Number(1791463206420);
+			setTimeout(function () {
+				log.send({
+					action: 'latency',
+					area: 'ssr',
+					plat: 'pc',
+					cost: cost,
+					uri: window.location.pathname
+				});
+			}, 1000);
+		});
+	}();
+</script>
+<script type="text/javascript">
+    require.async(['common-new:widget/lib/jquery/jquery'], function ($) {
+        if (!/chrome|firefox|safari|msie 10|rsv:11|msie [89]/i.test(navigator.userAgent)) {
+            return;
+        }
+
+        window.BaiduHttps = window.BaiduHttps || {};
+        window.BaiduHttps.callbacks = function (data) {
+            if (data && data.s === 0) {
+                window.supportHttps = 1;
+                setTimeout(function () {
+                    $('a[href^="http://www.baidu.com/s?"]').each(function (index, item) {
+                        var link = $(item).attr('href');
+                        if (~link.indexOf('?wd=') || ~link.indexOf('&wd=')) {
+                            link = link.replace(/^http/, 'https');
+                            $(item).attr('href', link);
+                        }
+                    });
+                }, 2000);
+            }
+        };
+
+        var script = document.createElement('script');
+        script.type = 'text/javascript';
+        script.src = 'https://www.baidu.com/con?from=zhidao';
+        document.body.appendChild(script);
+    });
+</script>
+
+
+<script async="" src="https://dlswbr.baidu.com/heicha/mw/abclite-2016-s.js"></script>
+
+
+</html>

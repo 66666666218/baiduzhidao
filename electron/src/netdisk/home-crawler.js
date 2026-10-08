@@ -47,11 +47,11 @@ function looksResourceful(title) {
   return /求|资源|分享|网盘|链接|电影|电视剧|动漫|综艺|音乐|剧集|纪录片|4k|1080|全集|高清|夸克|阿里云盘/i.test(String(title || ""));
 }
 
-async function defaultFetch(url) {
+async function defaultFetch(url, { referer } = {}) {
   let res;
   try {
     res = await fetch(url, {
-      headers: { "User-Agent": UA, "Referer": `${PAN_HOST}/` },
+      headers: { "User-Agent": UA, "Referer": referer || `${PAN_HOST}/` },
       redirect: "follow",
       signal: AbortSignal.timeout(20000), // 无默认超时：单个请求挂起会卡死整个任务且无法停止
     });
@@ -110,10 +110,70 @@ async function crawlHomeAnswers(uid, { onPage, shouldStop, pageSize = 20, maxPag
   return { items: all, total, truncated, partial };
 }
 
-/** 问题页（SSR）全文兜底提取：摘要被截断时从完整回答正文找链接 */
+/**
+ * 识别"不是正常问答内容"的响应（错误提示页 / 验证页 / 空响应）。
+ *
+ * 为什么要有这个：百度出错或拦截时返回的是 HTTP 200 + 一张占位页，
+ * 里面自然一个网盘链接也没有。extractPanLinks 于 是返回空数组——**和"这题真的没资源"
+ * 完全无法区分**，调用方当成正常情况继续，通道失效了日志里还一个字都没有。
+ *
+ * 已知形态：「百度知道 - 信息提示」占位页（问题不存在/路径不对时返回的也是这个）、验证页。
+ * 只认**确定**的异常特征，不做"必须包含某某结构"的正面校验——正面校验写错会把正常页面
+ * 也判成异常，反而更糟。
+ *
+ * @returns {string} 异常原因；正常内容返回空串
+ */
+function detectBlockedPage(html) {
+  const text = String(html || "");
+  if (!text.trim()) return "空响应";
+  if (/<title>\s*百度知道\s*[-–—]\s*信息提示\s*<\/title>/i.test(text)) return "「百度知道 - 信息提示」占位页";
+  if (/wappass\.baidu\.com|verify\.baidu\.com|安全验证|请输入验证码/i.test(text)) return "风控/验证页";
+  return "";
+}
+
+/**
+ * 抽出一条回答的正文。
+ * 接口把正文放在 contentList[段落][片段].value，段落/片段都是二维的，逐层取。
+ */
+function replyTextOf(reply) {
+  const parts = [];
+  for (const group of Array.isArray(reply && reply.contentList) ? reply.contentList : []) {
+    for (const piece of Array.isArray(group) ? group : []) {
+      if (piece && typeof piece.value === "string") parts.push(piece.value);
+    }
+  }
+  return parts.join("\n");
+}
+
+/** 问题页（全文）兜底提取：摘要被截断时从完整回答正文找链接。
+ *
+ *  为什么走 JSON 接口、而不是抓问题页 HTML：
+ *    1) 问题页现在是**客户端渲染**。裸请求 /question/hx/{qid} 只拿到 4.6KB 空壳
+ *       （真浏览器渲染后是 1.38MB），HTML 里根本没有回答正文。
+ *    2) 而且旧代码拼的是 /question/{qid}（不带 hx），对这些题是个 404 页——
+ *       拿回来的是「百度知道 - 信息提示」，extractPanLinks 于 是返回空数组，
+ *       调用方当成"这题没资源"，兜底通道**静默失效**了很多轮。
+ *  接口实测**不需要登录 Cookie**，纯协议可用。
+ */
 async function fetchQuestionResources(qid, fetchImpl = defaultFetch) {
-  const html = await fetchImpl(`${PAN_HOST}/question/${qid}`);
-  return extractPanLinks(html);
+  const referer = `${PAN_HOST}/question/hx/${qid}`;
+  // Referer 必须指向具体问题页：指向根路径时接口会返回 0 条回复（已实测）
+  const url = `${PAN_HOST}/swan/ajax/replies?qid=${encodeURIComponent(qid)}&pn=0&rn=20&merge_newbest=1&evaluate=1&from_source=hx&platform=pc`;
+  const body = await fetchImpl(url, { referer });
+
+  let json;
+  try {
+    json = JSON.parse(body);
+  } catch {
+    // 解析不了通常意味着被换成了 HTML（拦截页 / 改版），给出能定位的错误而不是空数组
+    const blocked = detectBlockedPage(body);
+    throw new Error(blocked
+      ? `问题页接口返回的是拦截页（${blocked}）而不是 JSON，可能是风控或接口改版`
+      : `问题页接口返回的不是 JSON（前 80 字：${String(body).slice(0, 80)}）`);
+  }
+  const replies = Array.isArray(json.replies) ? json.replies : [];
+  if (!replies.length) return []; // 这题确实没有回答——与"被拦截"是两回事
+  return extractPanLinks(replies.map(replyTextOf).join("\n"));
 }
 
 /**
@@ -126,7 +186,7 @@ async function crawlHomeResources({ homepages, limit = 0, enrichLimit = 50, onLo
   const rows = [];
   const seenLinks = new Set();          // 同一资源跨主页/跨问答只出一次
   const enrichedQuestions = new Set();  // 开过问题页的 qid（跨主页复用，避免重复开页）；不影响摘要直提
-  const stats = { answers: 0, direct: 0, enriched: 0, failed: 0 };
+  const stats = { answers: 0, direct: 0, enriched: 0, failed: 0, enrichAttempted: 0, enrichEmpty: 0, enrichFailed: 0 };
   let enrichUsed = 0;
 
   for (const hp of homepages) {
@@ -171,11 +231,14 @@ async function crawlHomeResources({ homepages, limit = 0, enrichLimit = 50, onLo
       if (!links.length && looksResourceful(title) && enrichUsed < enrichLimit && !enrichedQuestions.has(qid)) {
         enrichedQuestions.add(qid);
         enrichUsed += 1;
+        stats.enrichAttempted += 1;
         try {
           links = await fetchQuestionResources(qid, fetchImpl);
           if (links.length) stats.enriched += 1;
+          else stats.enrichEmpty += 1; // 页面正常但这题确实没链接——与"被拦截"区分开
           await sleep(questionDelayMs);
         } catch (e) {
+          stats.enrichFailed += 1;
           stats.failed += 1;
           onLog(`⚠️ 问题页打开失败（跳过）：${title} — ${e.message}`);
         }
@@ -189,6 +252,15 @@ async function crawlHomeResources({ homepages, limit = 0, enrichLimit = 50, onLo
       }
     }
     if (limit && rows.length >= limit) break;
+  }
+
+  // 兜底通道整体失效时必须说出来。这是最后一道防线：万一将来出现某种我没覆盖到的
+  // 拦截页（detectBlockedPage 认不出来、静态返回空），"开了 N 次一条都没取到"这个
+  // 统计仍然会露出来——本次结果其实只有回答摘要那半条腿在工作。
+  if (stats.enrichAttempted >= 3 && stats.enriched === 0) {
+    onLog(`⚠️ 问题页兜底开了 ${stats.enrichAttempted} 次，一条链接都没取到`
+      + `（其中失败 ${stats.enrichFailed} 次、页面正常但无链接 ${stats.enrichEmpty} 次）。`
+      + `这几乎必然是兜底通道失效，不是"这些题恰好都没资源"——本次产出只来自回答摘要。`);
   }
 
   if (!rows.length) {
@@ -210,5 +282,7 @@ module.exports = {
   fetchMyAnswerPage,
   crawlHomeAnswers,
   fetchQuestionResources,
+  detectBlockedPage,
+  replyTextOf,
   crawlHomeResources,
 };
