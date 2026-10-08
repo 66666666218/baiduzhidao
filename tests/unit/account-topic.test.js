@@ -59,9 +59,13 @@ test("normalizeAccountTopics：空值与非法项被丢弃而非抛错", () => {
   assert.deepEqual(normalizeAccountTopics([null, "乱写", { account: "环境C" }]), {});
 });
 
-test("normalizeAccountTopicsSetting：题材收敛到规范分类，收敛不了的丢弃", () => {
-  const result = normalizeAccountTopicsSetting({ 环境A: "情感", 环境B: "教育类", 环境C: "不存在的题材" });
-  assert.deepEqual(result, { 环境A: "情感类", 环境B: "教育类" }, "「情感」补全为「情感类」，未知题材丢弃");
+test("normalizeAccountTopicsSetting：已知分类补全，未知题材原样保留", () => {
+  const result = normalizeAccountTopicsSetting({ 环境A: "情感", 环境B: "教育类", 环境C: "影视" });
+  assert.deepEqual(
+    result,
+    { 环境A: "情感类", 环境B: "教育类", 环境C: "影视" },
+    "「情感」补全为「情感类」；「影视」是上传侧的分类规则名，必须原样保留（不能按 CATEGORIES 丢弃）"
+  );
 });
 
 test("normalizeSettings：accountTopics 与 linkRouting 有默认值且非法值回退", () => {
@@ -163,4 +167,75 @@ test("buildAllocation：没有账号时不静默丢数据，全部计入 unroute
   const { slots, unrouted } = buildAllocation(rows, [], { 环境A: "情感类" });
   assert.deepEqual(slots, []);
   assert.equal(unrouted.length, 1);
+});
+
+// ---------- 上传侧题材分配 ----------
+
+const { buildTopicAllocation, stampTopicColumn } = require("../../electron/src/domain/account-topic");
+const { parseTopicRules, classifyByRules, DEFAULT_TOPIC_RULES } = require("../../electron/src/domain/topic-rules");
+
+const uploadRules = parseTopicRules(DEFAULT_TOPIC_RULES);
+const byTitle = (row) => classifyByRules(row.问题标题, uploadRules);
+const upRow = (title) => ({ 问题标题: title, 回答内容: "内容" });
+
+test("buildTopicAllocation：按规则派生题材，各账号只拿自己题材的行", () => {
+  const rows = [
+    upRow("《黑神话悟空》游戏本体下载"),
+    upRow("《流浪地球》电影1080p"),
+    upRow("另一个游戏资源"),
+  ];
+  const res = buildTopicAllocation(rows, ["环境A", "环境B"], { 环境A: "游戏", 环境B: "影视" }, { classify: byTitle });
+
+  const byEnv = Object.fromEntries(res.slots.map((s) => [s.envLabel, s.rows.length]));
+  assert.deepEqual(byEnv, { 环境A: 2, 环境B: 1 });
+  assert.equal(res.stats.classified, 3);
+  assert.equal(res.unclassified.length, 0);
+});
+
+test("buildTopicAllocation：规则未命中的行不硬塞，单独返回", () => {
+  const rows = [upRow("某游戏资源"), upRow("完全无法归类的东西")];
+  const res = buildTopicAllocation(rows, ["环境A"], { 环境A: "游戏" }, { classify: byTitle });
+  assert.equal(res.slots[0].rows.length, 1);
+  assert.equal(res.unclassified.length, 1);
+  assert.equal(res.unclassified[0].问题标题, "完全无法归类的东西");
+});
+
+test("buildTopicAllocation：有行但无账号绑定该题材 → 计入 orphanByTopic", () => {
+  const rows = [upRow("三体全集小说txt")];
+  const res = buildTopicAllocation(rows, ["环境A"], { 环境A: "游戏" }, { classify: byTitle });
+  assert.deepEqual(res.orphanByTopic, { 小说: 1 });
+  assert.equal(res.stats.planned, 0);
+});
+
+test("buildTopicAllocation：没绑定题材的账号本次不参与，单独列出", () => {
+  const rows = [upRow("某游戏资源")];
+  const res = buildTopicAllocation(rows, ["环境A", "环境C"], { 环境A: "游戏" }, { classify: byTitle });
+  assert.deepEqual(res.unboundAccounts, ["环境C"]);
+  assert.equal(res.slots.find((s) => s.envLabel === "环境C").rows.length, 0);
+});
+
+test("buildTopicAllocation：同题材多账号按轮询平分", () => {
+  const rows = [upRow("游戏一"), upRow("游戏二"), upRow("游戏三")];
+  const res = buildTopicAllocation(rows, ["环境A", "环境B"], { 环境A: "游戏", 环境B: "游戏" }, { classify: byTitle });
+  assert.deepEqual(res.slots.map((s) => s.rows.length), [2, 1]);
+});
+
+test("buildTopicAllocation：没有分类器时全部归入未分类，不会静默丢数据", () => {
+  const rows = [upRow("某游戏资源")];
+  const res = buildTopicAllocation(rows, ["环境A"], { 环境A: "游戏" });
+  assert.equal(res.unclassified.length, 1);
+  assert.equal(res.stats.planned, 0);
+});
+
+test("stampTopicColumn：把题材写回表格列，未命中的留空", () => {
+  const rows = [upRow("某电影资源"), upRow("无法归类")];
+  const column = stampTopicColumn(rows, byTitle, "一级分类");
+  assert.equal(column, "一级分类");
+  assert.deepEqual(rows.map((r) => r.一级分类), ["影视", ""]);
+});
+
+test("stampTopicColumn：列名留空时回退默认列，不写空键", () => {
+  const rows = [upRow("某电影资源")];
+  assert.equal(stampTopicColumn(rows, byTitle, "  "), "一级分类");
+  assert.equal(rows[0]["一级分类"], "影视");
 });

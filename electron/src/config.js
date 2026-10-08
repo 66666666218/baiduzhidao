@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { normalizeAccountTopics } = require("./domain/account-topic");
+const { DEFAULT_TOPIC_RULES } = require("./domain/topic-rules");
 
 const CATEGORIES = ["情感类", "教育类", "综合类", "人物类"];
 const ALL_CATEGORY = "三类一起";
@@ -44,6 +45,8 @@ const DEFAULTS = {
   // 账号 ↔ 题材绑定：{ "环境A": "情感类" }，带链接的答案据此严格一对一投递
   accountTopics: {},
   linkRouting: "strict",
+  // 上传侧的关键词分类规则（「分类名=关键词1|关键词2」每行一条，顺序敏感）
+  topicRules: DEFAULT_TOPIC_RULES,
 };
 
 const SYSTEM_PROMPT = `请生成百度知道优质回答，只输出自然连贯的回答正文。
@@ -70,16 +73,19 @@ function normalizeCategory(value) {
 }
 
 /**
- * 账号题材绑定：先做通用归一化，再把题材收敛到 CATEGORIES 的规范写法。
- * 收敛不了（用户填了不存在的题材）就丢弃该条，避免出现永远匹配不上账号的"幽灵题材"。
+ * 账号题材绑定：只做通用归一化 + 一处便利补全。
+ *
+ * 刻意**不**把题材限制在 CATEGORIES 里：绑定表服务两条路径，题材命名空间不同——
+ *   答题路径用「情感类/教育类/综合类/人物类」，上传路径用分类规则里的「游戏/影视/小说…」。
+ * 早期版本在这里按 CATEGORIES 过滤，会把上传侧的题材全部当成"未知题材"丢光。
+ * 题材是否真的存在，由各路径匹配不到时给用户报出来（见 account-topic / submit 的告警）。
  */
 function normalizeAccountTopicsSetting(value) {
   const raw = normalizeAccountTopics(value);
   const result = {};
   for (const [account, topic] of Object.entries(raw)) {
-    // 用户通常会写「情感」而不是「情感类」，补一次后缀再匹配
-    const canonical = normalizeCategory(topic) || normalizeCategory(`${topic}类`);
-    if (canonical) result[account] = canonical;
+    // 用户常写「情感」而不是「情感类」；只在这一种已知情形下补后缀，其余原样保留
+    result[account] = normalizeCategory(topic) || normalizeCategory(`${topic}类`) || topic;
   }
   return result;
 }
@@ -126,6 +132,8 @@ function normalizeSettings(payload) {
   next.closeAfter = Boolean(next.closeAfter);
   next.accountTopics = normalizeAccountTopicsSetting(next.accountTopics);
   next.linkRouting = LINK_ROUTING_MODES.includes(next.linkRouting) ? next.linkRouting : DEFAULTS.linkRouting;
+  // 规则为空会让上传侧一行都分不出去，回退默认规则而不是静默全空
+  if (!String(next.topicRules || "").trim()) next.topicRules = DEFAULT_TOPIC_RULES;
   if (!String(next.systemPrompt || "").trim()) next.systemPrompt = SYSTEM_PROMPT;
   // 活动页地址：允许覆盖但必须是合法 http(s) URL，否则回退默认（防止用户填错导致任务必败）
   const activityUrl = String(next.activityUrl || "").trim();
