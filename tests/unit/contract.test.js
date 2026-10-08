@@ -19,7 +19,7 @@ const rendererJs = read("electron/renderer/renderer.js");
 const indexHtml = read("electron/renderer/index.html");
 const preloadJs = read("electron/preload.js");
 const appContext = read("electron/app-context.js");
-const { INVOKE_CHANNELS } = require("../../electron/src/ipc-channels");
+const { INVOKE_CHANNELS, LISTENER_CHANNELS } = require("../../electron/src/ipc-channels");
 
 test("契约①：renderer 调用的所有通道都在 preload 白名单内", () => {
   const called = new Set([...rendererJs.matchAll(/rpc\.invoke\(\s*"([^"]+)"/g)].map((m) => m[1]));
@@ -28,7 +28,7 @@ test("契约①：renderer 调用的所有通道都在 preload 白名单内", ()
   assert.deepEqual(missing, [], `renderer 调用但不在白名单: ${missing.join(", ")}`);
 });
 
-test("契约①-b：preload 内联白名单与 src/ipc-channels.js 必须完全一致", () => {
+test("契约①-b：preload 内联通道清单与 src/ipc-channels.js 必须完全一致（invoke + 推送）", () => {
   // preload 在 sandbox:true 下拿不到本地模块，只能内联一份；主进程用的那份在 ipc-channels.js。
   // 两份清单漂移的后果是"通道只在一边存在"，所以这里强制相等。
   // 只解析 invokeChannels 那个块：listenerChannels（task:log 等）是另一个集合，不参与比对。
@@ -40,6 +40,14 @@ test("契约①-b：preload 内联白名单与 src/ipc-channels.js 必须完全�
   const onlyShared = [...shared].filter((c) => !inline.has(c));
   assert.deepEqual(onlyInline, [], `只在 preload 里有：${onlyInline.join(", ")}`);
   assert.deepEqual(onlyShared, [], `只在 ipc-channels.js 里有：${onlyShared.join(", ")}`);
+
+  // 推送（监听）通道同理：主进程 emit 了、preload 不在白名单里，界面就永远收不到
+  const listenerBlock = preloadJs.match(/const listenerChannels = new Set\(\[([\s\S]*?)\]\)/);
+  assert.ok(listenerBlock, "没能在 preload.js 里定位到 listenerChannels 清单");
+  const inlineListeners = new Set([...listenerBlock[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+  const sharedListeners = new Set(LISTENER_CHANNELS);
+  assert.deepEqual([...inlineListeners].filter((c) => !sharedListeners.has(c)), [], "推送通道只在 preload 里有");
+  assert.deepEqual([...sharedListeners].filter((c) => !inlineListeners.has(c)), [], "推送通道只在 ipc-channels.js 里有");
 });
 
 test("契约②：renderer 调用的所有通道都有 main 侧 handler", () => {

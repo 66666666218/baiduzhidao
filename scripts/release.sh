@@ -4,11 +4,34 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${1:-}"
-if [ -z "$VERSION" ]; then
-  VERSION=$(node -p "require('./package.json').version")
+# 版本号：不带参数就自动升 patch。
+# 为什么不能沿用旧版本号重发：electron-updater 是按 latest.yml 里的 version 比对来判"有没有新版"的，
+# 版本号不变 → 所有已安装的客户端永远显示"已是最新" → 新包推不出去，而且**没有任何报错**。
+PKG_VERSION=$(node -p "require('./package.json').version")
+REQUESTED="${1:-}"
+if [ -z "$REQUESTED" ]; then
+  VERSION=$(node -e "const a=process.argv[1].split('.').map(Number);a[2]+=1;console.log(a.join('.'))" "$PKG_VERSION")
+  echo "未指定版本号，自动升 patch：$PKG_VERSION → $VERSION"
+else
+  VERSION="$REQUESTED"
 fi
 TAG="v$VERSION"
+
+# 把 package.json 对齐到 VERSION：electron-builder 是按 package.json 的 version 命名安装包和
+# latest.yml 的，两者不一致会产出对不上的文件名，后面 ls 报的错很难看懂。
+if [ "$PKG_VERSION" != "$VERSION" ]; then
+  node -e "
+    const fs = require('fs');
+    const raw = fs.readFileSync('package.json', 'utf8');
+    // 保持原有行尾：仓库里是 CRLF，写回 LF 会让整份文件在 diff 里全部标红，
+    // 真正改了哪一行反而看不出来。
+    const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+    const pkg = JSON.parse(raw);
+    pkg.version = process.argv[1];
+    fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2).split('\n').join(eol) + eol);
+  " "$VERSION"
+  echo "package.json 版本已更新：$PKG_VERSION → $VERSION"
+fi
 echo "发版：$TAG"
 
 # 0) gh 可用性检查
@@ -17,6 +40,14 @@ if ! command -v gh >/dev/null 2>&1; then
 fi
 if ! gh auth status >/dev/null 2>&1; then
   echo "❌ gh 未登录。请先执行：gh auth login（选 GitHub.com → 浏览器授权）"; exit 1
+fi
+
+# 同 tag 已存在时明确拒绝：上传用的是 --clobber，会静默覆盖旧包，
+# 而客户端看到的版本号没变，于是永远收不到更新（见上面版本号那段）。
+if gh release view "$TAG" >/dev/null 2>&1; then
+  echo "❌ $TAG 已存在。覆盖同版本号的发布不会让客户端更新（版本号没变）。"
+  echo "   换个版本号：bash scripts/release.sh <新版本号>；或不带参数运行让脚本自动升 patch。"
+  exit 1
 fi
 
 # 1) 闸门：单测 + 冒烟全绿才允许打包

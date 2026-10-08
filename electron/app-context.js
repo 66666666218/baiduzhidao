@@ -729,6 +729,9 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     });
     autoUpdater.on("update-downloaded", (info) => {
       updateReady = true;
+      // 主动推给界面。此前界面是靠匹配下面这行日志文本来启用「重启并安装新版」按钮的，
+      // 改一个字按钮就永远不亮且不报错——状态必须走结构化事件，不能走日志文本。
+      emit("update:ready", { version: info.version });
       emit("task:log", `✅ 新版本 v${info.version} 下载完成。重启软件即自动安装；也可在「使用教程 → 软件更新」点「重启并安装新版」立即完成。`);
     });
     autoUpdater.on("error", (e) => {
@@ -754,6 +757,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   ipcMain.handle("update:info", () => ({
     version: app.getVersion(),
     supported: Boolean(app.isPackaged),
+    ready: updateReady, // 新版是否已下载好（界面据此启用「重启并安装新版」）
     releasesUrl: RELEASES_URL,
   }));
 

@@ -127,14 +127,26 @@ $("exportBank").addEventListener("click", async () => {
 });
 
 // ---------- 软件更新（GitHub Releases） ----------
+function applyUpdateInfo(info) {
+  $("updateInfo").textContent = `当前版本 v${info.version}`;
+  $("checkUpdate").disabled = !info.supported;
+  if (!info.supported) $("updateInfo").textContent += "（开发模式不支持在线更新）";
+  // 只有主进程说"已下载好"才允许安装。状态走结构化字段，不匹配日志文本——
+  // 此前是靠 includes("下载完成。重启软件即自动安装") 判断的，日志改一个字按钮就静默失效。
+  $("installUpdate").disabled = !info.ready;
+}
+
 (async () => {
   try {
-    const info = await rpc.invoke("update:info");
-    $("updateInfo").textContent = `当前版本 v${info.version}`;
-    $("checkUpdate").disabled = !info.supported;
-    if (!info.supported) $("updateInfo").textContent += "（开发模式不支持在线更新）";
+    applyUpdateInfo(await rpc.invoke("update:info"));
   } catch { /* 通道异常不影响其他功能 */ }
 })();
+
+// 下载完成时主进程主动推：立刻点亮按钮，不必等到下一次查询
+rpc.on("update:ready", (info) => {
+  $("installUpdate").disabled = false;
+  $("updateInfo").textContent = `新版 v${(info && info.version) || ""} 已下载完成，点「重启并安装新版」即可`;
+});
 
 $("checkUpdate").addEventListener("click", async () => {
   $("checkUpdate").disabled = true;
@@ -156,11 +168,6 @@ $("installUpdate").addEventListener("click", async () => {
   } catch (error) {
     appendLog(`安装失败：${error.message}`);
   }
-});
-
-// 下载完成后启用「重启并安装」按钮：监听运行日志里的完成标记（与主进程 update-downloaded 同步）
-rpc.on("task:log", (text) => {
-  if (typeof text === "string" && text.includes("下载完成。重启软件即自动安装")) $("installUpdate").disabled = false;
 });
 
 $("openReleases").addEventListener("click", async () => {
