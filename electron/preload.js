@@ -2,7 +2,13 @@
 
 const { contextBridge, ipcRenderer } = require("electron");
 
-// 白名单通道：渲染端只能调用这些方法
+// 白名单通道：渲染端只能调用这些方法。
+//
+// 为什么这份清单是**内联**的、而不是 require src/ipc-channels.js：
+// 本窗口 sandbox:true（护着 31 条高权通道），沙箱化的 preload 只能 require
+// electron 与少数内置模块，拿不到本地文件——试过，preload 直接加载失败、整页崩。
+// 主进程侧的同一份清单在 src/ipc-channels.js（冒烟自检要用）。
+// 两份必须一致，由 tests/unit/contract.test.js 契约①强制校验，改一份漏另一份会红。
 const invokeChannels = new Set([
   "settings:get",
   "settings:save",

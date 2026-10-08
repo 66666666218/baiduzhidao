@@ -1,0 +1,84 @@
+"use strict";
+
+/**
+ * IPC 通道清单（主进程侧）。
+ *
+ * 谁在用：app-context.js 的冒烟自检——点按钮前把这些通道全部换成空实现，
+ * 好让"处理器体内的错误"暴露出来，同时不产生任何真实副作用
+ * （提交答案 / 上传资源 / 开文件夹 / 弹文件框 / 装更新）。
+ *
+ * 注意：preload.js 里有**同样一份内联清单**，不能改成 require 本模块——
+ * 本窗口 sandbox:true，沙箱化的 preload 只能 require electron 与少数内置模块，
+ * 引入本地文件会让 preload 直接加载失败、整页崩（已实测）。
+ * 两份必须一致，由 tests/unit/contract.test.js 契约①-b 强制校验。
+ */
+
+const INVOKE_CHANNELS = [
+  // 设置与日志
+  "settings:get",
+  "settings:save",
+  "logs:recent",
+  "logs:set-mask",
+
+  // 任务控制
+  "task:stop",
+  "task:pause",
+  "task:resume",
+  "task:history",
+  "task:running",
+
+  // 任务
+  "task:crawl",
+  "task:generate",
+  "task:submit",
+  "task:passed-count",
+  "task:batch-transfer",
+  "task:batch-upload",
+  "task:upload-by-topic",
+  "task:auto-pipeline",
+  "task:crawl-home",
+
+  // 网盘
+  "netdisk:accounts:list",
+  "netdisk:accounts:add",
+  "netdisk:accounts:extract-from-window",
+  "netdisk:accounts:remove",
+  "netdisk:accounts:check",
+  "netdisk:list",
+  "netdisk:delete",
+  "netdisk:records",
+
+  // 文件与外部
+  "file:open",
+  "file:reveal",
+  "bit:check",
+
+  // 题库 / 答案
+  "questions:random-pick",
+  "answers:list",
+  "answers:clear",
+  "answers:export",
+  "bank:stats",
+  "bank:list",
+  "bank:import",
+  "bank:export",
+
+  // 杂项
+  "clipboard:write",
+  "link:open",
+  "path:pick-save-xlsx",
+  "path:pick-open-table",
+  "path:pick-folder",
+  "ai:usage",
+  "app:data-dir",
+  "app:open-data-dir",
+  "app:selftest",
+  "update:check",
+  "update:install",
+  "update:info",
+];
+
+/** 主进程 → 渲染端的单向推送通道 */
+const LISTENER_CHANNELS = ["task:log", "task:progress", "task:item"];
+
+module.exports = { INVOKE_CHANNELS, LISTENER_CHANNELS };

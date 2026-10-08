@@ -19,6 +19,7 @@ const { runBatchUploadTask, runTopicUploadTask } = require("./src/tasks/upload-b
 const { randomPickQuestions } = require("./src/tasks/random-pick");
 const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
+const { INVOKE_CHANNELS } = require("./src/ipc-channels");
 
 let mainWindow = null;
 let clipboardApi = null; // registerIpc 时注入（供任务内剪贴板兜底）
@@ -838,7 +839,21 @@ function createWindow({ smoke = false } = {}) {
   return mainWindow;
 }
 
-/** 冒烟自检：渲染端脚本无错误 + preload 桥可用 + 初始化完成 */
+/**
+ * 冒烟点按钮时各通道返回的"空结果"形状。
+ *
+ * 默认是 {}，但少数处理器会直接解引用返回值（list.forEach / result.steps.filter /
+ * result.stats.xxx），空对象会把它们噎住——那是**桩数据的假阳性**，不是真 bug。
+ * 假阳性一旦混进来，这个守卫很快就会没人看，所以宁可在这里补形状。
+ * 新增通道报假阳性时，往这里加一行即可。
+ */
+const SMOKE_RESULT_SHAPES = {
+  "netdisk:accounts:list": [],
+  "app:selftest": { ok: true, steps: [] },
+  "task:crawl-home": { stopped: false, count: 0, stats: {}, outputPath: "" },
+};
+
+/** 冒烟自检：渲染端脚本无错误 + preload 桥可用 + 初始化完成 + 点遍按钮无处理器错误 */
 async function smokeCheck() {
   const window = createWindow({ smoke: true });
   const errors = [];
@@ -856,7 +871,62 @@ async function smokeCheck() {
   await new Promise((resolve) => setTimeout(resolve, 1500));
   const bridgeOk = await window.webContents.executeJavaScript("typeof window.api === 'object' && typeof window.api.invoke === 'function'");
   const bankOk = await window.webContents.executeJavaScript("document.getElementById('bankStats') && document.getElementById('bankStats').textContent.length >= 0");
-  const result = { bridgeOk, bankOk, rendererErrors: errors };
+
+  // 把全部 IPC 通道换成空实现，然后点遍所有按钮。
+  //
+  // 为什么要这样：加载期错误由上面的 console-message 能收，但**事件处理器体内**的错误
+  //（典型是引用了不存在的变量）只有点下去才炸——冒烟一直全绿也发现不了。
+  // 换掉 handler 之后真实副作用一个都不会发生：提交答案、上传资源、开文件夹、
+  // 弹文件框、装更新全部被截断，所以 confirm 一律放行也是安全的。
+  const { ipcMain } = require("electron");
+  for (const channel of INVOKE_CHANNELS) {
+    try { ipcMain.removeHandler(channel); } catch { /* 本来就没注册 */ }
+    ipcMain.handle(channel, () => (SMOKE_RESULT_SHAPES[channel] ?? {}));
+  }
+  const probe = await window.webContents.executeJavaScript(`(async () => {
+    const collected = [];
+    window.addEventListener("error", (e) => collected.push("error: " + (e.message || String(e.error))));
+    window.addEventListener("unhandledrejection", (e) => collected.push("rejection: " + ((e.reason && e.reason.message) || String(e.reason))));
+    window.confirm = () => true;
+    window.alert = () => {};
+    window.prompt = () => null;
+    // 先把表单填满再点。否则绝大多数处理器会在「请先选择文件」这类前置校验处提前 return，
+    // 处理器体后半段——正是出错的地方——根本执行不到，点了等于没点（已实测）。
+    document.querySelectorAll("input, textarea").forEach((el) => {
+      if (el.type === "checkbox" || el.type === "radio") { el.checked = true; return; }
+      if (el.value) return;
+      el.value = el.type === "number" ? "5" : "smoke.xlsx";
+    });
+    document.querySelectorAll("select").forEach((el) => { if (el.selectedIndex < 0) el.selectedIndex = 0; });
+    // 处理器普遍把自己包在 try/catch 里、只把 error.message 写进日志面板，
+    // 这类错误既不会冒泡到 window 也不进 console——只能回头读日志。
+    // 必须**边点边采**：按钮列表末尾就有「清空日志」，点完再读等于什么都没读（实测踩过）。
+    const BUG_SIGNATURE = /is not defined|is not a function|Cannot read propert|Cannot access '|ReferenceError|TypeError|SyntaxError|Unexpected token/;
+    const seen = new Set();
+    const scanLog = () => {
+      const view = document.getElementById("logView");
+      if (!view) return;
+      // 逐个子节点读：textContent 会把所有 div 拼成一整段（div 之间没有换行符），
+      // 拼完就分不清是哪一条报的错了。
+      for (const node of view.children) {
+        const line = node.textContent || "";
+        if (BUG_SIGNATURE.test(line)) seen.add(line.trim().slice(0, 200));
+      }
+    };
+    const buttons = Array.from(document.querySelectorAll("button")).filter((b) => !b.disabled);
+    for (const button of buttons) {
+      try { button.click(); } catch (error) { collected.push("click#" + (button.id || "") + ": " + error.message); }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      scanLog();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    scanLog();
+    for (const line of seen) collected.push("日志里的代码错误: " + line);
+    return { clicked: buttons.length, errors: collected };
+  })()`).catch((error) => ({ clicked: 0, errors: ["点击探测未执行：" + error.message] }));
+  errors.push(...(probe.errors || []));
+
+  const result = { bridgeOk, bankOk, clicked: probe.clicked, rendererErrors: errors };
   window.destroy();
   return result;
 }
