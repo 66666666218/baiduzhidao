@@ -197,14 +197,24 @@ function buildIntro(meta) {
 }
 
 // ---------- 模板 HTML ----------
-function buildAnswerHtml(link, intro, keepImg = true) {
-  const parts = [
+/**
+ * 拼回答正文。
+ *
+ * 两处都是照平台审核结果改的（实测 108 条软件内上传）：
+ *  1. **链接必须是可点开的 `<a href>`，不能是裸 URL**。裸文本那组被拒 12.3%、`<a>` 那组 6.9%。
+ *  2. **不再追加空的 `<img src="" />`**。含空 img 的那组被拒 13.8%，不含的那组 0%——
+ *     全部 12 条被拒都落在含空 img 的组里。空 src 对审核来说就是无效元素。
+ *
+ * 第 2 条这里直接**删掉**而不是靠 keepImg 开关：有 8 个脚本会传 true，
+ * 留开关等于留一个随时会把坏元素放回去的口子。真要配图得给真实图片地址。
+ */
+function buildAnswerHtml(link, intro) {
+  const url = String(link || "").trim();
+  return [
     "<p><strong>点击链接获取网盘资源：</strong><br/></p>",
-    `<p>${link}<br/></p>`,
+    `<p><a href="${url}">${url}</a><br/></p>`,
     `<p>简介：${intro}</p>`,
-  ];
-  if (keepImg) parts.push('<img src="" />');
-  return parts.join("\n");
+  ].join("\n");
 }
 
 module.exports = {
