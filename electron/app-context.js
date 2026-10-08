@@ -21,6 +21,7 @@ const { randomPickQuestions } = require("./src/tasks/random-pick");
 const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
 const { INVOKE_CHANNELS } = require("./src/ipc-channels");
+const { describeUpdateError } = require("./src/errors");
 
 let mainWindow = null;
 let clipboardApi = null; // registerIpc 时注入（供任务内剪贴板兜底）
@@ -856,7 +857,13 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   // 延后 20 秒是避开启动时的初始化与自检，别去抢带宽和主线程。
   // 开发模式（app.isPackaged=false）会直接抛错被吞掉，不会发请求。
   setTimeout(() => {
-    checkForUpdates({ download: false }).catch((e) => emit("task:log", `启动检查更新失败（不影响使用）：${e.message}`));
+    checkForUpdates({ download: false }).catch((e) => {
+      // 只说"失败"没用：这一条最常见的两种成因是「线上根本没发布过」和「国内连不上 GitHub」，
+      // 两者要处理的事完全不同。原始错误串（如 HttpError 404）用户看不懂，所以补一句人话。
+      const raw = String((e && e.message) || e).slice(0, 120);
+      emit("task:log", `启动检查更新失败（不影响使用）：${describeUpdateError(raw)}。原始错误：${raw}`);
+      emit("task:log", `可稍后在「使用教程 → 软件更新」手动重试，或用浏览器打开发布页 ${RELEASES_URL} 手动下载。`);
+    });
   }, 20000).unref?.();
 
   // 数据目录

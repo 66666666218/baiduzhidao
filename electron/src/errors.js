@@ -30,4 +30,19 @@ function describeError(error) {
   return `【${LABELS[kind]}】${message}`;
 }
 
-module.exports = { classifyError, describeError, LABELS };
+/**
+ * 把「检查更新」的原始报错翻译成用户能看懂的一句话。
+ *
+ * 只说"失败"没用：这条报错最常见的两种成因是「线上根本没发布过任何版本」和
+ * 「国内连不上 GitHub」，两者要处理的事完全不同。而原始串（HttpError 404 /
+ * ETIMEDOUT）用户看不懂，也不会想到去查发布页。
+ */
+function describeUpdateError(error) {
+  const text = String((error && error.message) || error || "");
+  if (/404|not found|latest\.yml|no release|no published|not published|没有发布/i.test(text)) {
+    return "线上可能还没有发布任何版本";
+  }
+  return "可能是网络问题（国内访问 GitHub 不稳定）";
+}
+
+module.exports = { classifyError, describeError, describeUpdateError, LABELS };

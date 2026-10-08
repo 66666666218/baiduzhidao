@@ -530,6 +530,25 @@ test("errors.describeError：错误分类标签", () => {
   assert.ok(describeError(new Error("任意")).startsWith("【"));
 });
 
+test("errors.describeUpdateError：区分『还没发布过』和『网络不通』", () => {
+  const { describeUpdateError } = require("../../electron/src/errors");
+  // 没发布过：electron-updater 在线上找不到 latest.yml 时的各种形态
+  for (const raw of [
+    "HttpError: 404 Not Found",
+    'HttpError: 404 ""',
+    "Cannot find latest.yml in the latest release",
+    "No published versions on GitHub",
+  ]) {
+    assert.match(describeUpdateError(new Error(raw)), /还没有发布/, `${raw} 应判为『还没发布』`);
+  }
+  // 网络不通：国内访问 GitHub 的常见报错
+  for (const raw of ["connect ETIMEDOUT 140.82.112.3:443", "getaddrinfo ENOTFOUND github.com", "socket hang up"]) {
+    assert.match(describeUpdateError(new Error(raw)), /网络问题/, `${raw} 应判为『网络问题』`);
+  }
+  // 空/异常输入不炸，落到网络那条（更保守的提示）
+  assert.match(describeUpdateError(null), /网络问题/);
+});
+
 test("Store 工具：questionKeys/recordKey", () => {
   const keys = questionKeys({ title: "A B", questionUrl: "https://X/1", questionContent: "C" });
   assert.deepEqual(keys, ["url:https://x/1", "title:ab", "content:c"]);
