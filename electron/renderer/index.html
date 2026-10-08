@@ -115,6 +115,11 @@
           <p class="hint">跑之前请先在「比特环境」页配好：账号列表、账号题材绑定、上传分类规则；并在「生成答案」页填好 AI Key。</p>
           <p class="hint">两个阶段串起来看：<b>答题链</b> 爬题→抽题→AI 生成→提交（积累通过数）；<b>网盘链</b> 转存（脚本套模板生成问答）→按题材拆表→分账号上传。两条链可单独勾选。</p>
           <p class="hint">网盘链没指定资源表时，会先<b>按账号绑定的题材自动搜资源</b>（纯协议，不需要浏览器），搜到的结果直接喂给转存。</p>
+          <div class="field">
+            <label>本次参与的账号（每行一个；<b>留空 = 用「比特环境」页里的全部账号</b>）</label>
+            <textarea id="autoBitEnvs" rows="3" placeholder="留空即全部&#10;也可以只填想跑的那几个"></textarea>
+            <p class="hint">只想让一部分账号参与时在这里填。搜资源也会只按这些账号绑定的题材去搜。</p>
+          </div>
           <div class="field-grid">
             <div class="field"><label>抽题条数</label><input type="number" id="autoPickCount" min="1" value="20" /></div>
             <div class="field"><label>每批上传行数</label><input type="number" id="autoBatchRows" min="1" value="500" /></div>

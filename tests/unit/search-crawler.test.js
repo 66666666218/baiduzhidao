@@ -158,3 +158,32 @@ test("DEFAULT_SEARCH_KEYWORDS：能解析出多个题材，格式与分类规则
   assert.ok(rules.every((r) => r.keywords.length >= 2), "每个题材至少两个搜索词");
   assert.ok(rules.every((r) => r.keywords.every((k) => /网盘|资源/.test(k))), "默认词应指向网盘资源");
 });
+
+test("crawlSearchResources：上报进度（否则界面上是静默的，暂停按钮也不会启用）", async () => {
+  const progress = [];
+  await crawlSearchResources({
+    keywords: ["关键词A", "关键词B"],
+    pages: 2,
+    fetchImpl: async () => SEARCH_PAGE,
+    pageDelayMs: 0,
+    onProgress: (p) => progress.push(p),
+  });
+  assert.ok(progress.length > 0, "必须有进度上报");
+  assert.equal(progress[0].done, 0, "先报一次 0，让界面立刻进入运行中");
+  assert.equal(progress[0].total, 4, "两个关键词 × 两页 = 4 个单位");
+  const last = progress[progress.length - 1];
+  assert.equal(last.done, 4, "跑完要报到满");
+  assert.ok(progress.every((p, i) => i === 0 || p.done >= progress[i - 1].done), "进度只增不减");
+});
+
+test("crawlSearchResources：页面抓取失败也要推进进度", async () => {
+  const progress = [];
+  let n = 0;
+  await assert.rejects(() => crawlSearchResources({
+    keywords: ["A"],
+    fetchImpl: async () => { n += 1; if (n === 1) throw new Error("超时"); return SEARCH_PAGE; },
+    pageDelayMs: 0,
+    onProgress: (p) => progress.push(p),
+  }));
+  assert.ok(progress.some((p) => p.done === 1), "失败的那一页也要计数，否则进度会停在半路");
+});

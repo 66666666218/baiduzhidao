@@ -486,7 +486,10 @@ $("startAutoPipeline").addEventListener("click", async () => {
   if (!await saveSettingsQuiet()) return;
 
   const settings = await rpc.invoke("settings:get");
-  if (!(settings.bitEnvs || []).length) { appendLog("请先在设置页填写比特环境账号。"); return; }
+  // 本次参与的账号：本页填了就用本页的，留空回落到设置页的全部
+  const pickedEnvs = $("autoBitEnvs").value.split(/\r?\n|[,，]/).map((s) => s.trim()).filter(Boolean);
+  const effectiveEnvs = pickedEnvs.length ? pickedEnvs : (settings.bitEnvs || []).map((e) => e.label || e);
+  if (!effectiveEnvs.length) { appendLog("没有可用的账号：请在设置页填「比特环境名称」，或在本页「本次参与的账号」里填。"); return; }
   if ($("autoStageGenerate").checked && !settings.aiApiKey) {
     appendLog("「生成答案」需要 AI Key，请先在「生成答案」页填写。");
     return;
@@ -502,6 +505,7 @@ $("startAutoPipeline").addEventListener("click", async () => {
   try {
     const result = await rpc.invoke("task:auto-pipeline", {
       stages,
+      bitEnvs: pickedEnvs, // 空数组 = 流水线回落到设置页的全部账号
       pickCount: Number($("autoPickCount").value) || 20,
       batchRows: Number($("autoBatchRows").value) || 500,
       uploadTablePath: $("autoUploadTable").value,

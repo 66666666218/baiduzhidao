@@ -166,6 +166,7 @@ async function crawlSearchResources({
   pages = 1,
   limit = 0,
   onLog = () => {},
+  onProgress,
   shouldStop,
   fetchImpl = defaultFetch,
   pageDelayMs = 1500,
@@ -177,7 +178,13 @@ async function crawlSearchResources({
   const rows = [];
   const seenLinks = new Set();
   const stats = { keywords: list.length, pagesFetched: 0, failed: 0, results: 0, truncated: 0, linked: 0 };
+  // 进度以「关键词 × 页」为单位上报。没有这个，搜资源阶段在界面上是完全静默的：
+  // 既看不出在动，暂停/停止按钮也一直不启用。
+  const totalUnits = list.length * pageCount;
+  let doneUnits = 0;
+  const report = () => onProgress?.({ done: doneUnits, total: totalUnits, produced: rows.length });
 
+  report();
   for (const keyword of list) {
     for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
       if (shouldStop && shouldStop()) break;
@@ -188,6 +195,8 @@ async function crawlSearchResources({
       } catch (e) {
         stats.failed += 1;
         onLog(`⚠️ 搜索失败（跳过）：${keyword} 第 ${pageIndex + 1} 页 — ${e.message}`);
+        doneUnits += 1;
+        report();
         continue;
       }
       stats.pagesFetched += 1;
@@ -215,6 +224,8 @@ async function crawlSearchResources({
         }
       }
       await sleep(pageDelayMs);
+      doneUnits += 1;
+      report();
     }
     if (limit && rows.length >= limit) break;
   }

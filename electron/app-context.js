@@ -148,12 +148,25 @@ async function runSearchResourcesTask(ctx, deps) {
   if (explicit.length) {
     terms = explicit.map((term) => ({ topic: "", term }));
   } else {
-    // 用「账号绑定的题材」决定搜什么：哪个账号负责哪类资源，就搜哪类
-    const topics = Object.values(settings.accountTopics || {});
-    if (!topics.length) throw new Error("没有账号绑定题材：请到设置页「账号题材绑定」配置，或直接指定搜索关键词。");
+    // 用「账号绑定的题材」决定搜什么：哪个账号负责哪类资源，就搜哪类。
+    // 传了 bitEnvs 就只看这些账号绑的题材（一键全自动可以只挑几个号跑），
+    // 否则用设置页里全部账号的题材。
+    const topicMap = settings.accountTopics || {};
+    const picked = (Array.isArray(ctx.payload.bitEnvs) ? ctx.payload.bitEnvs : [])
+      .map((e) => (e && typeof e === "object" ? e.label ?? e.name : e))
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+    const topics = picked.length
+      ? picked.map((name) => topicMap[name]).filter(Boolean)
+      : Object.values(topicMap);
+    if (!topics.length) {
+      throw new Error(picked.length
+        ? "选中的账号都还没绑定题材：请到设置页「账号题材绑定」给它们配上，或直接指定搜索关键词。"
+        : "没有账号绑定题材：请到设置页「账号题材绑定」配置，或直接指定搜索关键词。");
+    }
     const built = searchCrawler.buildTopicSearchTerms(topics, settings.searchKeywords);
     if (built.uncovered.length) log(`⚠️ 这些题材没配搜索词，本次不搜：${built.uncovered.join("、")}`);
-    if (!built.terms.length) throw new Error("已绑定的题材都没有配搜索词，请到设置页「搜索词」里给它们配上。");
+    if (!built.terms.length) throw new Error("这些题材都没有配搜索词，请到设置页「搜索词」里给它们配上。");
     terms = built.terms;
   }
 
@@ -163,6 +176,7 @@ async function runSearchResourcesTask(ctx, deps) {
     pages: Number(ctx.payload.pages) || settings.searchPages,
     limit: Number(ctx.payload.limit) || 0,
     onLog: log,
+    onProgress: (p) => ctx.report({ done: p.done, total: p.total, status: "running" }),
     shouldStop: () => ctx.shouldStop(),
   });
 
@@ -458,7 +472,14 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       Array.isArray(p.stages) && p.stages.length ? p.stages : ["crawl", "pick", "generate", "submit", "transfer", "upload"]
     );
     const settings = config.load();
-    const bitEnvs = (settings.bitEnvs || []).map((env) => env.label || env).filter(Boolean);
+    // 本次参与的账号：调用方显式指定优先（一键全自动页可以只挑几个号跑），默认用设置页的全部
+    const requestedEnvs = (Array.isArray(p.bitEnvs) ? p.bitEnvs : [])
+      .map((env) => (env && typeof env === "object" ? env.label ?? env.name : env))
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+    const bitEnvs = requestedEnvs.length
+      ? requestedEnvs
+      : (settings.bitEnvs || []).map((env) => env.label || env).filter(Boolean);
     const report = [];
     let failure = null;
     let pickFile = "";
@@ -468,12 +489,22 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
 
     autoPipelineAborted = false;
 
+    /**
+     * 进度脉冲：让界面立刻进入「运行中」。
+     *
+     * 为什么必须有：暂停/停止按钮只在收到 task:progress 事件后才启用，而各阶段
+     * 往往要跑很久才第一次上报（爬题是在**整页爬完**才 report——此前要开浏览器、
+     * 导航、等待，几十秒）。这段时间界面是死的、暂停点不动，看起来像卡死了。
+     */
+    const pulse = () => sendToRenderer("task:progress", { done: 0, total: 0, status: "running" });
+
     const runStage = async (name, label, fn) => {
       if (autoPipelineAborted) {
         report.push({ stage: name, label, ok: false, skipped: true, error: "已停止" });
         return null;
       }
       emit("task:log", `══════ 一键全自动 · ${label} ══════`);
+      pulse();
       try {
         const result = await fn();
         report.push({ stage: name, label, ok: true });
@@ -568,6 +599,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
           emit("task:log", "没有指定资源表，改为按账号绑定的题材自动搜资源…");
           const searched = await runStage("search", "搜资源（按账号题材）", () =>
             startTask("search-resources", {
+              bitEnvs,
               pages: Number(p.searchPages) || 0,
               limit: Number(p.searchRowLimit) || 0,
             }, (c) => runSearchResourcesTask(c, deps()))

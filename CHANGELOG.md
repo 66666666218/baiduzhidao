@@ -1,5 +1,7 @@
 # CHANGELOG
 
+- [2026-10-08 22:58] FIX: 一键全自动三处——①**暂停按钮点不动**：暂停/停止只在收到 task:progress 后才启用，而爬题要**整页爬完**才第一次上报（此前要开浏览器、导航、等待，几十秒），这段界面是死的；流水线现在在启动和每个阶段切换时先发一次进度脉冲，界面立刻进入运行中；搜资源阶段原本**一次进度都不报**（连暂停检查点也没有），补上按「关键词×页」的进度上报与失败页计数。②**不能选跑哪些账号**：一键全自动新增「本次参与的账号」（留空=设置页全部），流水线各阶段与搜资源都按它生效——搜资源只按选中账号绑定的题材去搜。③确认「不给资源表」的链路是通的：自动搜 → 转存（内含套模板）→ 产出上传专用表 → 自动喂给上传阶段；注意**分类（按题材拆表）发生在上传那一步**，不是转存之前 (+2 单测，245 全绿；冒烟 clicked=70、rendererErrors:[]) (Files: electron/app-context.js, electron/src/netdisk/search-crawler.js, electron/renderer/index.html, electron/renderer/renderer.js, tests/unit/search-crawler.test.js, CHANGELOG.md, docs/自审日志.md)
+
 - [2026-10-08 22:51] DOCS: 「使用教程」新增比特环境配置教程——用户反馈测试组2「打不开百度知道」，实测查证：**环境配置本身没问题**（能打开 zhidao.baidu.com 首页，问题页等约 12 秒后完整渲染 1.38MB），真因是**该环境没登录百度账号**（知道/网盘 BDUSS、STOKEN 全无，cookie 仅 11 条；对照组测试组1 全有、29 条）。新增两张教程卡：①环境配置四步（名称对齐/必须登录百度**及网盘**/代理直连/测试连接）；②「像打不开」的三个常见误判——问题页是客户端渲染**要等十几秒**（实测 2 秒 4.6KB vs 12 秒 1.38MB）、未登录时首页正常所以看不出来、转存报"无网盘登录态"是 pan.baidu.com 没登录 (243 全绿；冒烟未跑——主程序运行中) (Files: electron/renderer/index.html, CHANGELOG.md, docs/自审日志.md)
 
 - [2026-10-08 22:10] FIX: 更新失败日志看不懂——用户反馈「无法自动检查更新失败」。查证根因：仓库 `66666666218/baiduzhidao` 线上 **releases 0 个、tags 0 个**（GitHub API 实测，连通性正常 0.35s），electron-updater 找不到 latest.yml 直接报错——**自动更新从来没被真正用过，因为上游什么都没有**。原日志只透传原始错误串（HttpError 404 之类），用户无从判断是"没发布"还是"网络不通"，而这两者要处理的事完全不同；新增 errors.describeUpdateError 把两类成因分开翻译成人话，并把原始错误串一并留在日志里便于排查 (+7 单测，243 全绿) (Files: electron/src/errors.js, electron/app-context.js, tests/unit/core.test.js, CHANGELOG.md, docs/自审日志.md)
