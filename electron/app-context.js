@@ -568,6 +568,11 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
         await runStage("generate", "生成答案", async () => {
           const rows = excel.readTableRows(pickFile).map(excel.importRowToAnswer);
           return startTask("generate", {
+            // filePath 必须传：生成任务**只在给了 filePath 时才把答案写回表格**
+            //（见 generate.js 的 if (!filePath) return）。少传这一个字段的表现是——
+            // 生成阶段"成功"、答案只存在内存里，紧接着的提交阶段重读表格发现没有回答，
+            // 报「表格里有题目链接但没有回答内容」，看起来像是生成没干活。
+            filePath: pickFile,
             results: rows,
             aiApiKey: settings.aiApiKey,
             aiBaseUrl: settings.aiBaseUrl,

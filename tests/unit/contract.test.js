@@ -95,3 +95,114 @@ test("契约④：任务的 payload 字段都有来源（renderer 传参或显�
   const real = problems.filter((p) => ![...allowedDefaults].some((a) => p.includes("payload." + a)));
   assert.deepEqual(real, [], real.join("\n"));
 });
+
+/**
+ * 从 app-context 里抠出 `startTask("<name>", { ... })` 那个对象字面量的**顶层**键名。
+ *
+ * 用状态机而不是正则：正则分不清 `{ filePath: x, results }` 里的 `x`（值）和 `results`（简写键）——
+ * 第一版就是因此把值也当成了键。这里跟踪"下一个标识符是不是键"，
+ * 并跳过字符串，避免值里的逗号/花括号把计数带偏。
+ */
+/**
+ * 把搜索范围限定在「一键全自动」那段代码里。
+ * 不限定的话会匹配到 IPC 处理器里的 startTask 调用——那些传的是 `payload` 或
+ * `{ ...payload, results }`，抠出来的是别的阶段/别的花括号，比不检查还糟。
+ */
+function autoPipelineSource(source) {
+  const start = source.indexOf('"task:auto-pipeline"');
+  if (start < 0) return "";
+  const next = source.indexOf("ipcMain.handle(", start + 10);
+  return next > start ? source.slice(start, next) : source.slice(start);
+}
+
+function extractStagePayloadKeys(source, name) {
+  const marker = new RegExp(`startTask\\(\\s*"${name}"\\s*,\\s*\\{`);
+  const hit = marker.exec(source);
+  if (!hit) return null;
+  const braceStart = source.indexOf("{", hit.index + hit[0].length - 1);
+  if (braceStart < 0) return null;
+  let depth = 0;
+  let end = braceStart;
+  for (; end < source.length; end += 1) {
+    if (source[end] === "{") depth += 1;
+    else if (source[end] === "}") {
+      depth -= 1;
+      if (depth === 0) break;
+    }
+  }
+  const body = source.slice(braceStart + 1, end);
+
+  const keys = new Set();
+  let d = 0;
+  let expectKey = true;
+  let i = 0;
+  while (i < body.length) {
+    const ch = body[i];
+    if (ch === "{") { d += 1; expectKey = false; i += 1; continue; }
+    if (ch === "}") { d -= 1; i += 1; continue; }
+    if (ch === ",") { if (d === 0) expectKey = true; i += 1; continue; }
+    // 跳过注释：注释里的标识符（比如「filePath 必须传」这句）会被误当成键，
+    // 结果既认不出真正的那个键，还会让后面的键因为 expectKey 被吃掉而漏掉。
+    if (ch === "/" && body[i + 1] === "/") {
+      while (i < body.length && body[i] !== "\n") i += 1;
+      continue;
+    }
+    if (ch === "/" && body[i + 1] === "*") {
+      const close = body.indexOf("*/", i + 2);
+      i = close < 0 ? body.length : close + 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") { // 跳过字符串字面量
+      i += 1;
+      while (i < body.length && body[i] !== ch) i += body[i] === "\\" ? 2 : 1;
+      i += 1;
+      expectKey = false;
+      continue;
+    }
+    if (/\s/.test(ch)) { i += 1; continue; }
+    const m = /^([A-Za-z_$][\w$]*)/.exec(body.slice(i));
+    if (m) {
+      if (d === 0 && expectKey) keys.add(m[1]);
+      expectKey = false;
+      i += m[1].length;
+      continue;
+    }
+    i += 1;
+  }
+  return keys;
+}
+
+test("契约⑤：一键全自动各阶段传的字段，必须覆盖对应任务会读的 payload 字段", () => {
+  // 这条是补盲区：E2E 测的是各任务函数本身，**编排器传什么**没人管。
+  // 结果就是 generate 阶段漏传 filePath —— 生成"成功"但答案没写回表格，
+  // 紧接着提交报「表格里有题目链接但没有回答内容」，看起来像生成没干活。
+  const pipelineSrc = autoPipelineSource(read("electron/app-context.js"));
+  assert.ok(pipelineSrc.length > 0, "没能定位到「一键全自动」那段代码，契约⑤失效了——请检查 marker");
+  const stageFileOf = {
+    crawl: "electron/src/tasks/crawl.js",
+    generate: "electron/src/tasks/generate.js",
+    submit: "electron/src/tasks/submit.js",
+    "batch-transfer": "electron/src/tasks/batch-transfer.js",
+    "upload-by-topic": "electron/src/tasks/upload-batch.js",
+  };
+  const problems = [];
+  for (const [stage, file] of Object.entries(stageFileOf)) {
+    const sent = extractStagePayloadKeys(pipelineSrc, stage);
+    if (!sent) continue; // 该阶段没出现在编排里
+    const src = read(file);
+    for (const m of src.matchAll(/payload\.([a-zA-Z]\w*)/g)) {
+      if (!sent.has(m[1])) problems.push(`${stage} 阶段没传 payload.${m[1]}（${file} 会读它）`);
+    }
+  }
+  // 任务内自带默认值的字段豁免（这些确实在任务里有 `|| 默认`）
+  const allowedDefaults = ["bitEnv", "start", "outName", "makeShare", "resume", "pageDelayMs", "crawlOutputDir", "enrichLimit", "limit", "maxBatches", "perEnv", "cc", "delayMin", "delayMax", "outName"];
+  const real = problems.filter((p) => !allowedDefaults.some((a) => p.includes("payload." + a)));
+  assert.deepEqual(real, [], real.join("\n"));
+});
+
+test("契约⑤-b：extractStagePayloadKeys 能正确抠出（含嵌套）顶层键", () => {
+  const sample = 'startTask("generate", { filePath: x, results: rows, nested: { a: 1, b: 2 } }, (c) => run(c))';
+  const keys = extractStagePayloadKeys(sample, "generate");
+  assert.deepEqual([...keys].sort(), ["filePath", "nested", "results"], "嵌套对象只取顶层键名");
+  assert.equal(extractStagePayloadKeys(sample, "不存在的阶段"), null);
+});
