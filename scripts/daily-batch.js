@@ -101,12 +101,33 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   }
 
   // 提交（REVIEW 的也提交——判定仅供人工参考；用户可按质检列筛除）
+  // 账号必须来自设置：此前写死 [{ label: "测试组1" }]，多个比特环境形同不存在，
+  // 无人值守跑批永远只投一个号，限额/轮换/题材绑定全部失效。
+  // ZHIDAO_BIT_ENV 可覆盖（逗号分隔多个），便于跑批脚本在不改设置的情况下指定账号。
+  // 只按逗号切：账号名里可能有空格，按空白切会把一个账号名劈成两个
+  const envOverride = String(process.env.ZHIDAO_BIT_ENV || "").split(/[,，]+/).map((x) => x.trim()).filter(Boolean);
+  const submitEnvs = envOverride.length
+    ? envOverride
+    : (settings.bitEnvs || []).map((env) => env.label || env).filter(Boolean);
+  if (!submitEnvs.length) {
+    log("没有可用的比特环境账号：设置页的「比特环境名称」为空，且未设 ZHIDAO_BIT_ENV。请先在软件设置页填写账号后重跑。");
+    exit(1);
+  }
+  log(`参与提交的账号（${submitEnvs.length} 个）：${submitEnvs.join("、")}${envOverride.length ? "（来自 ZHIDAO_BIT_ENV 覆盖）" : ""}`);
+  const topicMap = settings.accountTopics || {};
+  const boundCount = Object.keys(topicMap).length;
+  if (boundCount) log(`账号题材绑定：${Object.entries(topicMap).map(([a, t]) => `${a}→${t}`).join("、")}`);
+
   const rows = genResult.results.filter((r) => r.answer).map((r) => ({ ...r, status: "已生成回答" }));
   const submitResult = await manager.start("submit", {
-    bitEnvs: [{ label: "测试组1" }],
+    bitEnvs: submitEnvs,
     results: rows,
-    accountDailyLimit: 0,
+    accountDailyLimit: Number(settings.accountDailyLimit) || 0,
     checkCompletedEnvs: false,
+    // 题材路由：带链接的答案只投给绑定了对应题材的账号（本脚本生成的通常是纯文本答案，
+    // 会走宽松轮询；带链接的答案由软件「自动提交」视图按表格提交时生效）
+    accountTopics: topicMap,
+    linkRouting: settings.linkRouting,
     delayMin: 25,
     delayMax: 50,
   }, async (ctx) => runSubmitTask(ctx, { browserPool, store, config, log, copy: async () => {}, autosavePath: path.join(dataDir, "autosave", `提交_${Date.now()}.csv`) }));
