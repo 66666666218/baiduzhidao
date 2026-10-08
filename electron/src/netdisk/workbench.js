@@ -142,6 +142,49 @@ async function fetchWorkbenchJson(pathname, cookie, { fetchImpl = globalThis.fet
   return json;
 }
 
+/**
+ * 从「结果下载」的 xlsx 行里挑出被拒的行。
+ *
+ * 结果表的列（实测）：qid / 问题 / 答案 / 一级分类 / 二级分类 / 是否成功 / 失败原因 / 问题链接
+ *
+ * 这一步的意义：以前只能看到「失败 N 条」，于是原因只能猜（之前 CHANGELOG 里
+ * "标题空括号 / URL重复提交" 就是这么猜出来的）。有这个表，原因是**读出来**的。
+ */
+function pickFailedRows(rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .filter((row) => row && String(row["是否成功"] || "").trim() !== "是")
+    .map((row) => ({
+      qid: Number(row.qid) || 0,
+      title: String(row["问题"] || "").trim(),
+      reason: String(row["失败原因"] || "").trim() || "(未给出原因)",
+      questionUrl: String(row["问题链接"] || "").trim(),
+      hasLink: /pan\.baidu\.com|pan\.quark|提取码/i.test(String(row["答案"] || "")),
+    }));
+}
+
+/** 失败原因计数（按出现次数降序） */
+function countReasons(failedRows) {
+  const counter = new Map();
+  for (const row of Array.isArray(failedRows) ? failedRows : []) {
+    const key = String((row && row.reason) || "(未给出原因)");
+    counter.set(key, (counter.get(key) || 0) + 1);
+  }
+  return [...counter.entries()].sort((a, b) => b[1] - a[1]).map(([reason, count]) => ({ reason, count }));
+}
+
+/** 取某个上传任务的「结果下载」文件（xlsx 二进制） */
+async function fetchTaskResult(taskId, cookie, { fetchImpl = globalThis.fetch, timeoutMs = 30000 } = {}) {
+  if (!String(cookie || "").trim()) throw new Error("缺少登录 Cookie（该账号未登录百度）");
+  const url = `${WB_HOST}/qa/api/bulkqa/task/download?id=${encodeURIComponent(taskId)}`;
+  const res = await fetchImpl(url, {
+    headers: { Cookie: cookie, "User-Agent": WB_UA, Referer: WB_REFERER },
+    redirect: "follow",
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) throw new Error(`结果下载失败 HTTP ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
 module.exports = {
   formatTime,
   summarizeTasks,
@@ -149,6 +192,9 @@ module.exports = {
   pickTaskList,
   pickTaskTotal,
   pickUserInfo,
+  pickFailedRows,
+  countReasons,
   fetchWorkbenchJson,
+  fetchTaskResult,
   WB_HOST,
 };

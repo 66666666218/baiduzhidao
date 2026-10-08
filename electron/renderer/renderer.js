@@ -430,6 +430,8 @@ $("checkPublished").addEventListener("click", async () => {
       appendLog(`　${account.envLabel}（${account.name || "?"}）：最近 ${s.taskCount} 个任务共 ${s.totalRows} 条 → 收录 ${s.successRows}，被拒 ${s.failedRows}，剩余额度 ${account.remainingQuota ?? "未知"}`);
     }
     if (result.outputPath) appendLog(`收录明细已导出：${result.outputPath}`);
+    if (result.failedPath) appendLog(`被拒明细已导出（含逐条失败原因）：${result.failedPath}`);
+    else if (result.failedRows === 0) appendLog("　本轮没有被拒的条目。");
   } catch (error) {
     appendLog(`查收录失败：${error.message}`);
   }

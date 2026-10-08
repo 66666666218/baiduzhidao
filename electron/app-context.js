@@ -215,9 +215,13 @@ async function runCheckPublishedTask(ctx, deps) {
   const bitEnvs = requested.length ? requested : (settings.bitEnvs || []).map((e) => e.label || e).filter(Boolean);
   if (!bitEnvs.length) throw new Error("请先填写比特浏览器环境名称。");
   const pageSize = Math.min(100, Math.max(1, Number(ctx.payload.pageSize) || 20));
+  // 逐条被拒原因默认开：只看「失败 N 条」等于只能猜原因，结果文件里原因是明写的
+  const withReasons = ctx.payload.withReasons !== false;
+  const reasonTaskLimit = Math.min(50, Math.max(1, Number(ctx.payload.reasonTaskLimit) || 5));
 
   const accounts = [];
   const rows = [];
+  const failedRows = [];
   for (const envLabel of bitEnvs) {
     if (ctx.shouldStop()) break;
     let browser = null;
@@ -280,6 +284,41 @@ async function runCheckPublishedTask(ctx, deps) {
         summary,
       });
       ctx.emitItem({ title: `${envLabel} 查收录`, status: `收录 ${summary.successRows} / 被拒 ${summary.failedRows}`, bitEnv: envLabel });
+
+      // 逐条被拒原因：只对「有失败」的任务拉结果文件（每个文件可能几百行，不能全量拉）
+      if (withReasons && summary.failedRows > 0) {
+        const suspects = tasks.filter((t) => Number(t.failCount) > 0).slice(0, reasonTaskLimit);
+        for (const task of suspects) {
+          if (ctx.shouldStop()) break;
+          try {
+            const buf = await workbench.fetchTaskResult(task.id, cookieStr);
+            const tmp = path.join(dataDir, "查收录", `.result_${task.id}.xlsx`);
+            fs.mkdirSync(path.dirname(tmp), { recursive: true });
+            fs.writeFileSync(tmp, buf);
+            let rows = [];
+            try {
+              rows = excel.readTableRows(tmp);
+            } finally {
+              fs.rmSync(tmp, { force: true });
+            }
+            const failed = workbench.pickFailedRows(rows);
+            for (const row of failed) {
+              failedRows.push({
+                环境: envLabel,
+                任务名: task.taskName || "",
+                任务时间: workbench.formatTime(task.createdAt),
+                qid: row.qid,
+                问题: row.title,
+                失败原因: row.reason,
+                答案带链接: row.hasLink ? "是" : "否",
+                问题链接: row.questionUrl,
+              });
+            }
+          } catch (e) {
+            log(`（任务 ${task.id} 的结果文件取不到：${e.message}）`);
+          }
+        }
+      }
     } catch (error) {
       log(`⚠️ ${envLabel} 查收录失败：${describeError(error)}`);
       accounts.push({ envLabel, ok: false, error: error.message });
@@ -293,14 +332,25 @@ async function runCheckPublishedTask(ctx, deps) {
   const okAccounts = accounts.filter((a) => a.ok);
   const failedRowsTotal = okAccounts.reduce((sum, a) => sum + a.summary.failedRows, 0);
   if (failedRowsTotal > 0) {
-    log(`⚠️ 合计有 ${failedRowsTotal} 条被平台拒收（界面「上传记录」可按任务下载结果查看原因）。`);
+    log(`⚠️ 合计有 ${failedRowsTotal} 条被平台拒收。`);
+    if (failedRows.length) {
+      // 原因是从结果文件里读出来的，不是猜的——这正是加这个功能的理由
+      const reasons = workbench.countReasons(failedRows);
+      log(`被拒原因分布：${reasons.map((r) => `${r.reason} ${r.count} 条`).join("、")}`);
+      for (const row of failedRows.slice(0, 8)) {
+        log(`  · [${row.失败原因}] ${String(row.问题).slice(0, 42)}`);
+      }
+      if (failedRows.length > 8) log(`  …还有 ${failedRows.length - 8} 条，见导出的「被拒明细」表。`);
+    } else if (withReasons) {
+      log("（结果文件没取到，本轮只有条数。可在界面「上传记录」里点该任务的下载按钮手动核对。）");
+    }
   }
   const stopped = ctx.shouldStop();
   ctx.report({ done: accounts.length, total: bitEnvs.length, status: stopped ? "stopped" : "done" });
 
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
   let outputPath = "";
   if (rows.length) {
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
     outputPath = path.join(dataDir, "查收录", `收录核对_${stamp}.xlsx`);
     outputPath = excel.writeWorkbookSafe(
       outputPath, rows, "收录核对",
@@ -308,7 +358,16 @@ async function runCheckPublishedTask(ctx, deps) {
     );
     log(`收录明细已导出：${outputPath}`);
   }
-  return { stopped, accounts, outputPath, checked: okAccounts.length };
+  let failedPath = "";
+  if (failedRows.length) {
+    failedPath = path.join(dataDir, "查收录", `被拒明细_${stamp}.xlsx`);
+    failedPath = excel.writeWorkbookSafe(
+      failedPath, failedRows, "被拒明细",
+      ["环境", "任务名", "任务时间", "qid", "问题", "失败原因", "答案带链接", "问题链接"], log
+    );
+    log(`被拒明细已导出：${failedPath}`);
+  }
+  return { stopped, accounts, outputPath, failedPath, failedRows: failedRows.length, checked: okAccounts.length };
 }
 
 // ---------- IPC 注册（在 main.js 中调用） ----------
@@ -1130,7 +1189,7 @@ const SMOKE_RESULT_SHAPES = {
   "app:selftest": { ok: true, steps: [] },
   "task:crawl-home": { stopped: false, count: 0, stats: {}, outputPath: "" },
   "task:search-resources": { count: 0, stats: {}, outputPath: "" },
-  "task:check-published": { accounts: [], checked: 0, outputPath: "" },
+  "task:check-published": { accounts: [], checked: 0, outputPath: "", failedPath: "", failedRows: 0 },
 };
 
 /** 冒烟自检：渲染端脚本无错误 + preload 桥可用 + 初始化完成 + 点遍按钮无处理器错误 */

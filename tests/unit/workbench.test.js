@@ -92,3 +92,47 @@ test("pickUserInfo：缺字段时给 NaN 而不是 0（0 会被误读成额度�
   assert.ok(Number.isNaN(pickUserInfo({}).remainingQuota));
   assert.equal(pickUserInfo({}).banned, false, "缺字段时默认不算封禁");
 });
+
+// ---------- 逐条被拒原因（结果文件） ----------
+const { pickFailedRows, countReasons } = require("../../electron/src/netdisk/workbench");
+
+// 真实结果表的行（实测抓取）：qid / 问题 / 答案 / 是否成功 / 失败原因 / 问题链接
+const RESULT_ROWS = [
+  { qid: 0, 问题: "兰香如故《2026》1-47完整版网盘链接哪里找", 答案: "<p>https://pan.baidu.com/s/1GTCJgTma</p>", 是否成功: "否", 失败原因: "审核失败", 问题链接: "" },
+  { qid: 3159397590, 问题: "哪里有篱笆墙外电影的百度云资源分享", 答案: "<p><a href=\"https://pan.baidu.com/s/1X2p\">x</a></p>", 是否成功: "是", 失败原因: "", 问题链接: "https://zhidao.baidu.com/question/342803180260296325.html" },
+  { qid: 0, 问题: "求埃及王子完整版网盘资源下载", 答案: "<p>https://pan.baidu.com/s/1dVU6WHJkg</p>", 是否成功: "否", 失败原因: "审核失败", 问题链接: "" },
+  { qid: 123, 问题: "重复的那条", 答案: "x", 是否成功: "否", 失败原因: "URL重复提交", 问题链接: "" },
+];
+
+test("pickFailedRows：只挑被拒的行，并带上原因", () => {
+  const failed = pickFailedRows(RESULT_ROWS);
+  assert.equal(failed.length, 3, "4 行里 3 行被拒");
+  assert.ok(failed.every((r) => r.reason), "每条都要有原因");
+  assert.equal(failed[0].reason, "审核失败");
+  assert.equal(failed[2].reason, "URL重复提交");
+});
+
+test("pickFailedRows：把 qid 和「答案里有没有网盘链接」一并带出来（归因要用）", () => {
+  const failed = pickFailedRows(RESULT_ROWS);
+  const byTitle = (kw) => failed.find((r) => r.title.includes(kw));
+  assert.equal(byTitle("兰香如故").qid, 0, "平台自动建题的行 qid 是 0");
+  assert.equal(byTitle("兰香如故").hasLink, true, "答案里有网盘链接");
+  assert.equal(byTitle("重复的那条").qid, 123, "有真实 qid 的行照常带出来");
+});
+
+test("pickFailedRows：成功行不算；原因缺失时给占位而不是空串", () => {
+  const failed = pickFailedRows([{ qid: 1, 是否成功: "否", 失败原因: "" }]);
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].reason, "(未给出原因)");
+});
+
+test("pickFailedRows：空/异常输入不炸", () => {
+  assert.deepEqual(pickFailedRows(null), []);
+  assert.deepEqual(pickFailedRows([]), []);
+  assert.deepEqual(pickFailedRows([null, undefined]), []);
+});
+
+test("countReasons：按次数降序", () => {
+  const reasons = countReasons(pickFailedRows(RESULT_ROWS));
+  assert.deepEqual(reasons, [{ reason: "审核失败", count: 2 }, { reason: "URL重复提交", count: 1 }]);
+});
