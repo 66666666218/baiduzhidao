@@ -15,7 +15,7 @@ const { runGenerateTask } = require("./src/tasks/generate");
 const { runSubmitTask } = require("./src/tasks/submit");
 const { runPassedCountTask } = require("./src/tasks/passed-count");
 const { runBatchTransferTask } = require("./src/tasks/batch-transfer");
-const { runBatchUploadTask } = require("./src/tasks/upload-batch");
+const { runBatchUploadTask, runTopicUploadTask } = require("./src/tasks/upload-batch");
 const { randomPickQuestions } = require("./src/tasks/random-pick");
 const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
@@ -375,6 +375,8 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   });
   ipcMain.handle("netdisk:records", () => manager.transferRecords(dataDir));
   ipcMain.handle("task:batch-upload", (_event, payload) => startTask("batch-upload", payload, (ctx) => runBatchUploadTask(ctx, deps())));
+  // 按题材分账号上传：把上传专用表按分类规则拆成各账号的份，逐个账号投递
+  ipcMain.handle("task:upload-by-topic", (_event, payload) => startTask("upload-by-topic", payload, (ctx) => runTopicUploadTask(ctx, deps())));
 
   // 记录管理
   ipcMain.handle("answers:list", (_event, query) => {

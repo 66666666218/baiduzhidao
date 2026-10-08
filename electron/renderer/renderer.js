@@ -347,16 +347,52 @@ $("startBatchUpload").addEventListener("click", async () => {
   if (!filePath) { appendLog("请先选择上传专用表。"); return; }
   const bitEnv = $("uploadBitEnv").value.trim();
   if (!bitEnv) { appendLog("请填写用于上传的比特环境名。"); return; }
+  const settings = await rpc.invoke("settings:get");
   try {
     const result = await rpc.invoke("task:batch-upload", {
       filePath,
       bitEnv,
       batchRows: Number($("uploadBatchRows").value) || 500,
       maxBatches: Number($("uploadMaxBatches").value) || 999,
+      // 这条通道与「按题材上传」共用 upload-batch.js，契约测试要求两边都传齐字段；
+      // 单账号路径用不到它们，传了也无副作用。
+      bitEnvs: settings.bitEnvs,
+      accountTopics: settings.accountTopics,
+      topicRules: settings.topicRules,
     });
     appendLog(`批量上传结束：本次上传 ${result.uploaded} 行，共 ${result.batches} 批。`);
   } catch (error) {
     appendLog(`批量上传失败：${error.message}`);
+  }
+});
+
+// 按题材分账号上传：分类规则派生题材 → 各账号只传自己题材的份
+$("startTopicUpload").addEventListener("click", async () => {
+  if (!await saveSettingsQuiet()) return;
+  const filePath = $("uploadExcelPath").value;
+  if (!filePath) { appendLog("请先选择上传专用表。"); return; }
+  const settings = await rpc.invoke("settings:get");
+  const bitEnvs = settings.bitEnvs || [];
+  if (!bitEnvs.length) { appendLog("请先在设置页填写比特环境账号。"); return; }
+  if (!Object.keys(settings.accountTopics || {}).length) {
+    appendLog("还没有账号绑定题材：请到设置页「账号题材绑定」按「账号=题材」填好（题材名要与分类规则里的分类名一致）。");
+    return;
+  }
+  try {
+    const result = await rpc.invoke("task:upload-by-topic", {
+      filePath,
+      bitEnvs,
+      accountTopics: settings.accountTopics,
+      topicRules: settings.topicRules,
+      batchRows: Number($("uploadBatchRows").value) || 500,
+      maxBatches: Number($("uploadMaxBatches").value) || 999,
+    });
+    appendLog(`按题材上传结束：共上传 ${result.uploaded} 行。`);
+    for (const account of result.accounts || []) {
+      appendLog(`　${account.envLabel}（${account.topic || "未绑定"}）：${account.error ? `失败 ${account.error}` : `上传 ${account.uploaded} 行`}`);
+    }
+  } catch (error) {
+    appendLog(`按题材上传失败：${error.message}`);
   }
 });
 
@@ -439,6 +475,7 @@ async function saveSettingsQuiet() {
   patch.bitEnvs = $("bitEnvs").value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   patch.accountTopics = $("accountTopics").value; // 文本形式「账号=题材」，由后端归一化
   patch.linkRouting = $("linkRouting").value;
+  patch.topicRules = $("topicRules").value; // 上传侧分类规则，由后端解析
   patch.category = $("category").value;
   patch.timeoutMs = Number($("timeoutMs").value) || undefined;
   patch.verifyWaitSeconds = Number($("verifyWaitSeconds").value) || 0;
@@ -471,6 +508,7 @@ async function loadSettings() {
   $("bitEnvs").value = (settings.bitEnvs || []).map((env) => env.label || env).join("\n");
   $("accountTopics").value = Object.entries(settings.accountTopics || {}).map(([account, topic]) => `${account}=${topic}`).join("\n");
   $("linkRouting").value = settings.linkRouting || "strict";
+  $("topicRules").value = settings.topicRules || "";
   $("category").value = settings.category || "情感类";
   $("timeoutMs").value = settings.timeoutMs;
   $("verifyWaitSeconds").value = settings.verifyWaitSeconds;

@@ -43,6 +43,7 @@
 | `task:passed-count` | 核对各账号当天通过数 | `bitEnvs` | `accounts[]`：`{ bitEnv, status, done, total, format, raw }`，`status` ∈ `completed`/`partial`/`unknown`/`error` |
 | `task:batch-transfer` | 网盘批量转存 | `bitEnvs`、`excelPath`、`destDir` | — |
 | `task:batch-upload` | 按账号批量上传 | `bitEnvs`、`filePath` | — |
+| **`task:upload-by-topic`** | **新增**。按分类规则给每行派生题材，拆成各账号的份逐个上传 | `filePath`、`bitEnvs`、`accountTopics`、`topicRules`、`batchRows`、`maxBatches` | `uploaded`、`accounts[]`：`{ envLabel, topic, planned, uploaded, error? }` |
 | `task:crawl-home` | 从答主主页找网盘资源 | `homepages`、`enrichLimit` | `count`、`stats`、`outputPath` |
 
 ## 3. `task:submit` 请求字段（含本轮变更）

@@ -53,6 +53,7 @@ test("契约④：任务的 payload 字段都有来源（renderer 传参或显�
   const taskFileOf = {
     "task:batch-transfer": "electron/src/tasks/batch-transfer.js",
     "task:batch-upload": "electron/src/tasks/upload-batch.js",
+    "task:upload-by-topic": "electron/src/tasks/upload-batch.js",
     "task:submit": "electron/src/tasks/submit.js",
     "task:crawl": "electron/src/tasks/crawl.js",
   };

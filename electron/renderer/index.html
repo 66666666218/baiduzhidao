@@ -58,9 +58,14 @@
             <textarea id="bitEnvs" rows="4" placeholder="账号1&#10;账号2"></textarea>
           </div>
           <div class="field-row">
-            <label>账号题材绑定（每行一个「账号=题材」，题材可选 情感/教育/综合/人物）</label>
+            <label>账号题材绑定（每行一个「账号=题材」；答题侧填 情感/教育/综合/人物，上传侧填下面的分类名）</label>
             <textarea id="accountTopics" rows="3" placeholder="账号1=情感类&#10;账号2=教育类"></textarea>
             <p class="hint">带链接的答案按此表严格一对一投递；没绑定的账号不会收到链接答案。纯文本答案不受此表限制。</p>
+          </div>
+          <div class="field-row">
+            <label>上传分类规则（每行一条「分类名=关键词1|关键词2」，从上到下先命中先分类）</label>
+            <textarea id="topicRules" rows="8" placeholder="游戏=游戏|手游|端游&#10;影视=电影|电视剧|剧集"></textarea>
+            <p class="hint">用于把「上传专用表」按题材拆给各账号：每行按问题标题派生题材，再交给绑定了同名题材的账号上传。整行以 # 开头视为注释。</p>
           </div>
           <div class="field-grid">
             <div class="field"><label>分类</label>
@@ -323,9 +328,11 @@
           </div>
           <div class="card-actions">
             <button class="btn primary" id="startBatchUpload">开始批量上传</button>
+            <button class="btn soft" id="startTopicUpload">按题材分账号上传</button>
             <button class="btn soft" id="editUploadExcel">打开表格修改</button>
             <button class="btn soft" id="revealUploadExcel">打开所在文件夹</button>
           </div>
+          <p class="hint">「按题材分账号上传」会按设置页的<b>分类规则</b>给每行派生题材，再把各题材的行交给绑定了同名题材的账号上传（账号在设置页「账号题材绑定」里配）。没命中规则的行本次不上传。</p>
         </div>
       </section>
 

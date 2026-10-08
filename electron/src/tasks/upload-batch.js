@@ -12,6 +12,34 @@
 const path = require("path");
 const fs = require("fs");
 const { chromium } = require("playwright-core");
+const { parseTopicRules, classifyByRules, DEFAULT_TOPIC_RULES } = require("../domain/topic-rules");
+const { buildTopicAllocation, stampTopicColumn } = require("../domain/account-topic");
+
+/** 从表头里找「问题标题」类列（不同上游产出的列名不完全一致） */
+function pickTitleKey(keys) {
+  return keys.find((k) => /问题标题|资源名|标题/.test(String(k))) || keys[0] || "";
+}
+
+/**
+ * 找可写回题材的列：只认**已存在**的「一级分类 / 备注」列。
+ * 不新增列——上传模板是平台约定的，凭空多一列可能整批被拒收。
+ */
+function pickTopicColumn(keys) {
+  return keys.find((k) => /^(一级分类|备注)$/.test(String(k).trim())) || "";
+}
+
+/** 账号名可能含路径非法字符，做文件名前先净化 */
+function safeFileToken(text) {
+  return String(text || "").replace(/[\\/:*?"<>|]/g, "_").slice(0, 40) || "account";
+}
+
+function writePartFile(partFile, rows, keys, sheetName) {
+  const XLSX = require("xlsx");
+  const ws = XLSX.utils.json_to_sheet(rows, { header: keys });
+  const wbPart = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wbPart, ws, sheetName);
+  XLSX.writeFile(wbPart, partFile);
+}
 
 async function runBatchUploadTask(ctx, deps) {
   const { browserPool, log } = deps;
@@ -168,4 +196,97 @@ async function runBatchUploadTask(ctx, deps) {
   return { uploaded, batches: Math.ceil(uploaded / Math.max(1, batchRows)), quota: quotaNum || null };
 }
 
-module.exports = { runBatchUploadTask };
+/**
+ * 题材路由上传：把上传专用表按分类规则派生题材 → 拆成各账号的份 → 逐账号上传。
+ *
+ * 复用 runBatchUploadTask（它本就按单个 bitEnv 工作），不复制它的批次/额度/台账逻辑，
+ * 只用一个覆写了 livePayload 的子上下文把「哪个账号、哪张分表」喂进去。
+ */
+async function runTopicUploadTask(ctx, deps) {
+  const { log } = deps;
+  const { app } = require("electron");
+  const baseDataDir = deps.dataDir || app.getPath("userData");
+  const payload = (ctx.livePayload ? ctx.livePayload() : ctx.payload) || {};
+
+  const sourcePath = String(payload.filePath || "").trim().replace(/^"|"$/g, "");
+  if (!sourcePath || !fs.existsSync(sourcePath)) throw new Error("请先选择上传专用表（xlsx）");
+
+  const envLabels = (Array.isArray(payload.bitEnvs) ? payload.bitEnvs : [])
+    .map((env) => (env && typeof env === "object" ? env.label ?? env.name : env))
+    .map((label) => String(label || "").trim())
+    .filter(Boolean);
+  if (!envLabels.length) throw new Error("请先填写至少一个比特环境名称。");
+
+  const XLSX = require("xlsx");
+  const wb = XLSX.readFile(sourcePath);
+  const sheetName = wb.SheetNames[0];
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: "" });
+  if (!rows.length) throw new Error("表格为空");
+  const keys = Object.keys(rows[0]);
+  const titleKey = pickTitleKey(keys);
+
+  const rules = parseTopicRules(payload.topicRules || DEFAULT_TOPIC_RULES);
+  if (!rules.length) throw new Error("分类规则为空，无法按题材拆分上传表（请到设置页填写）。");
+  const classify = (row) => classifyByRules(String(row[titleKey] || ""), rules);
+
+  const { slots, unclassified, orphanByTopic, unboundAccounts, stats } = buildTopicAllocation(
+    rows, envLabels, payload.accountTopics, { classify }
+  );
+
+  log(`上传表共 ${stats.total} 行，按分类规则识别出 ${stats.classified} 行（依据列：${titleKey}）。`);
+  const assigned = slots.filter((slot) => slot.rows.length);
+  if (assigned.length) log(`按题材拆分：${assigned.map((s) => `${s.envLabel}「${s.topic}」${s.rows.length} 行`).join(" | ")}`);
+  if (unboundAccounts.length) log(`⚠️ 未绑定题材、本次不参与上传的账号：${unboundAccounts.join("、")}。`);
+  if (Object.keys(orphanByTopic).length) {
+    const detail = Object.entries(orphanByTopic).map(([topic, count]) => `${topic} ${count} 行`).join("、");
+    log(`⚠️ 这些题材没有绑定账号，对应行本次不上传：${detail}。`);
+  }
+  if (unclassified.length) {
+    log(`⚠️ 有 ${unclassified.length} 行没有命中任何分类规则，本次不上传（可补充规则后重跑）。`);
+    log(`   示例：${unclassified.slice(0, 3).map((r) => String(r[titleKey] || "").slice(0, 40)).join(" / ")}`);
+  }
+  if (!assigned.length) {
+    log("没有任何账号分配到待上传的行，本次结束。");
+    return { uploaded: 0, batches: 0, accounts: [] };
+  }
+
+  // 题材写回：只写已存在的分类列，不新增列（模板是平台约定的，多一列可能被拒收）
+  const topicColumn = pickTopicColumn(keys);
+  if (topicColumn) stampTopicColumn(rows, classify, topicColumn);
+  else log("表格里没有「一级分类」/「备注」列，题材不写回（不新增列，避免模板不符被平台拒收）。");
+
+  const tmpDir = path.join(baseDataDir, "上传分片");
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const results = [];
+  let uploaded = 0;
+
+  for (const slot of slots) {
+    if (ctx.shouldStop()) {
+      log("收到停止信号，未开始的账号不再上传。");
+      break;
+    }
+    if (!slot.rows.length) continue;
+    const partFile = path.join(tmpDir, `topic-${Date.now()}-${safeFileToken(slot.envLabel)}.xlsx`);
+    try {
+      writePartFile(partFile, slot.rows, keys, sheetName);
+      log(`--- 账号 ${slot.envLabel}（题材「${slot.topic}」）开始上传 ${slot.rows.length} 行 ---`);
+      // 子上下文只覆写 livePayload：runBatchUploadTask 从 livePayload() 取 filePath / bitEnv
+      const subCtx = { ...ctx, livePayload: () => ({ ...payload, filePath: partFile, bitEnv: slot.envLabel }) };
+      const result = await runBatchUploadTask(subCtx, deps);
+      uploaded += Number(result.uploaded) || 0;
+      results.push({ envLabel: slot.envLabel, topic: slot.topic, planned: slot.rows.length, ...result });
+    } catch (error) {
+      // 单账号失败（未登录 / 无批量发布权益 / 额度为 0）不该拖垮其他账号
+      log(`账号 ${slot.envLabel} 上传失败，跳过继续下一个：${error.message}`);
+      results.push({ envLabel: slot.envLabel, topic: slot.topic, planned: slot.rows.length, uploaded: 0, error: error.message });
+    } finally {
+      fs.rmSync(partFile, { force: true });
+    }
+  }
+
+  ctx.report({ done: 1, total: 1, status: ctx.shouldStop() ? "stopped" : "done" });
+  log(`=== 题材路由上传完成：共 ${uploaded} 行，涉及 ${results.length} 个账号 ===`);
+  return { uploaded, batches: 0, accounts: results };
+}
+
+module.exports = { runBatchUploadTask, runTopicUploadTask, pickTitleKey, pickTopicColumn, safeFileToken };
