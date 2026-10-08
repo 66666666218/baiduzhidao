@@ -292,6 +292,25 @@ $("startSubmit").addEventListener("click", async () => {
   }
 });
 
+// 按题材搜资源：纯协议搜百度知道，产出自动填入「资源表格」，接着就能转存
+$("startSearchResources").addEventListener("click", async () => {
+  if (!await saveSettingsQuiet()) return;
+  const settings = await rpc.invoke("settings:get");
+  if (!Object.keys(settings.accountTopics || {}).length) {
+    appendLog("还没有账号绑定题材：请到设置页「账号题材绑定」按「账号=题材」填好（题材名要与搜索词里的题材名一致）。");
+    return;
+  }
+  try {
+    const result = await rpc.invoke("task:search-resources", { pages: Number(settings.searchPages) || 1 });
+    if (result && result.outputPath) {
+      $("batchExcelPath").value = result.outputPath; // 自动衔接「资源表格」
+      appendLog(`搜资源完成：${result.count} 条，已自动填入「资源表格」：${result.outputPath}`);
+    }
+  } catch (error) {
+    appendLog(`搜资源失败：${error.message}`);
+  }
+});
+
 $("pickBatchExcel").addEventListener("click", async () => {
   const result = await call("选择资源表格", "path:pick-open-table", { title: "选择资源表格" });
   if (result && !result.canceled) $("batchExcelPath").value = result.filePath;
@@ -576,6 +595,8 @@ async function saveSettingsQuiet() {
   patch.accountTopics = $("accountTopics").value; // 文本形式「账号=题材」，由后端归一化
   patch.linkRouting = $("linkRouting").value;
   patch.topicRules = $("topicRules").value; // 上传侧分类规则，由后端解析
+  patch.searchKeywords = $("searchKeywords").value; // 搜资源：按题材的搜索词
+  patch.searchPages = Number($("searchPages").value) || 1;
   patch.category = $("category").value;
   patch.timeoutMs = Number($("timeoutMs").value) || undefined;
   patch.verifyWaitSeconds = Number($("verifyWaitSeconds").value) || 0;
@@ -609,6 +630,8 @@ async function loadSettings() {
   $("accountTopics").value = Object.entries(settings.accountTopics || {}).map(([account, topic]) => `${account}=${topic}`).join("\n");
   $("linkRouting").value = settings.linkRouting || "strict";
   $("topicRules").value = settings.topicRules || "";
+  $("searchKeywords").value = settings.searchKeywords || "";
+  $("searchPages").value = settings.searchPages || 1;
   $("category").value = settings.category || "情感类";
   $("timeoutMs").value = settings.timeoutMs;
   $("verifyWaitSeconds").value = settings.verifyWaitSeconds;
@@ -677,7 +700,7 @@ function appendLog(text) {
   if (atBottom) view.scrollTop = view.scrollHeight;
 }
 
-const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "startBatchUpload", "fetchPassed", "runSelfTest"];
+const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "startBatchUpload", "startSearchResources", "fetchPassed", "runSelfTest"];
 
 function setActionsEnabled(enabled) {
   for (const id of ACTION_BUTTON_IDS) {

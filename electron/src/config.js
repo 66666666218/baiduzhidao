@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { normalizeAccountTopics } = require("./domain/account-topic");
 const { DEFAULT_TOPIC_RULES } = require("./domain/topic-rules");
+const { DEFAULT_SEARCH_KEYWORDS } = require("./netdisk/search-crawler");
 
 const CATEGORIES = ["情感类", "教育类", "综合类", "人物类"];
 const ALL_CATEGORY = "三类一起";
@@ -47,6 +48,9 @@ const DEFAULTS = {
   linkRouting: "strict",
   // 上传侧的关键词分类规则（「分类名=关键词1|关键词2」每行一条，顺序敏感）
   topicRules: DEFAULT_TOPIC_RULES,
+  // 搜资源：各题材的搜索词（同格式）。没给资源表时按账号绑定的题材自动搜
+  searchKeywords: DEFAULT_SEARCH_KEYWORDS,
+  searchPages: 1,
 };
 
 const SYSTEM_PROMPT = `请生成百度知道优质回答，只输出自然连贯的回答正文。
@@ -134,6 +138,8 @@ function normalizeSettings(payload) {
   next.linkRouting = LINK_ROUTING_MODES.includes(next.linkRouting) ? next.linkRouting : DEFAULTS.linkRouting;
   // 规则为空会让上传侧一行都分不出去，回退默认规则而不是静默全空
   if (!String(next.topicRules || "").trim()) next.topicRules = DEFAULT_TOPIC_RULES;
+  if (!String(next.searchKeywords || "").trim()) next.searchKeywords = DEFAULT_SEARCH_KEYWORDS;
+  next.searchPages = clampInt(next.searchPages, 1, 50, DEFAULTS.searchPages);
   if (!String(next.systemPrompt || "").trim()) next.systemPrompt = SYSTEM_PROMPT;
   // 活动页地址：允许覆盖但必须是合法 http(s) URL，否则回退默认（防止用户填错导致任务必败）
   const activityUrl = String(next.activityUrl || "").trim();

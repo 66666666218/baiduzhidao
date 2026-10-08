@@ -37,6 +37,7 @@ const INVOKE_CHANNELS = [
   "task:upload-by-topic",
   "task:auto-pipeline",
   "task:crawl-home",
+  "task:search-resources",
 
   // 网盘
   "netdisk:accounts:list",

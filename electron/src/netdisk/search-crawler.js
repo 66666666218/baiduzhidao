@@ -16,6 +16,23 @@
  */
 
 const { extractPanLinks, detectBlockedPage } = require("./home-crawler");
+const { parseTopicRules } = require("../domain/topic-rules");
+
+/**
+ * 各题材的默认搜索词。
+ * **写什么就搜什么**（不自动拼「网盘」）——这样你想搜精确词还是宽泛词都能自己控。
+ * 格式与分类规则一致：`题材=词1|词2`。
+ */
+const DEFAULT_SEARCH_KEYWORDS = [
+  "影视=电影 网盘|电视剧 网盘|动漫 网盘",
+  "游戏=游戏 网盘|手游 网盘|单机游戏 网盘",
+  "小说=小说 网盘|电子书 网盘|有声小说 网盘",
+  "漫画=漫画 网盘|条漫 网盘",
+  "音乐=音乐 网盘|无损音乐 网盘|专辑 网盘",
+  "课程=课程 网盘|教程 网盘|网课 网盘",
+  "软件=软件 网盘|绿色软件 网盘|办公软件 网盘",
+  "资料=素材 网盘|模板 网盘|资料包 网盘",
+].join("\n");
 
 const PAN_HOST = "https://zhidao.baidu.com";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -109,6 +126,38 @@ function splitByShareCode(links) {
 }
 
 /**
+ * 按「账号绑定的题材」生成搜索词。
+ *
+ * 同一个题材只出一份：多个账号绑同一题材时结果本就一样，搜两遍纯属浪费请求。
+ * 题材没配搜索词的直接跳过（并回报），不会硬凑。
+ *
+ * @param {string[]} topics        账号绑定的题材列表（可重复）
+ * @param {string}   keywordRules  `题材=词1|词2` 文本
+ * @returns {{terms: Array<{topic:string, term:string}>, uncovered: string[]}}
+ */
+function buildTopicSearchTerms(topics, keywordRules) {
+  const rules = parseTopicRules(keywordRules);
+  const wordsByTopic = new Map(rules.map((r) => [r.name, r.keywords]));
+  const wanted = [...new Set((Array.isArray(topics) ? topics : []).map((t) => String(t || "").trim()).filter(Boolean))];
+
+  const terms = [];
+  const seen = new Set();
+  const covered = new Set();
+  for (const topic of wanted) {
+    const words = wordsByTopic.get(topic);
+    if (!words || !words.length) continue;
+    covered.add(topic);
+    for (const word of words) {
+      const term = String(word).trim();
+      if (!term || seen.has(term)) continue;
+      seen.add(term);
+      terms.push({ topic, term });
+    }
+  }
+  return { terms, uncovered: wanted.filter((t) => !covered.has(t)) };
+}
+
+/**
  * 搜索采集主入口。
  * @returns {{rows:Array, stats:object}} rows: { name, link, pwd, questionUrl, source }
  */
@@ -184,10 +233,12 @@ module.exports = {
   PAN_HOST,
   PAGE_SIZE,
   MIN_SHARE_CODE,
+  DEFAULT_SEARCH_KEYWORDS,
   buildSearchUrl,
   cleanText,
   normalizeQuestionUrl,
   parseSearchResults,
   splitByShareCode,
+  buildTopicSearchTerms,
   crawlSearchResources,
 };

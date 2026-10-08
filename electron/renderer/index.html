@@ -69,6 +69,15 @@
             <textarea id="topicRules" rows="8" placeholder="游戏=游戏|手游|端游&#10;影视=电影|电视剧|剧集"></textarea>
             <p class="hint">用于把「上传专用表」按题材拆给各账号：每行按问题标题派生题材，再交给绑定了同名题材的账号上传。整行以 # 开头视为注释。</p>
           </div>
+          <div class="field">
+            <label>搜索词（每行一条「题材=搜索词1|搜索词2」；没给资源表时按账号绑定的题材自动搜）</label>
+            <textarea id="searchKeywords" rows="8" placeholder="影视=电影 网盘|电视剧 网盘&#10;游戏=游戏 网盘|手游 网盘"></textarea>
+            <p class="hint">写什么就搜什么（不会自动拼「网盘」）。题材名要与「账号题材绑定」里的一致；没配搜索词的题材本次不搜。纯协议采集，不需要浏览器和登录态。</p>
+          </div>
+          <div class="field-row">
+            <label>每个搜索词抓几页（每页 10 条）</label>
+            <input type="number" id="searchPages" min="1" max="50" value="1" style="max-width:120px" />
+          </div>
           <div class="field-grid">
             <div class="field"><label>分类</label>
               <select id="category">
@@ -105,6 +114,7 @@
           <p class="hint warning">⚠️ 这条链会自动爬题、生成答案、提交到平台、并按题材上传。全程无人值守，中途出错只会写进运行日志。<b>请务必先取消勾选「自动提交」「网盘转存」「按题材上传」，小批量试跑一次</b>，确认链路通了再放开。</p>
           <p class="hint">跑之前请先在「比特环境」页配好：账号列表、账号题材绑定、上传分类规则；并在「生成答案」页填好 AI Key。</p>
           <p class="hint">两个阶段串起来看：<b>答题链</b> 爬题→抽题→AI 生成→提交（积累通过数）；<b>网盘链</b> 转存（脚本套模板生成问答）→按题材拆表→分账号上传。两条链可单独勾选。</p>
+          <p class="hint">网盘链没指定资源表时，会先<b>按账号绑定的题材自动搜资源</b>（纯协议，不需要浏览器），搜到的结果直接喂给转存。</p>
           <div class="field-grid">
             <div class="field"><label>抽题条数</label><input type="number" id="autoPickCount" min="1" value="20" /></div>
             <div class="field"><label>每批上传行数</label><input type="number" id="autoBatchRows" min="1" value="500" /></div>
@@ -347,8 +357,10 @@
           </div>
           <div class="card-actions">
             <button class="btn primary" id="startBatchTransfer">开始批量转存</button>
+            <button class="btn soft" id="startSearchResources">按题材搜资源（纯协议，免浏览器）</button>
           </div>
           <p class="hint">完成后上传专用表输出到「运行数据目录/批量转存/」内，可直接用于自动提交上传。</p>
+          <p class="hint">「按题材搜资源」按设置页的<b>搜索词</b> × <b>账号题材绑定</b>去百度知道搜网盘资源，产出结果自动填入上面的「资源表格」；没绑定题材就去搜资源表格，不会瞎搜。</p>
         </div>
       </section>
 

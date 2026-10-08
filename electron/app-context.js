@@ -16,6 +16,7 @@ const { runSubmitTask } = require("./src/tasks/submit");
 const { runPassedCountTask } = require("./src/tasks/passed-count");
 const { runBatchTransferTask } = require("./src/tasks/batch-transfer");
 const { runBatchUploadTask, runTopicUploadTask } = require("./src/tasks/upload-batch");
+const searchCrawler = require("./src/netdisk/search-crawler");
 const { randomPickQuestions } = require("./src/tasks/random-pick");
 const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
@@ -127,6 +128,57 @@ async function startTask(name, payload, runner) {
     logger.log(`任务「${name}」失败：${error.message}`);
     throw error;
   }
+}
+
+// ---------- 任务实现 ----------
+
+/**
+ * 搜资源：纯协议搜百度知道（无浏览器、无需 Cookie）→ 产出资源表，直接喂批量转存。
+ *
+ * 抽成具名函数是为了让「一键全自动」编排也能调同一个实现，而不是抄第二遍。
+ */
+async function runSearchResourcesTask(ctx, deps) {
+  const { log } = deps;
+  const settings = config.load();
+  const explicit = (Array.isArray(ctx.payload.keywords) ? ctx.payload.keywords : [])
+    .map((x) => String(x || "").trim()).filter(Boolean);
+
+  let terms;
+  if (explicit.length) {
+    terms = explicit.map((term) => ({ topic: "", term }));
+  } else {
+    // 用「账号绑定的题材」决定搜什么：哪个账号负责哪类资源，就搜哪类
+    const topics = Object.values(settings.accountTopics || {});
+    if (!topics.length) throw new Error("没有账号绑定题材：请到设置页「账号题材绑定」配置，或直接指定搜索关键词。");
+    const built = searchCrawler.buildTopicSearchTerms(topics, settings.searchKeywords);
+    if (built.uncovered.length) log(`⚠️ 这些题材没配搜索词，本次不搜：${built.uncovered.join("、")}`);
+    if (!built.terms.length) throw new Error("已绑定的题材都没有配搜索词，请到设置页「搜索词」里给它们配上。");
+    terms = built.terms;
+  }
+
+  log(`按题材搜索（${terms.length} 个词）：${terms.map((t) => (t.topic ? `${t.topic}→${t.term}` : t.term)).join("、")}`);
+  const result = await searchCrawler.crawlSearchResources({
+    keywords: terms.map((t) => t.term),
+    pages: Number(ctx.payload.pages) || settings.searchPages,
+    limit: Number(ctx.payload.limit) || 0,
+    onLog: log,
+    shouldStop: () => ctx.shouldStop(),
+  });
+
+  // 列顺序有讲究：batch-transfer 靠列名猜「名称列/链接列/提取码列」，
+  // 名称列必须在最前面，否则它可能把别的列当成资源名。
+  const rows = result.rows.map((r) => ({
+    资源名: r.name,
+    链接: r.link,
+    提取码: r.pwd,
+    问题链接: r.questionUrl,
+    来源关键词: r.source,
+  }));
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+  const outputPath = path.join(dataDir, "搜资源", `搜资源_${stamp}.xlsx`);
+  const savedPath = excel.writeWorkbookSafe(outputPath, rows, "搜资源", ["资源名", "链接", "提取码", "问题链接", "来源关键词"], log);
+  log(`搜资源产出 ${rows.length} 条：${savedPath}`);
+  return { count: rows.length, stats: result.stats, outputPath: savedPath };
 }
 
 // ---------- IPC 注册（在 main.js 中调用） ----------
@@ -316,6 +368,8 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     const savedPath = excel.writeWorkbookSafe(outputPath, rows, "主页资源", ["资源名", "链接", "提取码", "问题链接"], log);
     return { count: rows.length, stats: result.stats, outputPath: savedPath };
   }));
+  ipcMain.handle("task:search-resources", (_event, payload) => startTask("search-resources", payload, (ctx) => runSearchResourcesTask(ctx, deps())));
+
   ipcMain.handle("file:open", async (_event, payload) => {
     const target = String(payload && payload.filePath || "").replace(/^"|"$/g, "");
     if (!target || !fs.existsSync(target)) return { ok: false, error: "文件不存在" };
@@ -507,10 +561,21 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
 
       // 5) 网盘转存：脚本套模板生成问答行（qa-template-lib），产出即上传专用表
       if (enabled.has("transfer") && !failure) {
-        const transferTable = String(p.transferTablePath || "").trim();
+        let transferTable = String(p.transferTablePath || "").trim();
+        // 没给资源表 → 按账号绑定的题材自动搜一批（纯协议搜百度知道，不需要浏览器）
         if (!transferTable || !fs.existsSync(transferTable)) {
-          emit("task:log", "跳过「网盘转存」：没有可用的资源表（请指定资源表路径，或取消勾选该阶段）。");
-          report.push({ stage: "transfer", label: "网盘转存", ok: false, skipped: true, error: "未指定资源表" });
+          emit("task:log", "没有指定资源表，改为按账号绑定的题材自动搜资源…");
+          const searched = await runStage("search", "搜资源（按账号题材）", () =>
+            startTask("search-resources", {
+              pages: Number(p.searchPages) || 0,
+              limit: Number(p.searchRowLimit) || 0,
+            }, (c) => runSearchResourcesTask(c, deps()))
+          );
+          if (searched && searched.outputPath && fs.existsSync(searched.outputPath)) transferTable = searched.outputPath;
+        }
+        if (!transferTable || !fs.existsSync(transferTable)) {
+          emit("task:log", "跳过「网盘转存」：没有可用的资源表。");
+          report.push({ stage: "transfer", label: "网盘转存", ok: false, skipped: true, error: "未指定资源表，自动搜索也没产出" });
         } else {
           await runStage("transfer", "网盘转存（套模板生成问答）", async () => {
             const result = await startTask("batch-transfer", {
@@ -888,6 +953,7 @@ const SMOKE_RESULT_SHAPES = {
   "netdisk:accounts:list": [],
   "app:selftest": { ok: true, steps: [] },
   "task:crawl-home": { stopped: false, count: 0, stats: {}, outputPath: "" },
+  "task:search-resources": { count: 0, stats: {}, outputPath: "" },
 };
 
 /** 冒烟自检：渲染端脚本无错误 + preload 桥可用 + 初始化完成 + 点遍按钮无处理器错误 */

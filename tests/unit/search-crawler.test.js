@@ -115,3 +115,46 @@ test("crawlSearchResources：单页失败不拖垮其他关键词", async () => 
   assert.equal(r.stats.failed, 1);
   assert.match(logs.join("\n"), /搜索失败（跳过）/);
 });
+
+// ---------- 按账号题材生成搜索词 ----------
+
+const { buildTopicSearchTerms, DEFAULT_SEARCH_KEYWORDS } = require("../../electron/src/netdisk/search-crawler");
+
+test("buildTopicSearchTerms：按题材取搜索词，保持规则顺序", () => {
+  const { terms } = buildTopicSearchTerms(["影视"], "影视=电影 网盘|电视剧 网盘");
+  assert.deepEqual(terms, [
+    { topic: "影视", term: "电影 网盘" },
+    { topic: "影视", term: "电视剧 网盘" },
+  ]);
+});
+
+test("buildTopicSearchTerms：同题材多账号只出一份（结果本就一样，重复搜是白费请求）", () => {
+  const { terms } = buildTopicSearchTerms(["影视", "影视", "影视"], "影视=电影 网盘");
+  assert.equal(terms.length, 1, "三个账号绑同一题材 → 只搜一次");
+});
+
+test("buildTopicSearchTerms：不同题材各自出词，跨题材也不重复", () => {
+  const { terms } = buildTopicSearchTerms(["影视", "游戏"], "影视=电影 网盘\n游戏=电影 网盘|手游 网盘");
+  const list = terms.map((t) => t.term);
+  assert.deepEqual(list, ["电影 网盘", "手游 网盘"], "同名词跨题材只搜一次");
+});
+
+test("buildTopicSearchTerms：没配搜索词的题材要回报出来，不硬凑", () => {
+  const { terms, uncovered } = buildTopicSearchTerms(["影视", "小说"], "影视=电影 网盘");
+  assert.deepEqual(uncovered, ["小说"]);
+  assert.equal(terms.length, 1);
+});
+
+test("buildTopicSearchTerms：空输入/空规则不炸", () => {
+  assert.deepEqual(buildTopicSearchTerms([], "").terms, []);
+  assert.deepEqual(buildTopicSearchTerms(null, null).terms, []);
+  assert.deepEqual(buildTopicSearchTerms(["影视"], "").uncovered, ["影视"]);
+});
+
+test("DEFAULT_SEARCH_KEYWORDS：能解析出多个题材，格式与分类规则一致", () => {
+  const { parseTopicRules } = require("../../electron/src/domain/topic-rules");
+  const rules = parseTopicRules(DEFAULT_SEARCH_KEYWORDS);
+  assert.ok(rules.length >= 6, `默认搜索词应覆盖多个题材，实际 ${rules.length}`);
+  assert.ok(rules.every((r) => r.keywords.length >= 2), "每个题材至少两个搜索词");
+  assert.ok(rules.every((r) => r.keywords.every((k) => /网盘|资源/.test(k))), "默认词应指向网盘资源");
+});
