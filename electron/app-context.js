@@ -17,6 +17,7 @@ const { runPassedCountTask } = require("./src/tasks/passed-count");
 const { runBatchTransferTask } = require("./src/tasks/batch-transfer");
 const { runBatchUploadTask, runTopicUploadTask } = require("./src/tasks/upload-batch");
 const searchCrawler = require("./src/netdisk/search-crawler");
+const workbench = require("./src/netdisk/workbench");
 const { randomPickQuestions } = require("./src/tasks/random-pick");
 const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
@@ -194,6 +195,120 @@ async function runSearchResourcesTask(ctx, deps) {
   const savedPath = excel.writeWorkbookSafe(outputPath, rows, "搜资源", ["资源名", "链接", "提取码", "问题链接", "来源关键词"], log);
   log(`搜资源产出 ${rows.length} 条：${savedPath}`);
   return { count: rows.length, stats: result.stats, outputPath: savedPath };
+}
+
+/**
+ * 查收录：核对上传到答主工作台的问答**是否真的被收录**。
+ *
+ * 为什么需要单独一步：上传接口返回 200 只代表**平台收下了**，之后平台还要异步审核，
+ * 审核结果只体现在工作台的「上传记录」里（`qa/api/bulkqa/tasks`）。
+ * 三件事是三回事：接口 200 → 审核通过 → 真的出现在回答里。
+ *
+ * 做法和转存一致：从浏览器取一次 Cookie，之后全程纯协议（不再操作页面）。
+ */
+async function runCheckPublishedTask(ctx, deps) {
+  const { browserPool, log } = deps;
+  const settings = config.load();
+  const requested = (Array.isArray(ctx.payload.bitEnvs) ? ctx.payload.bitEnvs : [])
+    .map((e) => (e && typeof e === "object" ? e.label ?? e.name : e))
+    .map((x) => String(x || "").trim()).filter(Boolean);
+  const bitEnvs = requested.length ? requested : (settings.bitEnvs || []).map((e) => e.label || e).filter(Boolean);
+  if (!bitEnvs.length) throw new Error("请先填写比特浏览器环境名称。");
+  const pageSize = Math.min(100, Math.max(1, Number(ctx.payload.pageSize) || 20));
+
+  const accounts = [];
+  const rows = [];
+  for (const envLabel of bitEnvs) {
+    if (ctx.shouldStop()) break;
+    let browser = null;
+    try {
+      log(`查收录：打开比特环境 ${envLabel}（只为取登录态）`);
+      const handle = await browserPool.acquire(envLabel);
+      browser = await chromium.connectOverCDP(handle.cdpUrl);
+      const context = browser.contexts()[0] || (await browser.newContext());
+      const cookies = await context.cookies(workbench.WB_HOST);
+      const bduss = (cookies.find((c) => c.name === "BDUSS") || {}).value || "";
+      if (!bduss) {
+        log(`⚠️ ${envLabel} 未登录百度账号，跳过（查收录需要登录态）。`);
+        accounts.push({ envLabel, ok: false, error: "未登录百度账号" });
+        continue;
+      }
+      const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+
+      let info = { name: "", remainingQuota: NaN, banned: false, banDays: -1 };
+      try {
+        info = workbench.pickUserInfo(await workbench.fetchWorkbenchJson("/qa/api/bulkqa/userinfo", cookieStr));
+      } catch (e) {
+        log(`（账号信息查询失败，不影响查收录：${e.message}）`);
+      }
+      const quotaText = Number.isFinite(info.remainingQuota) ? info.remainingQuota : "未知";
+      log(`【${envLabel}】账号 ${info.name || "(未取到)"}｜剩余额度 ${quotaText}`);
+      if (info.banned) {
+        // 工作台自己会报封禁状态——这是判断"这个号还能不能用"最直接的依据
+        log(`🚫 该账号被封禁${info.banDays > 0 ? ` ${info.banDays} 天` : ""}，本账号后续上传/转存都会失败，建议先换号。`);
+      }
+
+      const resp = await workbench.fetchWorkbenchJson(`/qa/api/bulkqa/tasks?page=1&pageSize=${pageSize}`, cookieStr);
+      const tasks = workbench.pickTaskList(resp);
+      if (!tasks.length) {
+        log(`⚠️ ${envLabel} 没取到上传记录——接口结构可能变了，或该账号还没上传过。`);
+        accounts.push({ envLabel, ok: false, error: "没有取到上传记录" });
+        continue;
+      }
+      const summary = workbench.summarizeTasks(tasks);
+      log(`最近 ${summary.taskCount} 个上传任务（${summary.lastAt || "?"} 起）：共 ${summary.totalRows} 条 → `
+        + `收录 ${summary.successRows} 条，被拒 ${summary.failedRows} 条，扣额度 ${summary.usedQuota}`);
+      for (const task of tasks.slice(0, 8)) {
+        log(`  · ${workbench.formatTask(task)}`);
+        rows.push({
+          环境: envLabel,
+          账号: info.name || "",
+          任务名: task.taskName || "",
+          创建时间: workbench.formatTime(task.createdAt),
+          总数: Number(task.totalCount) || 0,
+          已收录: Number(task.successCount) || 0,
+          被拒: Number(task.failCount) || 0,
+          扣额度: Number(task.usedTotal) || 0,
+        });
+      }
+      accounts.push({
+        envLabel,
+        ok: true,
+        name: info.name,
+        remainingQuota: Number.isFinite(info.remainingQuota) ? info.remainingQuota : null,
+        taskTotal: workbench.pickTaskTotal(resp),
+        summary,
+      });
+      ctx.emitItem({ title: `${envLabel} 查收录`, status: `收录 ${summary.successRows} / 被拒 ${summary.failedRows}`, bitEnv: envLabel });
+    } catch (error) {
+      log(`⚠️ ${envLabel} 查收录失败：${describeError(error)}`);
+      accounts.push({ envLabel, ok: false, error: error.message });
+    } finally {
+      await browser?.close?.().catch(() => {});
+      await browserPool.release(envLabel, { close: settings.closeAfter }).catch(() => {});
+    }
+    ctx.report({ done: accounts.length, total: bitEnvs.length, status: "running" });
+  }
+
+  const okAccounts = accounts.filter((a) => a.ok);
+  const failedRowsTotal = okAccounts.reduce((sum, a) => sum + a.summary.failedRows, 0);
+  if (failedRowsTotal > 0) {
+    log(`⚠️ 合计有 ${failedRowsTotal} 条被平台拒收（界面「上传记录」可按任务下载结果查看原因）。`);
+  }
+  const stopped = ctx.shouldStop();
+  ctx.report({ done: accounts.length, total: bitEnvs.length, status: stopped ? "stopped" : "done" });
+
+  let outputPath = "";
+  if (rows.length) {
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+    outputPath = path.join(dataDir, "查收录", `收录核对_${stamp}.xlsx`);
+    outputPath = excel.writeWorkbookSafe(
+      outputPath, rows, "收录核对",
+      ["环境", "账号", "任务名", "创建时间", "总数", "已收录", "被拒", "扣额度"], log
+    );
+    log(`收录明细已导出：${outputPath}`);
+  }
+  return { stopped, accounts, outputPath, checked: okAccounts.length };
 }
 
 // ---------- IPC 注册（在 main.js 中调用） ----------
@@ -384,6 +499,8 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     return { count: rows.length, stats: result.stats, outputPath: savedPath };
   }));
   ipcMain.handle("task:search-resources", (_event, payload) => startTask("search-resources", payload, (ctx) => runSearchResourcesTask(ctx, deps())));
+  // 查收录：核对上传到工作台的问答是否真的被收录（平台异步审核，上传 200 ≠ 被收录）
+  ipcMain.handle("task:check-published", (_event, payload) => startTask("check-published", payload, (ctx) => runCheckPublishedTask(ctx, deps())));
 
   ipcMain.handle("file:open", async (_event, payload) => {
     const target = String(payload && payload.filePath || "").replace(/^"|"$/g, "");
@@ -651,7 +768,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
           emit("task:log", "跳过「按题材上传」：没有可用的上传专用表（请先跑转存，或指定一张现成的表）。");
           report.push({ stage: "upload", label: "按题材上传", ok: false, skipped: true, error: "未指定上传专用表" });
         } else {
-          await runStage("upload", "按题材上传", () =>
+          const uploaded = await runStage("upload", "按题材上传", () =>
             startTask("upload-by-topic", {
               filePath: uploadTable,
               bitEnvs,
@@ -661,6 +778,13 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
               maxBatches: Number(p.maxBatches) || 999,
             }, (ctx) => runTopicUploadTask(ctx, deps()))
           );
+          // 上传完顺手核对收录。上传接口返回 200 只代表**平台收下了**，
+          // 平台还要异步审核，收录结果要单独查——不查的话"上传成功"是句空话。
+          if (uploaded && !failure && !autoPipelineAborted) {
+            await runStage("checkPublished", "查收录（核对是否被收录）", () =>
+              startTask("check-published", { bitEnvs }, (c) => runCheckPublishedTask(c, deps()))
+            );
+          }
         }
       }
     } finally {
@@ -1006,6 +1130,7 @@ const SMOKE_RESULT_SHAPES = {
   "app:selftest": { ok: true, steps: [] },
   "task:crawl-home": { stopped: false, count: 0, stats: {}, outputPath: "" },
   "task:search-resources": { count: 0, stats: {}, outputPath: "" },
+  "task:check-published": { accounts: [], checked: 0, outputPath: "" },
 };
 
 /** 冒烟自检：渲染端脚本无错误 + preload 桥可用 + 初始化完成 + 点遍按钮无处理器错误 */

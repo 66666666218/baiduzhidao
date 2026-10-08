@@ -29,6 +29,7 @@ const invokeChannels = new Set([
   "task:auto-pipeline",
   "task:crawl-home",
   "task:search-resources",
+  "task:check-published",
   "netdisk:accounts:list",
   "netdisk:accounts:add",
   "netdisk:accounts:extract-from-window",

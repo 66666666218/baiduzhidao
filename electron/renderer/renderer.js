@@ -416,6 +416,25 @@ $("startBatchUpload").addEventListener("click", async () => {
 });
 
 // 按题材分账号上传：分类规则派生题材 → 各账号只传自己题材的份
+// 查收录：上传接口 200 只代表平台收下了，收录结果要单独查
+$("checkPublished").addEventListener("click", async () => {
+  if (!await saveSettingsQuiet()) return;
+  const settings = await rpc.invoke("settings:get");
+  const bitEnvs = settings.bitEnvs || [];
+  if (!bitEnvs.length) { appendLog("请先在设置页填写比特环境账号。"); return; }
+  try {
+    const result = await rpc.invoke("task:check-published", { bitEnvs });
+    for (const account of result.accounts || []) {
+      if (!account.ok) { appendLog(`　${account.envLabel}：${account.error}`); continue; }
+      const s = account.summary;
+      appendLog(`　${account.envLabel}（${account.name || "?"}）：最近 ${s.taskCount} 个任务共 ${s.totalRows} 条 → 收录 ${s.successRows}，被拒 ${s.failedRows}，剩余额度 ${account.remainingQuota ?? "未知"}`);
+    }
+    if (result.outputPath) appendLog(`收录明细已导出：${result.outputPath}`);
+  } catch (error) {
+    appendLog(`查收录失败：${error.message}`);
+  }
+});
+
 $("startTopicUpload").addEventListener("click", async () => {
   if (!await saveSettingsQuiet()) return;
   const filePath = $("uploadExcelPath").value;
@@ -706,7 +725,7 @@ function appendLog(text) {
   if (atBottom) view.scrollTop = view.scrollHeight;
 }
 
-const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "startBatchUpload", "startSearchResources", "fetchPassed", "runSelfTest"];
+const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "startBatchUpload", "startSearchResources", "checkPublished", "fetchPassed", "runSelfTest"];
 
 function setActionsEnabled(enabled) {
   for (const id of ACTION_BUTTON_IDS) {

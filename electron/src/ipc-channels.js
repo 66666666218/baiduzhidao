@@ -38,6 +38,7 @@ const INVOKE_CHANNELS = [
   "task:auto-pipeline",
   "task:crawl-home",
   "task:search-resources",
+  "task:check-published",
 
   // 网盘
   "netdisk:accounts:list",
