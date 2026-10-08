@@ -45,6 +45,13 @@
 | `task:batch-upload` | 按账号批量上传 | `bitEnvs`、`filePath` | — |
 | **`task:upload-by-topic`** | **新增**。按分类规则给每行派生题材，拆成各账号的份逐个上传 | `filePath`、`bitEnvs`、`accountTopics`、`topicRules`、`batchRows`、`maxBatches` | `uploaded`、`accounts[]`：`{ envLabel, topic, planned, uploaded, error? }` |
 | `task:crawl-home` | 从答主主页找网盘资源 | `homepages`、`enrichLimit` | `count`、`stats`、`outputPath` |
+| **`task:auto-pipeline`** | **新增**。一键全自动：按阶段串行跑「爬题 → 抽题 → 生成 → 提交 → 按题材上传」 | `stages[]`（可选值 `crawl`/`pick`/`generate`/`submit`/`upload`）、`pickCount`、`batchRows`、`uploadTablePath` | `ok`、`stopped`、`pickFile`、`stages[]`：`{ stage, label, ok, skipped?, error? }` |
+
+> `task:auto-pipeline` 与其它任务通道不同：它**不是**单个 TaskManager 任务，
+> 而是在主进程按阶段串行调用 `startTask`（TaskManager 单任务互斥，包成一个大任务会直接冲突）。
+> 因此它没有 `stopped/count/failed/total/results` 信封，返回的是阶段级报告。
+> 任一阶段抛错即停；调用 `task:stop` 会置中止旗标，后续阶段不再启动。
+
 
 ## 3. `task:submit` 请求字段（含本轮变更）
 

@@ -396,6 +396,62 @@ $("startTopicUpload").addEventListener("click", async () => {
   }
 });
 
+// ---------- 一键全自动 ----------
+
+$("pickAutoUploadTable").addEventListener("click", async () => {
+  const result = await call("选择上传专用表", "path:pick-open-table", { title: "选择上传专用表" });
+  if (result && !result.canceled) $("autoUploadTable").value = result.filePath;
+});
+
+/** 阶段结果用 textContent 拼，不走 innerHTML：错误信息里可能带用户数据（路径、题目标题） */
+function renderAutoReport(result) {
+  const box = $("autoReport");
+  box.textContent = "";
+  const lines = (result.stages || []).map((stage) => {
+    const mark = stage.ok ? "✅" : stage.skipped ? "⏭️" : "❌";
+    return `${mark} ${stage.label}${stage.ok ? "" : "：" + (stage.error || "")}`;
+  });
+  if (!lines.length) return;
+  const paragraph = document.createElement("p");
+  paragraph.className = "hint";
+  paragraph.textContent = `阶段结果：${lines.join("　|　")}`;
+  box.appendChild(paragraph);
+}
+
+$("startAutoPipeline").addEventListener("click", async () => {
+  const stages = [];
+  if ($("autoStageCrawl").checked) stages.push("crawl");
+  if ($("autoStagePick").checked) stages.push("pick");
+  if ($("autoStageGenerate").checked) stages.push("generate");
+  if ($("autoStageSubmit").checked) stages.push("submit");
+  if ($("autoStageUpload").checked) stages.push("upload");
+  if (!stages.length) { appendLog("请至少勾选一个阶段。"); return; }
+  if (!await saveSettingsQuiet()) return;
+
+  const settings = await rpc.invoke("settings:get");
+  if (!(settings.bitEnvs || []).length) { appendLog("请先在设置页填写比特环境账号。"); return; }
+  if ($("autoStageSubmit").checked && !settings.aiApiKey) {
+    appendLog("「生成答案」需要 AI Key，请先在「生成答案」页填写。");
+    return;
+  }
+  const destructive = $("autoStageSubmit").checked || $("autoStageUpload").checked;
+  if (destructive && !confirm("本次会真实提交答案/上传资源到平台，且全程无人值守。确认继续？")) return;
+
+  $("autoReport").innerHTML = "";
+  try {
+    const result = await rpc.invoke("task:auto-pipeline", {
+      stages,
+      pickCount: Number($("autoPickCount").value) || 20,
+      batchRows: Number($("autoBatchRows").value) || 500,
+      uploadTablePath: $("autoUploadTable").value,
+    });
+    renderAutoReport(result);
+    appendLog(`一键全自动结束：${result.ok ? "全部阶段成功" : result.stopped ? "已手动停止" : "有阶段失败（详见上方结果与运行日志）"}。`);
+  } catch (error) {
+    appendLog(`一键全自动失败：${error.message}`);
+  }
+});
+
 $("fetchPassed").addEventListener("click", async () => {
   try {
     if (!await saveSettingsQuiet()) return;

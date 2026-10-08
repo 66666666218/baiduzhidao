@@ -15,6 +15,7 @@
       </div>
       <nav>
         <button class="nav-item active" data-view="accounts">⚙️ 比特环境</button>
+        <button class="nav-item" data-view="auto">⚡ 一键全自动</button>
         <button class="nav-item" data-view="crawl">📥 题目爬取</button>
         <button class="nav-item" data-view="bank">📚 题库浏览</button>
         <button class="nav-item" data-view="random">🎲 随机抽题</button>
@@ -97,6 +98,37 @@
       </section>
 
       <!-- 题目爬取 -->
+      <!-- 一键全自动 -->
+      <section class="view" data-view="auto">
+        <h2>一键全自动</h2>
+        <div class="card">
+          <p class="hint warning">⚠️ 这条链会自动爬题、生成答案、提交到平台、并按题材上传。全程无人值守，中途出错只会写进运行日志。**请务必先勾掉「自动提交」和「按题材上传」小批量试跑一次**，确认链路通了再放开。</p>
+          <p class="hint">跑之前请先在「比特环境」页配好：账号列表、账号题材绑定、上传分类规则；并在「生成答案」页填好 AI Key。</p>
+          <div class="field-grid">
+            <div class="field"><label>抽题条数</label><input type="number" id="autoPickCount" min="1" value="20" /></div>
+            <div class="field"><label>每批上传行数</label><input type="number" id="autoBatchRows" min="1" value="500" /></div>
+          </div>
+          <div class="field"><label>上传专用表（留空则自动跳过「按题材上传」阶段）</label>
+            <div class="pair">
+              <input type="text" id="autoUploadTable" readonly placeholder="选择上传专用表" />
+              <button class="btn soft" id="pickAutoUploadTable">选择</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <label>参与阶段</label>
+            <label class="check"><input type="checkbox" id="autoStageCrawl" checked /> 爬题</label>
+            <label class="check"><input type="checkbox" id="autoStagePick" checked /> 抽题</label>
+            <label class="check"><input type="checkbox" id="autoStageGenerate" checked /> 生成答案</label>
+            <label class="check"><input type="checkbox" id="autoStageSubmit" checked /> 自动提交</label>
+            <label class="check"><input type="checkbox" id="autoStageUpload" checked /> 按题材上传</label>
+          </div>
+          <div class="card-actions">
+            <button class="btn primary" id="startAutoPipeline">▶ 开始一键全自动</button>
+          </div>
+          <div id="autoReport"></div>
+        </div>
+      </section>
+
       <section class="view" data-view="crawl">
         <h2>题目爬取</h2>
         <div class="card">

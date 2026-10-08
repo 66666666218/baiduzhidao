@@ -20,6 +20,7 @@ const invokeChannels = new Set([
   "task:batch-transfer",
   "task:batch-upload",
   "task:upload-by-topic",
+  "task:auto-pipeline",
   "task:crawl-home",
   "netdisk:accounts:list",
   "netdisk:accounts:add",

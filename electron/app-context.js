@@ -3,7 +3,7 @@
 const { app, BrowserWindow } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { Config, nowText } = require("./src/config");
+const { Config, nowText, CATEGORIES } = require("./src/config");
 const { Logger } = require("./src/log");
 const { Store } = require("./src/storage/store");
 const excel = require("./src/storage/excel");
@@ -24,6 +24,9 @@ let mainWindow = null;
 let clipboardApi = null; // registerIpc 时注入（供任务内剪贴板兜底）
 let currentAutosavePath = ""; // 当前任务的 CSV 自动保存文件
 let autosaveSeq = 0; // 同一分钟内连起两个任务时区分自动保存文件
+// 一键全自动的"停止"旗标：TaskManager.stop 只能停当前任务，而编排在阶段之间还要
+// 决定"下一阶段是否该开始"。没有这个旗标，用户点了停止，编排仍会把后续阶段依次拉起来。
+let autoPipelineAborted = false;
 
 // ---------- 单例服务 ----------
 
@@ -158,7 +161,10 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   });
 
   // 任务控制
-  ipcMain.handle("task:stop", () => tasks.stop());
+  ipcMain.handle("task:stop", () => {
+    autoPipelineAborted = true; // 手动停止时一并中止一键全自动的后续阶段
+    return tasks.stop();
+  });
   ipcMain.handle("task:pause", () => tasks.pause());
   ipcMain.handle("task:resume", () => tasks.resume());
   ipcMain.handle("task:history", () => ({ current: tasks.currentState(), history: tasks.historyList() }));
@@ -173,7 +179,8 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   ipcMain.handle("task:crawl", (_event, payload) => startTask("crawl", payload, (ctx) => runCrawlTask(ctx, deps())));
 
   // 随机抽题
-  ipcMain.handle("questions:random-pick", async (_event, payload) => {
+  // 抽成具名函数：一键全自动编排要复用同一段逻辑，不能把它抄第二遍
+  const pickQuestions = async (payload) => {
     const bank = store.loadBank();
     if (!bank.length) throw new Error("题库为空，请先爬题或导入题库表格。");
     // 已提交的题以 answers 台账为准永久出池：此前只靠 usedKeys 去重，
@@ -242,7 +249,8 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       resetRound: result.resetRound,
       results: result.picked,
     };
-  });
+  };
+  ipcMain.handle("questions:random-pick", (_event, payload) => pickQuestions(payload));
 
   // AI 生成（未选表格时自动使用最近一次抽题表格）
   ipcMain.handle("task:generate", async (_event, payload) => {
@@ -377,6 +385,151 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   ipcMain.handle("task:batch-upload", (_event, payload) => startTask("batch-upload", payload, (ctx) => runBatchUploadTask(ctx, deps())));
   // 按题材分账号上传：把上传专用表按分类规则拆成各账号的份，逐个账号投递
   ipcMain.handle("task:upload-by-topic", (_event, payload) => startTask("upload-by-topic", payload, (ctx) => runTopicUploadTask(ctx, deps())));
+
+  /**
+   * 一键全自动：把「爬题 → 抽题 → 生成 → 提交 → 按题材上传」串成一条链。
+   *
+   * 为什么在主进程按阶段串行调 startTask，而不是包成一个大任务：
+   * TaskManager 是单任务互斥的（运行中再 start 会抛错）。分阶段串行，每个阶段
+   * 各自是一个正常任务，进度/暂停/停止/日志语义完全不变；阶段之间检查中止旗标。
+   *
+   * 任何阶段抛错即停（后续不再执行），前面已完成的成果保留。
+   * stages 数组可挑选参与阶段，未选的跳过。
+   */
+  ipcMain.handle("task:auto-pipeline", async (_event, payload) => {
+    const p = payload && typeof payload === "object" ? payload : {};
+    const enabled = new Set(
+      Array.isArray(p.stages) && p.stages.length ? p.stages : ["crawl", "pick", "generate", "submit", "upload"]
+    );
+    const settings = config.load();
+    const bitEnvs = (settings.bitEnvs || []).map((env) => env.label || env).filter(Boolean);
+    const report = [];
+    let failure = null;
+    let pickFile = "";
+    const stamp = () => new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+
+    autoPipelineAborted = false;
+
+    const runStage = async (name, label, fn) => {
+      if (autoPipelineAborted) {
+        report.push({ stage: name, label, ok: false, skipped: true, error: "已停止" });
+        return null;
+      }
+      emit("task:log", `══════ 一键全自动 · ${label} ══════`);
+      try {
+        const result = await fn();
+        report.push({ stage: name, label, ok: true });
+        emit("task:log", `──── ${label} 完成 ────`);
+        return result;
+      } catch (error) {
+        report.push({ stage: name, label, ok: false, error: error.message });
+        emit("task:log", `⚠️ ${label} 失败，后续阶段不再执行：${error.message}`);
+        failure = error;
+        return null;
+      }
+    };
+
+    try {
+      if (!bitEnvs.length) throw new Error("请先在设置页「比特环境名称」填写账号。");
+
+      // 1) 爬题：逐分类各跑一次（爬题是只读的，用一个账号即可）
+      if (enabled.has("crawl")) {
+        const categories = Array.isArray(p.categories) && p.categories.length ? p.categories : CATEGORIES;
+        await runStage("crawl", `爬题（${categories.join("、")}）`, async () => {
+          let added = 0;
+          for (const category of categories) {
+            if (autoPipelineAborted || failure) break;
+            const result = await startTask(
+              "crawl",
+              { bitEnvs, category, crawlStartPage: settings.crawlStartPage, maxQuestions: settings.maxQuestions },
+              (ctx) => runCrawlTask(ctx, deps())
+            );
+            added += Number(result && result.count) || 0;
+          }
+          return { added };
+        });
+      }
+
+      // 2) 抽题：输出路径必须显式给（不能弹保存对话框，否则无人值守会卡死）
+      if (enabled.has("pick") && !failure) {
+        await runStage("pick", "抽题", async () => {
+          const outDir = path.join(dataDir, "一键跑批");
+          const result = await pickQuestions({
+            categories: p.categories,
+            count: Number(p.pickCount) || settings.randomCount,
+            outputPath: path.join(outDir, `抽题_${stamp()}.xlsx`),
+            skipGenerated: true,
+          });
+          if (result.canceled) throw new Error("抽题被取消");
+          pickFile = result.filePath;
+          return result;
+        });
+      }
+
+      // 3) 生成答案
+      if (enabled.has("generate") && !failure && pickFile) {
+        await runStage("generate", "生成答案", async () => {
+          const rows = excel.readTableRows(pickFile).map(excel.importRowToAnswer);
+          return startTask("generate", {
+            results: rows,
+            aiApiKey: settings.aiApiKey,
+            aiBaseUrl: settings.aiBaseUrl,
+            aiModel: settings.aiModel,
+            aiConcurrency: settings.aiConcurrency,
+            aiDailyTokenBudget: settings.aiDailyTokenBudget || 0,
+            titleTemplate: settings.titleTemplate,
+            introTemplate: settings.introTemplate,
+          }, (ctx) => runGenerateTask(ctx, deps()));
+        });
+      }
+
+      // 4) 提交（纯文本答案 → 全账号宽松轮询，用于积累通过数/额度）
+      if (enabled.has("submit") && !failure && pickFile) {
+        await runStage("submit", "自动提交", async () => {
+          const rows = excel.readTableRows(pickFile).map(excel.importRowToAnswer);
+          return startTask("submit", {
+            filePath: pickFile,
+            results: rows,
+            bitEnvs,
+            submitLimit: settings.submitLimit,
+            accountDailyLimit: settings.accountDailyLimit,
+            dailyAnswerLimit: settings.dailyAnswerLimit,
+            forceResubmit: false,
+            checkCompletedEnvs: true,
+            accountTopics: settings.accountTopics,
+            linkRouting: settings.linkRouting,
+          }, (ctx) => runSubmitTask(ctx, deps()));
+        });
+      }
+
+      // 5) 按题材分账号上传（用已有的上传专用表；没配路径就跳过并说明）
+      if (enabled.has("upload") && !failure) {
+        const uploadTable = String(p.uploadTablePath || "").trim();
+        if (!uploadTable || !fs.existsSync(uploadTable)) {
+          emit("task:log", "跳过「按题材上传」：没有可用的上传专用表（请先在「批量上传」视图选择，或在本页指定路径）。");
+          report.push({ stage: "upload", label: "按题材上传", ok: false, skipped: true, error: "未指定上传专用表" });
+        } else {
+          await runStage("upload", "按题材上传", () =>
+            startTask("upload-by-topic", {
+              filePath: uploadTable,
+              bitEnvs,
+              accountTopics: settings.accountTopics,
+              topicRules: settings.topicRules,
+              batchRows: Number(p.batchRows) || 500,
+              maxBatches: Number(p.maxBatches) || 999,
+            }, (ctx) => runTopicUploadTask(ctx, deps()))
+          );
+        }
+      }
+    } finally {
+      autoPipelineAborted = false;
+    }
+
+    const okCount = report.filter((r) => r.ok).length;
+    const tail = autoPipelineAborted ? "（已手动停止）" : failure ? `（在「${report.find((r) => !r.ok && !r.skipped)?.label}」中断）` : "";
+    emit("task:log", `══════ 一键全自动结束：${okCount}/${report.length} 个阶段成功 ${tail} ══════`);
+    return { ok: !failure && !autoPipelineAborted, stopped: autoPipelineAborted, stages: report, pickFile };
+  });
 
   // 记录管理
   ipcMain.handle("answers:list", (_event, query) => {
