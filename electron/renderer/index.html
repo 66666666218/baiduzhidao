@@ -58,12 +58,12 @@
             <label>比特环境名称（每行一个账号）</label>
             <textarea id="bitEnvs" rows="4" placeholder="账号1&#10;账号2"></textarea>
           </div>
-          <div class="field-row">
+          <div class="field">
             <label>账号题材绑定（每行一个「账号=题材」；答题侧填 情感/教育/综合/人物，上传侧填下面的分类名）</label>
             <textarea id="accountTopics" rows="3" placeholder="账号1=情感类&#10;账号2=教育类"></textarea>
             <p class="hint">带链接的答案按此表严格一对一投递；没绑定的账号不会收到链接答案。纯文本答案不受此表限制。</p>
           </div>
-          <div class="field-row">
+          <div class="field">
             <label>上传分类规则（每行一条「分类名=关键词1|关键词2」，从上到下先命中先分类）</label>
             <textarea id="topicRules" rows="8" placeholder="游戏=游戏|手游|端游&#10;影视=电影|电视剧|剧集"></textarea>
             <p class="hint">用于把「上传专用表」按题材拆给各账号：每行按问题标题派生题材，再交给绑定了同名题材的账号上传。整行以 # 开头视为注释。</p>
@@ -97,12 +97,11 @@
         </div>
       </section>
 
-      <!-- 题目爬取 -->
       <!-- 一键全自动 -->
       <section class="view" data-view="auto">
         <h2>一键全自动</h2>
         <div class="card">
-          <p class="hint warning">⚠️ 这条链会自动爬题、生成答案、提交到平台、并按题材上传。全程无人值守，中途出错只会写进运行日志。**请务必先勾掉「自动提交」和「按题材上传」小批量试跑一次**，确认链路通了再放开。</p>
+          <p class="hint warning">⚠️ 这条链会自动爬题、生成答案、提交到平台、并按题材上传。全程无人值守，中途出错只会写进运行日志。<b>请务必先取消勾选「自动提交」「网盘转存」「按题材上传」，小批量试跑一次</b>，确认链路通了再放开。</p>
           <p class="hint">跑之前请先在「比特环境」页配好：账号列表、账号题材绑定、上传分类规则；并在「生成答案」页填好 AI Key。</p>
           <p class="hint">两个阶段串起来看：<b>答题链</b> 爬题→抽题→AI 生成→提交（积累通过数）；<b>网盘链</b> 转存（脚本套模板生成问答）→按题材拆表→分账号上传。两条链可单独勾选。</p>
           <div class="field-grid">
@@ -138,6 +137,7 @@
         </div>
       </section>
 
+      <!-- 题目爬取 -->
       <section class="view" data-view="crawl">
         <h2>题目爬取</h2>
         <div class="card">
