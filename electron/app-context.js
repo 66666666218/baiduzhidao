@@ -712,15 +712,26 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   // 下载有 20%~100% 节流日志；下载完成后退出软件即自动安装（也可在界面点「重启并安装」）。
   // 国内直连 GitHub 不稳定，失败时日志会给出发布页链接，可用浏览器手动下载兜底。
   const RELEASES_URL = "https://github.com/66666666218/baiduzhidao/releases/latest";
-  let updateReady = false;
+  let updateReady = false; // 新版已下载完成
+  let updateAvailable = ""; // 已知有新版的版本号（尚未下载）
+  let wantDownload = false; // 本次检查是否顺带下载
   let lastProgressLog = 0;
   try {
     const { autoUpdater } = require("electron-updater");
-    autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.on("checking-for-update", () => emit("task:log", "检查更新中…"));
-    autoUpdater.on("update-available", (info) => emit("task:log", `发现新版本 v${info.version}，开始下载（约 85MB）…`));
-    autoUpdater.on("update-not-available", (info) => emit("task:log", `已是最新版本（v${info.version}），无需更新。`));
+    autoUpdater.on("update-available", (info) => {
+      updateAvailable = info.version;
+      // 结构化推送：界面顶部的更新提示靠这个，不靠解析下面的日志文本
+      emit("update:available", { version: info.version, current: app.getVersion() });
+      emit("task:log", wantDownload
+        ? `发现新版本 v${info.version}，开始下载（约 85MB）…`
+        : `发现新版本 v${info.version}（当前 v${app.getVersion()}），点界面顶部的提示即可下载安装。`);
+    });
+    autoUpdater.on("update-not-available", (info) => {
+      updateAvailable = "";
+      emit("task:log", `已是最新版本（v${info.version}），无需更新。`);
+    });
     autoUpdater.on("download-progress", (p) => {
       if (p.percent - lastProgressLog >= 20 || p.percent >= 100) {
         lastProgressLog = p.percent;
@@ -729,6 +740,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     });
     autoUpdater.on("update-downloaded", (info) => {
       updateReady = true;
+      updateAvailable = "";
       // 主动推给界面。此前界面是靠匹配下面这行日志文本来启用「重启并安装新版」按钮的，
       // 改一个字按钮就永远不亮且不报错——状态必须走结构化事件，不能走日志文本。
       emit("update:ready", { version: info.version });
@@ -741,13 +753,26 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   } catch (e) {
     logger.log(`更新模块初始化失败（不影响其他功能）：${e.message}`);
   }
-  ipcMain.handle("update:check", async () => {
+
+  /**
+   * 检查更新。
+   * download=true 顺带下载（用户主动点「检查更新」）；
+   * download=false 只查不下载（启动静默检查用）。
+   *
+   * 必须按调用设置 autoDownload：它是全局开关，一直开着的话启动静默检查
+   * 会在用户毫不知情的情况下把 85MB 下下来。
+   */
+  async function checkForUpdates({ download }) {
     if (!app.isPackaged) throw new Error("开发模式不支持在线检查更新（仅打包版可用）。");
     const { autoUpdater } = require("electron-updater");
+    wantDownload = Boolean(download);
+    autoUpdater.autoDownload = wantDownload;
     lastProgressLog = 0;
     await autoUpdater.checkForUpdates();
     return { currentVersion: app.getVersion() };
-  });
+  }
+
+  ipcMain.handle("update:check", () => checkForUpdates({ download: true }));
   ipcMain.handle("update:install", () => {
     if (!updateReady) throw new Error("新版尚未下载完成，请先「检查更新」并等待下载完成。");
     const { autoUpdater } = require("electron-updater");
@@ -758,8 +783,16 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     version: app.getVersion(),
     supported: Boolean(app.isPackaged),
     ready: updateReady, // 新版是否已下载好（界面据此启用「重启并安装新版」）
+    available: updateAvailable, // 有新版但还没下载时的版本号（界面据此显示顶部提示）
     releasesUrl: RELEASES_URL,
   }));
+
+  // 启动静默检查：只查不下载，有新版就在界面顶部提示，由用户决定要不要下。
+  // 延后 20 秒是避开启动时的初始化与自检，别去抢带宽和主线程。
+  // 开发模式（app.isPackaged=false）会直接抛错被吞掉，不会发请求。
+  setTimeout(() => {
+    checkForUpdates({ download: false }).catch((e) => emit("task:log", `启动检查更新失败（不影响使用）：${e.message}`));
+  }, 20000).unref?.();
 
   // 数据目录
   ipcMain.handle("app:data-dir", () => dataDir);

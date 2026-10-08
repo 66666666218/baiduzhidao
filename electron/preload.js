@@ -61,7 +61,7 @@ const invokeChannels = new Set([
   "update:info",
 ]);
 
-const listenerChannels = new Set(["task:log", "task:progress", "task:item", "update:ready"]);
+const listenerChannels = new Set(["task:log", "task:progress", "task:item", "update:ready", "update:available"]);
 
 contextBridge.exposeInMainWorld("api", {
   invoke: (channel, payload) => {

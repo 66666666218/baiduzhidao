@@ -117,28 +117,36 @@
 
 | 通道 | 说明 | 请求 | 响应 |
 |------|------|------|------|
-| `update:info` | 当前版本与更新能力 | — | `{ version, supported, ready, releasesUrl }` |
-| `update:check` | 检查更新并自动下载（打包版才可用） | — | `{ currentVersion }` |
+| `update:info` | 当前版本与更新能力 | — | `{ version, supported, ready, available, releasesUrl }` |
+| `update:check` | 检查更新**并自动下载**（打包版才可用） | — | `{ currentVersion }` |
 | `update:install` | 重启并安装已下载的新版 | — | `{ ok: true }`；新版未下载完则抛错 |
-| **`update:ready`** | **推送通道**（主进程 → 渲染端）。新版本下载完成时发出 | — | `{ version }` |
+| `update:ready` | **推送通道**。新版本下载完成时发出 | — | `{ version }` |
+| `update:available` | **推送通道**。启动静默检查发现有新版时发出 | — | `{ version, current }` |
 
 **变更点（v2.2 · 2026-10-08）**
 
-- `update:info` 新增 `ready` 字段，取值来自主进程的 `updateReady`。
-  界面据此启用「重启并安装新版」按钮——**此前是匹配运行日志里的
-  `"下载完成。重启软件即自动安装"` 文本来判断的**，日志措辞一改按钮就永远不亮且不报错。
-- 新增推送通道 `update:ready`，下载完成时立即点亮按钮，不必等下一次查询。
+- `update:info` 新增 `ready` 与 `available`：
+  - `ready` 来自主进程 `updateReady`，界面据此启用「重启并安装新版」——
+    **此前是匹配运行日志里的 `"下载完成。重启软件即自动安装"` 文本来判断的**，
+    日志措辞一改按钮就永远不亮且不报错。
+  - `available` 是有新版但尚未下载时的版本号，界面据此显示顶部提示条。
+- 新增推送通道 `update:ready` / `update:available`。
+- **启动静默检查**：`registerIpc` 后 20 秒自动 `checkForUpdates({ download: false })`，
+  只查不下载，发现新版推 `update:available` → 界面顶部出现可点提示条。
+  注意 `autoDownload` 是全局开关，必须按调用设置——一直开着的话启动检查会在用户
+  毫不知情时吃掉约 85MB 流量。开发模式（`app.isPackaged=false`）直接抛错跳过，不发请求。
 - 推送通道清单在 `src/ipc-channels.js` 与 `preload.js` 各有一份（preload 在 sandbox 下
   拿不到本地模块），一致性由 `tests/unit/contract.test.js` 契约①-b 强制。
 
 **更新流程是两步**，不是一步：
 
 ```
-点「检查更新」→ 自动下载 → 「重启并安装新版」亮起 → 点它重启安装
-                          └─ 或直接退出软件，退出时自动装（autoInstallOnAppQuit）
+启动 20s 后静默检查（只查）→ 顶部提示条「发现新版本」→ 点它 = 检查并下载
+                                                    → 「重启并安装新版」亮起 → 重启安装
+                                              或直接退出软件，退出时自动装
 ```
 
-第二步保持人工是有意的：自动重启会打断正在跑的答题/上传任务。
+最后一步保持人工是有意的：自动重启会打断正在跑的答题/上传任务。
 
 ## 5. 设置通道
 

@@ -143,5 +143,21 @@ td.title-cell { max-width: 380px; overflow: hidden; text-overflow: ellipsis; whi
 
 .empty-hint { text-align: center; color: var(--muted); padding: 24px 0 !important; }
 
+/* 启动静默检查发现新版时的顶部提示：可点，点了就去下载安装 */
+.update-banner {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #f0c36d;
+  background: #fff8e1;
+  color: #8a5a00;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.update-banner:hover { background: #ffefc2; }
+
 .tutorial-steps { margin: 8px 0 0; padding-left: 20px; }
 .tutorial-steps li { margin-bottom: 8px; line-height: 1.65; }

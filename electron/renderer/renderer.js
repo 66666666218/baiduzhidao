@@ -127,13 +127,26 @@ $("exportBank").addEventListener("click", async () => {
 });
 
 // ---------- 软件更新（GitHub Releases） ----------
+let currentVersion = "";
+
+/** 顶部提示条：启动静默检查发现新版时出现，点了就走「检查并下载」 */
+function showUpdateBanner(version) {
+  const banner = $("updateBanner");
+  if (!banner || !version) return;
+  banner.textContent = `🔔 发现新版本 v${version}（当前 v${currentVersion}）——点这里下载安装`;
+  banner.hidden = false;
+}
+
 function applyUpdateInfo(info) {
+  currentVersion = info.version;
   $("updateInfo").textContent = `当前版本 v${info.version}`;
   $("checkUpdate").disabled = !info.supported;
   if (!info.supported) $("updateInfo").textContent += "（开发模式不支持在线更新）";
   // 只有主进程说"已下载好"才允许安装。状态走结构化字段，不匹配日志文本——
   // 此前是靠 includes("下载完成。重启软件即自动安装") 判断的，日志改一个字按钮就静默失效。
   $("installUpdate").disabled = !info.ready;
+  // 启动静默检查可能早于界面就绪，那条推送收不到——用查询结果兜底
+  if (info.available) showUpdateBanner(info.available);
 }
 
 (async () => {
@@ -146,6 +159,14 @@ function applyUpdateInfo(info) {
 rpc.on("update:ready", (info) => {
   $("installUpdate").disabled = false;
   $("updateInfo").textContent = `新版 v${(info && info.version) || ""} 已下载完成，点「重启并安装新版」即可`;
+});
+
+// 启动静默检查（只查不下载）发现新版时推过来
+rpc.on("update:available", (info) => showUpdateBanner(info && info.version));
+
+$("updateBanner").addEventListener("click", () => {
+  $("updateBanner").hidden = true; // 用户已看到，收起；失败信息在运行日志里
+  $("checkUpdate").click();
 });
 
 $("checkUpdate").addEventListener("click", async () => {

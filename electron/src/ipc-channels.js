@@ -79,6 +79,6 @@ const INVOKE_CHANNELS = [
 ];
 
 /** 主进程 → 渲染端的单向推送通道 */
-const LISTENER_CHANNELS = ["task:log", "task:progress", "task:item", "update:ready"];
+const LISTENER_CHANNELS = ["task:log", "task:progress", "task:item", "update:ready", "update:available"];
 
 module.exports = { INVOKE_CHANNELS, LISTENER_CHANNELS };
