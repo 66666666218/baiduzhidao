@@ -14,6 +14,7 @@
  */
 
 const { TaskStateMachine, STATES } = require("./statemachine");
+const { roundRobinAssign, capacityOf } = require("../domain/account-topic");
 
 class TaskManager {
   constructor({ eventBus } = {}) {
@@ -185,26 +186,16 @@ function randomDelayFactory(shouldStop) {
   };
 }
 
-/** 账号轮换分配：把 rows 按每账号限额切片（供提交任务复用，纯函数可测）。 */
+/**
+ * 账号轮换分配：把 rows 按每账号限额切片（纯函数可测）。
+ *
+ * 轮询实现已收敛到 domain/account-topic.js 的 roundRobinAssign——提交任务现在走
+ * buildAllocation（带题材路由），这里只保留无题材场景的薄适配，避免两份轮询逻辑各自演进。
+ */
 function allocateRowsToEnvs(rows, envLabels, { perEnvLimit, accountDailyLimit } = {}) {
-  const allocation = envLabels.map((label) => ({ envLabel: label, rows: [] }));
+  const allocation = (Array.isArray(envLabels) ? envLabels : []).map((label) => ({ envLabel: label, rows: [] }));
   if (!allocation.length) return allocation;
-  const limitOf = (index) => {
-    const limits = [perEnvLimit, accountDailyLimit].filter((value) => Number(value) > 0);
-    return limits.length ? Math.min(...limits) : Infinity;
-  };
-  let cursor = 0;
-  let roundMoved = true;
-  while (cursor < rows.length && roundMoved) {
-    roundMoved = false;
-    for (const slot of allocation) {
-      if (cursor >= rows.length) break;
-      if (slot.rows.length >= limitOf(0)) continue;
-      slot.rows.push(rows[cursor]);
-      cursor += 1;
-      roundMoved = true;
-    }
-  }
+  roundRobinAssign(Array.isArray(rows) ? rows : [], allocation, capacityOf({ perEnvLimit, accountDailyLimit }));
   return allocation;
 }
 

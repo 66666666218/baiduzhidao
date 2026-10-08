@@ -57,6 +57,11 @@
             <label>比特环境名称（每行一个账号）</label>
             <textarea id="bitEnvs" rows="4" placeholder="账号1&#10;账号2"></textarea>
           </div>
+          <div class="field-row">
+            <label>账号题材绑定（每行一个「账号=题材」，题材可选 情感/教育/综合/人物）</label>
+            <textarea id="accountTopics" rows="3" placeholder="账号1=情感类&#10;账号2=教育类"></textarea>
+            <p class="hint">带链接的答案按此表严格一对一投递；没绑定的账号不会收到链接答案。纯文本答案不受此表限制。</p>
+          </div>
           <div class="field-grid">
             <div class="field"><label>分类</label>
               <select id="category">
@@ -243,6 +248,12 @@
           <div class="field-grid">
             <div class="field"><label>提交数量上限（0=全部）</label><input type="number" id="submitLimit" min="0" /></div>
             <div class="field"><label>每账号每日限额</label><input type="number" id="accountDailyLimit" min="0" /></div>
+            <div class="field"><label>带链接答案路由</label>
+              <select id="linkRouting">
+                <option value="strict">严格：账号↔题材一对一</option>
+                <option value="off">关闭：按普通轮询（排查用）</option>
+              </select>
+            </div>
           </div>
           <div class="field"><label>来源表格（含 回答内容 + 题目地址；留空则自动使用最近一次抽题表格）</label>
             <div class="pair">

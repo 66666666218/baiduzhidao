@@ -2,9 +2,12 @@
 
 const fs = require("fs");
 const path = require("path");
+const { normalizeAccountTopics } = require("./domain/account-topic");
 
 const CATEGORIES = ["情感类", "教育类", "综合类", "人物类"];
 const ALL_CATEGORY = "三类一起";
+/** 带链接答案的提交路由：strict=账号↔题材严格一对一；off=退回纯轮询（排查用） */
+const LINK_ROUTING_MODES = ["strict", "off"];
 
 const DEFAULTS = {
   apiUrl: "http://127.0.0.1:54345",
@@ -38,6 +41,9 @@ const DEFAULTS = {
   submitLimit: 0,
   accountDailyLimit: 10,
   dailyAnswerLimit: 0,
+  // 账号 ↔ 题材绑定：{ "环境A": "情感类" }，带链接的答案据此严格一对一投递
+  accountTopics: {},
+  linkRouting: "strict",
 };
 
 const SYSTEM_PROMPT = `请生成百度知道优质回答，只输出自然连贯的回答正文。
@@ -61,6 +67,21 @@ function normalizeCategories(value) {
 function normalizeCategory(value) {
   const text = String(value || "").trim();
   return CATEGORIES.find((category) => text.includes(category)) || "";
+}
+
+/**
+ * 账号题材绑定：先做通用归一化，再把题材收敛到 CATEGORIES 的规范写法。
+ * 收敛不了（用户填了不存在的题材）就丢弃该条，避免出现永远匹配不上账号的"幽灵题材"。
+ */
+function normalizeAccountTopicsSetting(value) {
+  const raw = normalizeAccountTopics(value);
+  const result = {};
+  for (const [account, topic] of Object.entries(raw)) {
+    // 用户通常会写「情感」而不是「情感类」，补一次后缀再匹配
+    const canonical = normalizeCategory(topic) || normalizeCategory(`${topic}类`);
+    if (canonical) result[account] = canonical;
+  }
+  return result;
 }
 
 function normalizeBitEnvs(value) {
@@ -103,6 +124,8 @@ function normalizeSettings(payload) {
   next.pageDelayMs = clampInt(next.pageDelayMs, 0, 60000, DEFAULTS.pageDelayMs);
   next.autoSubmit = Boolean(next.autoSubmit);
   next.closeAfter = Boolean(next.closeAfter);
+  next.accountTopics = normalizeAccountTopicsSetting(next.accountTopics);
+  next.linkRouting = LINK_ROUTING_MODES.includes(next.linkRouting) ? next.linkRouting : DEFAULTS.linkRouting;
   if (!String(next.systemPrompt || "").trim()) next.systemPrompt = SYSTEM_PROMPT;
   // 活动页地址：允许覆盖但必须是合法 http(s) URL，否则回退默认（防止用户填错导致任务必败）
   const activityUrl = String(next.activityUrl || "").trim();
@@ -209,8 +232,10 @@ module.exports = {
   SYSTEM_PROMPT,
   CATEGORIES,
   ALL_CATEGORY,
+  LINK_ROUTING_MODES,
   normalizeCategories,
   normalizeCategory,
+  normalizeAccountTopicsSetting,
   normalizeBitEnvs,
   normalizeSettings,
   writeAtomic,

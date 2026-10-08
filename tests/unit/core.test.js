@@ -480,6 +480,23 @@ test("excel：导出表格保留题库分类且可回读", () => {
   assert.equal(back.category, "情感类", "导出→导入往返分类不丢");
 });
 
+test("excel：一/二级分类往返不丢（此前表头有列但读写都没接）", () => {
+  const row = excel.answerToRow({ category: "情感类", primaryCategory: "情感", secondaryCategory: "婚姻", title: "T", answer: "A" });
+  assert.equal(row["一级分类"], "情感");
+  assert.equal(row["二级分类"], "婚姻");
+  const back = excel.importRowToAnswer(row);
+  assert.equal(back.primaryCategory, "情感");
+  assert.equal(back.secondaryCategory, "婚姻");
+});
+
+test("store：normalizeQuestion 保留一/二级分类", () => {
+  const store = new Store(tempDir());
+  store.addBankQuestion({ title: "T", questionUrl: "https://x/9", category: "情感类", primaryCategory: "情感", secondaryCategory: "婚姻" });
+  const saved = store.loadBank().find((item) => item.questionUrl === "https://x/9");
+  assert.equal(saved.primaryCategory, "情感");
+  assert.equal(saved.secondaryCategory, "婚姻");
+});
+
 test("Logger：日志账号自动打码（开关生效）", () => {
   const { Logger } = require("../../electron/src/log");
   const logger = new Logger("");

@@ -100,6 +100,8 @@ function normalizeQuestion(item) {
   const source = item || {};
   return {
     category: String(source.category || source["题库分类"] || "").trim(),
+    primaryCategory: String(source.primaryCategory || source["一级分类"] || "").trim(),
+    secondaryCategory: String(source.secondaryCategory || source["二级分类"] || "").trim(),
     title: String(source.title || source["标题"] || "").replace(/\r\n/g, "\n").trim(),
     questionContent: String(source.questionContent || source["问题内容"] || "").replace(/\r\n/g, "\n").trim(),
     answer: String(source.answer || "").replace(/\r\n/g, "\n"),

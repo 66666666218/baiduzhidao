@@ -254,6 +254,8 @@ $("startSubmit").addEventListener("click", async () => {
       dailyAnswerLimit: Number(settings.dailyAnswerLimit) || 0,   // 本次总回答上限（设置项，0=不限）
       forceResubmit: $("forceResubmit").checked,
       checkCompletedEnvs: $("checkCompletedEnvs").checked,
+      accountTopics: settings.accountTopics,   // 带链接答案的账号↔题材严格路由依据
+      linkRouting: settings.linkRouting,
       maxQuestionsPerEnv: settings.maxQuestionsPerEnv,
     });
     appendLog(`提交结束：成功 ${result.count} 条，失败 ${result.failed} 条。`);
@@ -435,6 +437,8 @@ async function saveSettingsQuiet() {
   patch.apiUrl = $("apiUrl").value;
   patch.activityUrl = $("activityUrl").value.trim();
   patch.bitEnvs = $("bitEnvs").value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  patch.accountTopics = $("accountTopics").value; // 文本形式「账号=题材」，由后端归一化
+  patch.linkRouting = $("linkRouting").value;
   patch.category = $("category").value;
   patch.timeoutMs = Number($("timeoutMs").value) || undefined;
   patch.verifyWaitSeconds = Number($("verifyWaitSeconds").value) || 0;
@@ -465,6 +469,8 @@ async function loadSettings() {
   $("apiUrl").value = settings.apiUrl || "";
   $("activityUrl").value = settings.activityUrl || "";
   $("bitEnvs").value = (settings.bitEnvs || []).map((env) => env.label || env).join("\n");
+  $("accountTopics").value = Object.entries(settings.accountTopics || {}).map(([account, topic]) => `${account}=${topic}`).join("\n");
+  $("linkRouting").value = settings.linkRouting || "strict";
   $("category").value = settings.category || "情感类";
   $("timeoutMs").value = settings.timeoutMs;
   $("verifyWaitSeconds").value = settings.verifyWaitSeconds;

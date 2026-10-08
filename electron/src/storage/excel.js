@@ -42,6 +42,9 @@ function importRowToQuestion(row, sourceCategory = "") {
   const category = pickCell(row, ["题库分类", "分类", "category"]);
   return {
     category: String(category || sourceCategory || "").trim(),
+    // 一/二级分类：表头里一直有，但此前既没读也没写，表格带这两列过一遍应用就会丢
+    primaryCategory: String(pickCell(row, ["一级分类"]) || "").trim(),
+    secondaryCategory: String(pickCell(row, ["二级分类"]) || "").trim(),
     title: String(pickCell(row, ["标题", "题目", "问题", "title"]) || "").trim(),
     questionContent: String(pickCell(row, ["问题内容", "题目内容", "正文", "content"]) || "").replace(/\r\n/g, "\n").trim(),
     answer: "",
@@ -65,6 +68,8 @@ function importRowToAnswer(row) {
 function answerToRow(item) {
   return {
     题库分类: item.category || "",
+    一级分类: item.primaryCategory || "",
+    二级分类: item.secondaryCategory || "",
     标题: item.title || "",
     问题内容: item.questionContent || "",
     回答内容: item.answer || "",
@@ -80,6 +85,8 @@ function answerToRow(item) {
 function bankToRow(item) {
   return {
     题库分类: item.category || "",
+    一级分类: item.primaryCategory || "",
+    二级分类: item.secondaryCategory || "",
     标题: item.title || "",
     问题内容: item.questionContent || "",
     题目地址: item.questionUrl || "",

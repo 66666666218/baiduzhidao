@@ -4,7 +4,7 @@ const { chromium } = require("playwright-core");
 const zhidao = require("../pages/zhidao");
 const { nowText } = require("../config");
 const { getWorkPage } = require("./crawl");
-const { allocateRowsToEnvs } = require("./manager");
+const { buildAllocation } = require("../domain/account-topic");
 const { describeError } = require("../errors");
 const excel = require("../storage/excel");
 
@@ -107,14 +107,30 @@ async function runSubmitTask(ctx, deps) {
     return { stopped: false, count: 0, failed: 0, total: 0, results: [] };
   }
 
-  const allocation = allocateRowsToEnvs(rows, usableEnvs, { perEnvLimit: perEnvLimitRaw, accountDailyLimit });
-  const totalPlanned = allocation.reduce((sum, slot) => sum + slot.rows.length, 0);
+  // 题材路由：带链接的答案严格一对一（账号只吃自己绑定的题材），纯文本答案宽松轮询。
+  const topicMap = ctx.payload.accountTopics || {};
+  const strictLinkRouting = String(ctx.payload.linkRouting || "strict") !== "off";
+  const { slots: allocation, stats } = buildAllocation(rows, usableEnvs, topicMap, {
+    perEnvLimit: perEnvLimitRaw,
+    accountDailyLimit,
+    strictLinkRouting,
+  });
+  const totalPlanned = stats.planned;
 
-  log(`准备自动提交 ${totalPlanned}/${allRows.length} 条答案。`);
-  // 容量不足时显式告警，绝不静默丢弃
-  if (totalPlanned < rows.length) {
-    const dropped = rows.length - totalPlanned;
-    log(`⚠️ 本轮账号容量（${usableEnvs.length} 个账号 × 每账号上限）只放行 ${totalPlanned} 条，剩余 ${dropped} 条本轮不提交。请提高「每账号单轮条数/每账号每日限额」或增加账号后再跑一次。`);
+  log(`准备自动提交 ${totalPlanned}/${allRows.length} 条答案（带链接 ${stats.link} 条 / 纯文本 ${stats.plain} 条）。`);
+  if (stats.link > 0) {
+    log(strictLinkRouting
+      ? `带链接答案走严格路由：账号 ↔ 题材一对一，未绑定题材的账号不会收到链接答案。`
+      : `⚠️ 带链接答案路由已关闭（linkRouting=off），链接答案将按普通轮询分发。`);
+  }
+  // 两类未分配根因分开提示：题材没账号要去设置页，容量不够要去调额度，混在一起会把人引错方向
+  if (stats.capacityDropped > 0) {
+    log(`⚠️ 本轮账号容量（${usableEnvs.length} 个账号 × 每账号上限）只放行 ${totalPlanned} 条，剩余 ${stats.capacityDropped} 条本轮不提交。请提高「每账号每日限额」或增加账号后再跑一次。`);
+  }
+  const orphanEntries = Object.entries(stats.orphanByTopic);
+  if (orphanEntries.length) {
+    const detail = orphanEntries.map(([topic, count]) => `${topic} ${count} 条`).join("、");
+    log(`⚠️ 有 ${orphanEntries.reduce((sum, [, count]) => sum + count, 0)} 条带链接答案找不到对应账号（${detail}）。请到「比特环境」页配置「账号题材绑定」，把每个账号绑定到一个题材。`);
   }
   log(`提交逻辑：每账号提交 ${accountDailyLimit > 0 ? accountDailyLimit : "不限"} 条后轮换；打开题目链接、填入回答、点击提交。`);
 
