@@ -92,6 +92,8 @@ $("startCrawl").addEventListener("click", async () => {
       crawlOutputDir: $("crawlOutputDir").value,
       pageDelayMs: Number($("pageDelayMs").value),
       resume: $("resumeCrawl").checked,
+      // 「任务总量上限」：以前既没从这里传、crawl.js 也没读，两头都断，这个设置一直是死的
+      maxQuestions: Number(settings.maxQuestions) || 0,
     });
     appendLog(`爬取结束：新增 ${result.count} 条。`);
     refreshBankStats();

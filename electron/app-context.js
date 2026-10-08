@@ -530,7 +530,15 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
             if (autoPipelineAborted || failure) break;
             const result = await startTask(
               "crawl",
-              { bitEnvs, category, crawlStartPage: settings.crawlStartPage, maxQuestions: settings.maxQuestions },
+              {
+                bitEnvs,
+                category,
+                crawlStartPage: settings.crawlStartPage,
+                maxQuestions: settings.maxQuestions,
+                // 续爬：暂停/停止后重跑时从上次那页接着走，而不是从头再扫一遍。
+                // 已入库的题本来就会自动跳过，所以从头扫不会重复入库、但会白白多花几十分钟。
+                resume: true,
+              },
               (ctx) => runCrawlTask(ctx, deps())
             );
             added += Number(result && result.count) || 0;

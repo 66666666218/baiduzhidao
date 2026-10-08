@@ -25,9 +25,14 @@ async function runCrawlTask(ctx, deps) {
 
   const category = payload.category || SEL.category.labels[0];
   const startPage = Math.max(1, Number(payload.crawlStartPage) || 1);
+  // 「任务总量上限」：本次最多新增多少道题。0 = 不限。
+  // 注意口径是**每个分类各算一次**——一键全自动会逐分类各跑一次爬题，
+  // 所以四个分类都跑时，总上限 = 4 × 这个值。
+  const maxQuestions = Math.max(0, Number(payload.maxQuestions) || 0);
   const seenKeys = new Set();
   let doneCount = 0;
   let duplicateSkipped = 0;
+  if (maxQuestions > 0) log(`本次最多新增 ${maxQuestions} 道题（「任务总量上限」）。`);
 
   // 预载题库去重：同分类已入库的题不再重复打开
   const bank = store.loadBank();
@@ -85,6 +90,10 @@ async function runCrawlTask(ctx, deps) {
 
         let newCount = 0;
         while (!ctx.shouldStop()) {
+          // 总量上限：按「本次新增题数」计（doneCount 只在新题入库时 +1）。
+          // 以前这个设置在界面上有、代码里从没读过，于是爬题会一路爬到活动页最后一页
+          // （实测 3760 页 ≈ 47 小时），用户设的「任务总量上限」形同虚设。
+          if (maxQuestions > 0 && doneCount >= maxQuestions) break;
           await ctx.pausePoint?.("爬题·题间检查点");
           // 自愈：同页跳转返回后 SPA 状态可能丢失（答题区折叠/分类重置）
           // 优先轻量恢复（点击答题区标签），失败再整页重载
@@ -192,6 +201,10 @@ async function runCrawlTask(ctx, deps) {
         ctx.report({ done: doneCount, total: totalPages ? Math.max(doneCount, (totalPages - startPage + 1) * 6) : 0, status: "running" });
         log(`第 ${currentPage} 页新增 ${newCount} 条，本次累计 ${doneCount} 条。`);
         // 页码没切过去是最强的"到底了"信号，一次就抵五页空转
+        if (maxQuestions > 0 && doneCount >= maxQuestions) {
+          log(`已达「任务总量上限」${maxQuestions} 道题，停止爬取。`);
+          break;
+        }
         emptyStreak = newCount ? 0 : emptyStreak + (onRightPage ? 1 : 5);
         if (emptyStreak >= EMPTY_PAGE_LIMIT) {
           log(`连续 ${emptyStreak} 页没有新增题目，判定列表已到底或不再变化，停止翻页。`);

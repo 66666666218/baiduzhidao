@@ -219,6 +219,45 @@ test("E2E：分类参数化（教育类爬取）", { timeout: 120000, retry: 1 }
   assert.ok(bank.every((item) => item.category === "教育类"), "入库分类应为教育类");
 });
 
+// 「任务总量上限」曾经是死参数：界面有这个设置、app-context 也把它传进了 payload，
+// 但 crawl.js 从头到尾没读过它 —— 于是爬题会一路爬到活动页最后一页（实测 3760 页 ≈ 47 小时）。
+// 下面两条把它钉住，防止再退化。
+test("E2E：任务总量上限生效（爬到 N 条就停）", { timeout: 120000, retry: 1 }, async (t) => {
+  const rig = await createTestRig();
+  t.after(async () => { await rig.cleanup(); });
+  const noopCtx = {
+    payload: null,
+    shouldStop: () => false,
+    livePayload() { return this.payload || {}; },
+    updateLiveSettings: () => {},
+    delay: async () => {},
+    report: () => {},
+    emitItem: () => {},
+  };
+  // 模拟站「教育类」共 2 页 × 3 题 = 6 条；上限设 2 应只入库 2 条
+  const ctx = { ...noopCtx, payload: { bitEnvs: [{ label: "账号1" }], category: "教育类", crawlStartPage: 1, maxQuestions: 2 } };
+  const result = await runCrawlTask(ctx, rig.deps);
+  assert.equal(result.count, 2, `上限 2 应只入库 2 条，实际 ${result.count}；日志：\n${rig.logs.join("\n")}`);
+  assert.equal(rig.deps.store.bankSize(), 2, "题库里也应该只有 2 条");
+});
+
+test("E2E：任务总量上限=0 表示不限", { timeout: 120000, retry: 1 }, async (t) => {
+  const rig = await createTestRig();
+  t.after(async () => { await rig.cleanup(); });
+  const noopCtx = {
+    payload: null,
+    shouldStop: () => false,
+    livePayload() { return this.payload || {}; },
+    updateLiveSettings: () => {},
+    delay: async () => {},
+    report: () => {},
+    emitItem: () => {},
+  };
+  const ctx = { ...noopCtx, payload: { bitEnvs: [{ label: "账号1" }], category: "教育类", crawlStartPage: 1, maxQuestions: 0 } };
+  const result = await runCrawlTask(ctx, rig.deps);
+  assert.equal(result.count, 6, `上限 0 应爬完全部 6 条，实际 ${result.count}`);
+});
+
 test("E2E：通过数任务（账号轮换 + 状态分类）", { timeout: 120000, retry: 1 }, async (t) => {
   const rig = await createTestRig();
   t.after(async () => { await rig.cleanup(); });
