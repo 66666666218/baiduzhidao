@@ -176,21 +176,6 @@ function buildAllocation(rows, envLabels, topicMap, options = {}) {
 }
 
 /**
- * 把题材写回表格行（"自动整理表格"里的分类落表）。
- * 未命中规则的行走 unclassified，列值留空——与规则口径一致（"都未命中则备注留空"）。
- * 返回写入的字段名；列名可配。
- */
-function stampTopicColumn(rows, classify, columnName = "一级分类") {
-  const column = String(columnName || "").trim() || "一级分类";
-  const classifyFn = typeof classify === "function" ? classify : () => "";
-  for (const row of Array.isArray(rows) ? rows : []) {
-    if (!row || typeof row !== "object") continue;
-    row[column] = String(classifyFn(row) || "").trim();
-  }
-  return column;
-}
-
-/**
  * 上传侧题材分配：按分类规则给每行派生题材，把同题材的行分给绑定了该题材的账号。
  *
  * classify 由调用方注入（domain/topic-rules.js 的 classifyByRules），
@@ -256,5 +241,4 @@ module.exports = {
   groupRowsByTopic,
   buildAllocation,
   buildTopicAllocation,
-  stampTopicColumn,
 };

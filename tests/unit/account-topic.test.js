@@ -171,7 +171,7 @@ test("buildAllocation：没有账号时不静默丢数据，全部计入 unroute
 
 // ---------- 上传侧题材分配 ----------
 
-const { buildTopicAllocation, stampTopicColumn } = require("../../electron/src/domain/account-topic");
+const { buildTopicAllocation } = require("../../electron/src/domain/account-topic");
 const { parseTopicRules, classifyByRules, DEFAULT_TOPIC_RULES } = require("../../electron/src/domain/topic-rules");
 
 const uploadRules = parseTopicRules(DEFAULT_TOPIC_RULES);
@@ -225,17 +225,4 @@ test("buildTopicAllocation：没有分类器时全部归入未分类，不会静
   const res = buildTopicAllocation(rows, ["环境A"], { 环境A: "游戏" });
   assert.equal(res.unclassified.length, 1);
   assert.equal(res.stats.planned, 0);
-});
-
-test("stampTopicColumn：把题材写回表格列，未命中的留空", () => {
-  const rows = [upRow("某电影资源"), upRow("无法归类")];
-  const column = stampTopicColumn(rows, byTitle, "一级分类");
-  assert.equal(column, "一级分类");
-  assert.deepEqual(rows.map((r) => r.一级分类), ["影视", ""]);
-});
-
-test("stampTopicColumn：列名留空时回退默认列，不写空键", () => {
-  const rows = [upRow("某电影资源")];
-  assert.equal(stampTopicColumn(rows, byTitle, "  "), "一级分类");
-  assert.equal(rows[0]["一级分类"], "影视");
 });

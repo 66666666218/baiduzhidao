@@ -391,6 +391,10 @@ $("startTopicUpload").addEventListener("click", async () => {
     for (const account of result.accounts || []) {
       appendLog(`　${account.envLabel}（${account.topic || "未绑定"}）：${account.error ? `失败 ${account.error}` : `上传 ${account.uploaded} 行`}`);
     }
+    if ((result.topicTables || []).length) {
+      appendLog(`题材分表已保存到：${result.splitDir}`);
+      for (const table of result.topicTables) appendLog(`　${table.topic} → ${table.file}`);
+    }
   } catch (error) {
     appendLog(`按题材上传失败：${error.message}`);
   }
@@ -401,6 +405,11 @@ $("startTopicUpload").addEventListener("click", async () => {
 $("pickAutoUploadTable").addEventListener("click", async () => {
   const result = await call("选择上传专用表", "path:pick-open-table", { title: "选择上传专用表" });
   if (result && !result.canceled) $("autoUploadTable").value = result.filePath;
+});
+
+$("pickAutoTransferTable").addEventListener("click", async () => {
+  const result = await call("选择网盘资源表", "path:pick-open-table", { title: "选择网盘资源表" });
+  if (result && !result.canceled) $("autoTransferTable").value = result.filePath;
 });
 
 /** 阶段结果用 textContent 拼，不走 innerHTML：错误信息里可能带用户数据（路径、题目标题） */
@@ -424,18 +433,23 @@ $("startAutoPipeline").addEventListener("click", async () => {
   if ($("autoStagePick").checked) stages.push("pick");
   if ($("autoStageGenerate").checked) stages.push("generate");
   if ($("autoStageSubmit").checked) stages.push("submit");
+  if ($("autoStageTransfer").checked) stages.push("transfer");
   if ($("autoStageUpload").checked) stages.push("upload");
   if (!stages.length) { appendLog("请至少勾选一个阶段。"); return; }
   if (!await saveSettingsQuiet()) return;
 
   const settings = await rpc.invoke("settings:get");
   if (!(settings.bitEnvs || []).length) { appendLog("请先在设置页填写比特环境账号。"); return; }
-  if ($("autoStageSubmit").checked && !settings.aiApiKey) {
+  if ($("autoStageGenerate").checked && !settings.aiApiKey) {
     appendLog("「生成答案」需要 AI Key，请先在「生成答案」页填写。");
     return;
   }
-  const destructive = $("autoStageSubmit").checked || $("autoStageUpload").checked;
-  if (destructive && !confirm("本次会真实提交答案/上传资源到平台，且全程无人值守。确认继续？")) return;
+  if ($("autoStageTransfer").checked && !$("autoTransferTable").value) {
+    appendLog("勾了「网盘转存」但没有选网盘资源表。");
+    return;
+  }
+  const destructive = $("autoStageSubmit").checked || $("autoStageTransfer").checked || $("autoStageUpload").checked;
+  if (destructive && !confirm("本次会真实提交答案/转存网盘/上传资源到平台，且全程无人值守。确认继续？")) return;
 
   $("autoReport").innerHTML = "";
   try {
@@ -444,6 +458,8 @@ $("startAutoPipeline").addEventListener("click", async () => {
       pickCount: Number($("autoPickCount").value) || 20,
       batchRows: Number($("autoBatchRows").value) || 500,
       uploadTablePath: $("autoUploadTable").value,
+      transferTablePath: $("autoTransferTable").value,
+      transferDestDir: $("autoTransferDest").value,
     });
     renderAutoReport(result);
     appendLog(`一键全自动结束：${result.ok ? "全部阶段成功" : result.stopped ? "已手动停止" : "有阶段失败（详见上方结果与运行日志）"}。`);

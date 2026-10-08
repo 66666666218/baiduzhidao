@@ -399,13 +399,15 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   ipcMain.handle("task:auto-pipeline", async (_event, payload) => {
     const p = payload && typeof payload === "object" ? payload : {};
     const enabled = new Set(
-      Array.isArray(p.stages) && p.stages.length ? p.stages : ["crawl", "pick", "generate", "submit", "upload"]
+      Array.isArray(p.stages) && p.stages.length ? p.stages : ["crawl", "pick", "generate", "submit", "transfer", "upload"]
     );
     const settings = config.load();
     const bitEnvs = (settings.bitEnvs || []).map((env) => env.label || env).filter(Boolean);
     const report = [];
     let failure = null;
     let pickFile = "";
+    // 上传专用表：优先用转存阶段的产出，其次用调用方指定的现成表
+    let uploadTable = String(p.uploadTablePath || "").trim();
     const stamp = () => new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
 
     autoPipelineAborted = false;
@@ -502,11 +504,39 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
         });
       }
 
-      // 5) 按题材分账号上传（用已有的上传专用表；没配路径就跳过并说明）
+      // 5) 网盘转存：脚本套模板生成问答行（qa-template-lib），产出即上传专用表
+      if (enabled.has("transfer") && !failure) {
+        const transferTable = String(p.transferTablePath || "").trim();
+        if (!transferTable || !fs.existsSync(transferTable)) {
+          emit("task:log", "跳过「网盘转存」：没有可用的资源表（请指定资源表路径，或取消勾选该阶段）。");
+          report.push({ stage: "transfer", label: "网盘转存", ok: false, skipped: true, error: "未指定资源表" });
+        } else {
+          await runStage("transfer", "网盘转存（套模板生成问答）", async () => {
+            const result = await startTask("batch-transfer", {
+              filePath: transferTable,
+              bitEnvs,
+              destDir: String(p.transferDestDir || "").trim() || "/来自资源批量转存",
+              outName: String(p.transferOutName || "").trim(),
+              perEnv: Number(p.transferPerEnv) || 50,
+              cc: Number(p.transferCc) || 4,
+              delayMin: Number(p.transferDelayMin) || 1,
+              delayMax: Number(p.transferDelayMax) || 2,
+              makeShare: true,
+            }, (ctx) => runBatchTransferTask(ctx, deps()));
+            // 转存产出的上传专用表直接喂给下一阶段，不用人工再选一次文件
+            if (result && result.outputPath) {
+              uploadTable = result.outputPath;
+              emit("task:log", `转存产出上传专用表：${uploadTable}（${result.count} 条）`);
+            }
+            return result;
+          });
+        }
+      }
+
+      // 6) 按题材分账号上传（用转存产出，或调用方指定的现成表）
       if (enabled.has("upload") && !failure) {
-        const uploadTable = String(p.uploadTablePath || "").trim();
         if (!uploadTable || !fs.existsSync(uploadTable)) {
-          emit("task:log", "跳过「按题材上传」：没有可用的上传专用表（请先在「批量上传」视图选择，或在本页指定路径）。");
+          emit("task:log", "跳过「按题材上传」：没有可用的上传专用表（请先跑转存，或指定一张现成的表）。");
           report.push({ stage: "upload", label: "按题材上传", ok: false, skipped: true, error: "未指定上传专用表" });
         } else {
           await runStage("upload", "按题材上传", () =>

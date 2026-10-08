@@ -13,19 +13,12 @@ const path = require("path");
 const fs = require("fs");
 const { chromium } = require("playwright-core");
 const { parseTopicRules, classifyByRules, DEFAULT_TOPIC_RULES } = require("../domain/topic-rules");
-const { buildTopicAllocation, stampTopicColumn } = require("../domain/account-topic");
+const { buildTopicAllocation, topicKey } = require("../domain/account-topic");
+const excel = require("../storage/excel");
 
 /** 从表头里找「问题标题」类列（不同上游产出的列名不完全一致） */
 function pickTitleKey(keys) {
   return keys.find((k) => /问题标题|资源名|标题/.test(String(k))) || keys[0] || "";
-}
-
-/**
- * 找可写回题材的列：只认**已存在**的「一级分类 / 备注」列。
- * 不新增列——上传模板是平台约定的，凭空多一列可能整批被拒收。
- */
-function pickTopicColumn(keys) {
-  return keys.find((k) => /^(一级分类|备注)$/.test(String(k).trim())) || "";
 }
 
 /** 账号名可能含路径非法字符，做文件名前先净化 */
@@ -39,6 +32,20 @@ function writePartFile(partFile, rows, keys, sheetName) {
   const wbPart = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wbPart, ws, sheetName);
   XLSX.writeFile(wbPart, partFile);
+}
+
+/**
+ * 把分配结果按题材合并回桶，用于落盘「一个题材一张表」。
+ * 同一题材被多个账号分摊时会把它们的行重新合并——分表是按**题材**切的，不是按账号。
+ */
+function collectTopicRows(slots) {
+  const byTopic = new Map();
+  for (const slot of Array.isArray(slots) ? slots : []) {
+    if (!slot || !slot.topic || !slot.rows.length) continue;
+    if (!byTopic.has(slot.topic)) byTopic.set(slot.topic, []);
+    byTopic.get(slot.topic).push(...slot.rows);
+  }
+  return byTopic;
 }
 
 async function runBatchUploadTask(ctx, deps) {
@@ -250,10 +257,20 @@ async function runTopicUploadTask(ctx, deps) {
     return { uploaded: 0, batches: 0, accounts: [] };
   }
 
-  // 题材写回：只写已存在的分类列，不新增列（模板是平台约定的，多一列可能被拒收）
-  const topicColumn = pickTopicColumn(keys);
-  if (topicColumn) stampTopicColumn(rows, classify, topicColumn);
-  else log("表格里没有「一级分类」/「备注」列，题材不写回（不新增列，避免模板不符被平台拒收）。");
+  // 分类产出 = 拆成多张表（一个题材一张），**不往表里加列**。
+  // 上传模板是平台约定的，多一列风险是整批被拒收；分表则完全不动模板结构，
+  // 而且分出来的表就是"哪个表是哪个题材"的凭据，可以人工过目再传。
+  const splitDir = path.join(path.dirname(sourcePath), "分表");
+  fs.mkdirSync(splitDir, { recursive: true });
+  const baseName = path.basename(sourcePath, path.extname(sourcePath));
+  const rowsByTopic = collectTopicRows(slots);
+  const topicFileOf = new Map();
+  for (const [topic, items] of rowsByTopic) {
+    const file = excel.uniqueFilePath(path.join(splitDir, `${baseName}_${topic}.xlsx`));
+    writePartFile(file, items, keys, sheetName);
+    topicFileOf.set(topic, file);
+    log(`已拆出题材分表：${topic} → ${file}（${items.length} 行）`);
+  }
 
   const tmpDir = path.join(baseDataDir, "上传分片");
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -266,27 +283,41 @@ async function runTopicUploadTask(ctx, deps) {
       break;
     }
     if (!slot.rows.length) continue;
-    const partFile = path.join(tmpDir, `topic-${Date.now()}-${safeFileToken(slot.envLabel)}.xlsx`);
+    // 一个题材只对应一个账号时，直接把题材分表传上去；同题材多账号才再切一次
+    const topicFile = topicFileOf.get(slot.topic);
+    const sameTopicAccounts = slots.filter((s) => s.rows.length && topicKey(s.topic) === topicKey(slot.topic));
+    const isTemp = !(topicFile && sameTopicAccounts.length === 1);
+    const partFile = isTemp
+      ? path.join(tmpDir, `topic-${Date.now()}-${safeFileToken(slot.envLabel)}.xlsx`)
+      : topicFile;
     try {
-      writePartFile(partFile, slot.rows, keys, sheetName);
-      log(`--- 账号 ${slot.envLabel}（题材「${slot.topic}」）开始上传 ${slot.rows.length} 行 ---`);
+      if (isTemp) writePartFile(partFile, slot.rows, keys, sheetName);
+      log(`--- 账号 ${slot.envLabel}（题材「${slot.topic}」${slot.rows.length} 行）开始上传：${partFile} ---`);
       // 子上下文只覆写 livePayload：runBatchUploadTask 从 livePayload() 取 filePath / bitEnv
       const subCtx = { ...ctx, livePayload: () => ({ ...payload, filePath: partFile, bitEnv: slot.envLabel }) };
       const result = await runBatchUploadTask(subCtx, deps);
       uploaded += Number(result.uploaded) || 0;
-      results.push({ envLabel: slot.envLabel, topic: slot.topic, planned: slot.rows.length, ...result });
+      results.push({ envLabel: slot.envLabel, topic: slot.topic, planned: slot.rows.length, table: partFile, ...result });
     } catch (error) {
       // 单账号失败（未登录 / 无批量发布权益 / 额度为 0）不该拖垮其他账号
       log(`账号 ${slot.envLabel} 上传失败，跳过继续下一个：${error.message}`);
       results.push({ envLabel: slot.envLabel, topic: slot.topic, planned: slot.rows.length, uploaded: 0, error: error.message });
     } finally {
-      fs.rmSync(partFile, { force: true });
+      // 题材分表是产物要留着；只有临时切片才清
+      if (isTemp) fs.rmSync(partFile, { force: true });
     }
   }
 
   ctx.report({ done: 1, total: 1, status: ctx.shouldStop() ? "stopped" : "done" });
   log(`=== 题材路由上传完成：共 ${uploaded} 行，涉及 ${results.length} 个账号 ===`);
-  return { uploaded, batches: 0, accounts: results };
+  if (topicFileOf.size) log(`题材分表已留存（可人工过目后再传）：${splitDir}`);
+  return {
+    uploaded,
+    batches: 0,
+    accounts: results,
+    splitDir,
+    topicTables: Array.from(topicFileOf.entries()).map(([topic, file]) => ({ topic, file })),
+  };
 }
 
-module.exports = { runBatchUploadTask, runTopicUploadTask, pickTitleKey, pickTopicColumn, safeFileToken };
+module.exports = { runBatchUploadTask, runTopicUploadTask, pickTitleKey, safeFileToken, collectTopicRows };

@@ -43,9 +43,9 @@
 | `task:passed-count` | 核对各账号当天通过数 | `bitEnvs` | `accounts[]`：`{ bitEnv, status, done, total, format, raw }`，`status` ∈ `completed`/`partial`/`unknown`/`error` |
 | `task:batch-transfer` | 网盘批量转存 | `bitEnvs`、`excelPath`、`destDir` | — |
 | `task:batch-upload` | 按账号批量上传 | `bitEnvs`、`filePath` | — |
-| **`task:upload-by-topic`** | **新增**。按分类规则给每行派生题材，拆成各账号的份逐个上传 | `filePath`、`bitEnvs`、`accountTopics`、`topicRules`、`batchRows`、`maxBatches` | `uploaded`、`accounts[]`：`{ envLabel, topic, planned, uploaded, error? }` |
+| **`task:upload-by-topic`** | **新增**。按分类规则给每行派生题材，**拆成一个题材一张表**，每张表交给绑定了该题材的账号上传 | `filePath`、`bitEnvs`、`accountTopics`、`topicRules`、`batchRows`、`maxBatches` | `uploaded`、`splitDir`、`topicTables[]`：`{ topic, file }`、`accounts[]`：`{ envLabel, topic, planned, uploaded, table, error? }` |
 | `task:crawl-home` | 从答主主页找网盘资源 | `homepages`、`enrichLimit` | `count`、`stats`、`outputPath` |
-| **`task:auto-pipeline`** | **新增**。一键全自动：按阶段串行跑「爬题 → 抽题 → 生成 → 提交 → 按题材上传」 | `stages[]`（可选值 `crawl`/`pick`/`generate`/`submit`/`upload`）、`pickCount`、`batchRows`、`uploadTablePath` | `ok`、`stopped`、`pickFile`、`stages[]`：`{ stage, label, ok, skipped?, error? }` |
+| **`task:auto-pipeline`** | **新增**。一键全自动：按阶段串行跑「爬题 → 抽题 → 生成 → 提交 → 转存 → 按题材上传」 | `stages[]`（可选值 `crawl`/`pick`/`generate`/`submit`/`transfer`/`upload`）、`pickCount`、`batchRows`、`uploadTablePath`、`transferTablePath`、`transferDestDir`、`transferOutName`、`transferPerEnv`、`transferCc`、`transferDelayMin`、`transferDelayMax` | `ok`、`stopped`、`pickFile`、`stages[]`：`{ stage, label, ok, skipped?, error? }` |
 
 > `task:auto-pipeline` 与其它任务通道不同：它**不是**单个 TaskManager 任务，
 > 而是在主进程按阶段串行调用 `startTask`（TaskManager 单任务互斥，包成一个大任务会直接冲突）。

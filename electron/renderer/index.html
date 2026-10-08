@@ -104,11 +104,19 @@
         <div class="card">
           <p class="hint warning">⚠️ 这条链会自动爬题、生成答案、提交到平台、并按题材上传。全程无人值守，中途出错只会写进运行日志。**请务必先勾掉「自动提交」和「按题材上传」小批量试跑一次**，确认链路通了再放开。</p>
           <p class="hint">跑之前请先在「比特环境」页配好：账号列表、账号题材绑定、上传分类规则；并在「生成答案」页填好 AI Key。</p>
+          <p class="hint">两个阶段串起来看：<b>答题链</b> 爬题→抽题→AI 生成→提交（积累通过数）；<b>网盘链</b> 转存（脚本套模板生成问答）→按题材拆表→分账号上传。两条链可单独勾选。</p>
           <div class="field-grid">
             <div class="field"><label>抽题条数</label><input type="number" id="autoPickCount" min="1" value="20" /></div>
             <div class="field"><label>每批上传行数</label><input type="number" id="autoBatchRows" min="1" value="500" /></div>
           </div>
-          <div class="field"><label>上传专用表（留空则自动跳过「按题材上传」阶段）</label>
+          <div class="field"><label>网盘资源表（「网盘转存」阶段的输入；留空则跳过该阶段）</label>
+            <div class="pair">
+              <input type="text" id="autoTransferTable" readonly placeholder="选择资源表（网盘链接两列表）" />
+              <button class="btn soft" id="pickAutoTransferTable">选择</button>
+            </div>
+          </div>
+          <div class="field"><label>转存目标目录</label><input type="text" id="autoTransferDest" placeholder="/来自资源批量转存" /></div>
+          <div class="field"><label>上传专用表（留空则用「网盘转存」的产出；两者都没有则跳过「按题材上传」阶段）</label>
             <div class="pair">
               <input type="text" id="autoUploadTable" readonly placeholder="选择上传专用表" />
               <button class="btn soft" id="pickAutoUploadTable">选择</button>
@@ -120,6 +128,7 @@
             <label class="check"><input type="checkbox" id="autoStagePick" checked /> 抽题</label>
             <label class="check"><input type="checkbox" id="autoStageGenerate" checked /> 生成答案</label>
             <label class="check"><input type="checkbox" id="autoStageSubmit" checked /> 自动提交</label>
+            <label class="check"><input type="checkbox" id="autoStageTransfer" /> 网盘转存</label>
             <label class="check"><input type="checkbox" id="autoStageUpload" checked /> 按题材上传</label>
           </div>
           <div class="card-actions">
@@ -364,7 +373,7 @@
             <button class="btn soft" id="editUploadExcel">打开表格修改</button>
             <button class="btn soft" id="revealUploadExcel">打开所在文件夹</button>
           </div>
-          <p class="hint">「按题材分账号上传」会按设置页的<b>分类规则</b>给每行派生题材，再把各题材的行交给绑定了同名题材的账号上传（账号在设置页「账号题材绑定」里配）。没命中规则的行本次不上传。</p>
+          <p class="hint">「按题材分账号上传」会按设置页的<b>分类规则</b>给每行派生题材，<b>拆成一个题材一张表</b>（存到源表同级的「分表」目录，可人工过目），再把每张表交给绑定了同名题材的账号上传（账号在设置页「账号题材绑定」里配）。没命中规则的行不会进任何分表，本次不上传。</p>
         </div>
       </section>
 

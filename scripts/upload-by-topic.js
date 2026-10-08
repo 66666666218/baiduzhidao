@@ -83,6 +83,10 @@ const log = (message) => {
   for (const account of result.accounts || []) {
     log(`  ${account.envLabel}（${account.topic || "未绑定"}）：${account.error ? `失败 ${account.error}` : `上传 ${account.uploaded} 行`}`);
   }
+  if ((result.topicTables || []).length) {
+    log(`题材分表已保存到：${result.splitDir}`);
+    for (const table of result.topicTables) log(`  ${table.topic} → ${table.file}`);
+  }
   process.exit(result.uploaded > 0 ? 0 : 1);
 })().catch((error) => {
   console.error("FATAL:", error.message);
