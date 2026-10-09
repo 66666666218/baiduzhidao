@@ -53,6 +53,35 @@ async function runSubmitTask(ctx, deps) {
     return { stopped: false, count: 0, failed: 0, total: 0, results: [] };
   }
 
+  // 质检结论：生成阶段判完会把它写进表格的「质检」列（`READY(分)` / `REVIEW(分)：原因`）。
+  // 这件事的意义在于——**无人值守时没人会去看生成阶段的日志**，而一键全自动跑完就直接进提交了。
+  // 以前这里连读都不读（importRowToAnswer 根本没解析「质检」列），判为需复核的答案被当正常答案投出去，
+  // 用户完全不知道。现在：条数和原因一定报出来；勾了「跳过质检为需复核的答案」才真的不提交。
+  // 用 startsWith 而不是正则：契约⑥ 的静态守卫会把 `/^REVIEW/i` 里的 `i.test(` 当成
+  // "调用了一个叫 i 的函数"而误报（它不解析正则字面量）。这里本来也不需要正则。
+  const isReview = (row) => String(row.quality || "").trim().toUpperCase().startsWith("REVIEW");
+  const skipReview = Boolean(config && typeof config.load === "function" && config.load().skipReviewAnswers);
+  const reviewRows = candidateRows.filter(isReview);
+  if (reviewRows.length) {
+    const brief = (row) => {
+      const reason = String(row.quality || "").replace(/^REVIEW\(\d+\)\s*[：:]?\s*/, "").trim();
+      return `${String(row.title || row.questionUrl || "").slice(0, 24)}${reason ? `（${reason.slice(0, 40)}）` : ""}`;
+    };
+    const shown = reviewRows.slice(0, 3).map(brief).join("；");
+    const more = reviewRows.length > 3 ? ` …共 ${reviewRows.length} 条` : "";
+    if (skipReview) {
+      log(`已按设置跳过 ${reviewRows.length} 条「质检判为需复核」的答案：${shown}${more}`);
+    } else {
+      log(`⚠️ 本次待提交的答案里有 ${reviewRows.length} 条被质检判为「需复核」：${shown}${more}`);
+      log("   它们仍会照常提交（质检只是提醒）。想跳过这些答案，请在设置页勾选「跳过质检为需复核的答案」。");
+    }
+  }
+  const submittableRows = skipReview ? candidateRows.filter((row) => !isReview(row)) : candidateRows;
+  if (!submittableRows.length) {
+    log("待提交的答案全部被质检判为需复核，已按设置跳过，本次无需提交。");
+    return { stopped: false, count: 0, failed: 0, total: 0, results: [] };
+  }
+
   // 与 crawl.js 同样先校验形状：传成字符串时 .map 会抛 TypeError，任务只报"未知错误"
   const rawEnvs = Array.isArray(ctx.payload.bitEnvs) ? ctx.payload.bitEnvs : [];
   const bitEnvs = rawEnvs.map((env) => (env && typeof env === "object" ? env.label : env) || "").filter(Boolean);
@@ -60,7 +89,7 @@ async function runSubmitTask(ctx, deps) {
 
   const submitLimit = Math.max(0, Number(ctx.payload.submitLimit) || 0);
   const dailyLimit = Math.max(0, Number(ctx.payload.dailyAnswerLimit) || 0);
-  let rows = submitLimit > 0 ? candidateRows.slice(0, submitLimit) : candidateRows;
+  let rows = submitLimit > 0 ? submittableRows.slice(0, submitLimit) : submittableRows;
   if (dailyLimit > 0) {
     log(`本次总回答数量上限 ${dailyLimit} 条。`);
     rows = rows.slice(0, dailyLimit);
@@ -179,6 +208,34 @@ async function runSubmitTask(ctx, deps) {
   const failStreakByEnv = {};   // envLabel -> 连续失败次数
   const FAIL_STREAK_LIMIT = 3;  // 连续失败到这个数就标记账号需人工检查
 
+  /**
+   * 一条提交失败后的**统一**处理：计数、上报、连续失败熔断。
+   *
+   * 为什么必须抽出来共用：这段逻辑以前只写在**窗口分支**里，而软件的默认模式是**纯协议** ——
+   * 于是"连续 3 次失败自动标记账号需人工检查"这条安全网，在最常用的那条路径上**根本不存在**：
+   * Cookie 失效的账号会被一路刷完整个任务列表，每条都失败，跑完也不留任何标记。
+   * （同一个功能在两份分支里各写一半，是这个仓库反复出问题的一类原因。）
+   *
+   * @returns {boolean} true = 该账号已被熔断，调用方应停止处理它剩余的条目
+   */
+  function noteSubmitFailure(item, envLabel, reason) {
+    failCount += 1;
+    const failedItem = { ...item, bitEnv: envLabel, status: `提交失败：${reason}` };
+    results.push(failedItem);
+    ctx.emitItem(failedItem);
+    log(`✗ ${processed}/${totalPlanned} 提交失败：${item.title || item.questionUrl} → ${reason}`);
+
+    failStreakByEnv[envLabel] = (failStreakByEnv[envLabel] || 0) + 1;
+    if (failStreakByEnv[envLabel] < FAIL_STREAK_LIMIT) return false;
+
+    const why = `连续 ${failStreakByEnv[envLabel]} 次提交失败`;
+    accountManager.markBlocked(envLabel, why);
+    if (deps.emitEvent) deps.emitEvent("account.blocked", { account: envLabel, reason: why });
+    log(`⚠️ 账号 ${envLabel} 已${why}，已标记为需人工检查：本次运行与同一进程内的后续运行都会跳过它`
+      + `（重启软件可清除标记）。先到「账号凭证」页确认它的 Cookie 是否还有效。`);
+    return true;
+  }
+
   // ★ 账号并发：多个账号同时跑。默认 1（顺序执行），用户可在设置页调高。
   // 开并发前的两个前提已经在本文件里收拢了：写回表格加锁（writeBackStatus 队列）、
   // 各计数都是单线程内同步自增 —— 否则并发会直接把表格写坏。
@@ -217,6 +274,10 @@ async function runSubmitTask(ctx, deps) {
             const r = await protocolSubmit.submitAnswer({ qid, content: item.answer, cookie, token: tk.token, dispatcher });
             if (r.ok) {
               successCount += 1;
+              // 成功一条就清掉**这个账号自己**的连败计数（与窗口分支同一语义）。
+              // 少了这一行，计数会在默认的协议分支里一路累加 —— 于是"连续 3 次失败"变成
+              // "累计 3 次失败"：一个大部分都成功、只是偶尔失败的账号也会被熔断。
+              failStreakByEnv[envLabel] = 0;
               const submitted = { ...item, bitEnv: envLabel, status: "已提交", confirmed: true, aid: r.aid, submittedAt: nowText() };
               store.upsertAnswer(submitted);
               results.push(submitted);
@@ -231,8 +292,7 @@ async function runSubmitTask(ctx, deps) {
               ctx.emitItem({ ...item, bitEnv: envLabel, status: "已提交" });
               log(`✅ ${processed}/${totalPlanned} 已提交：${item.title || qid}${r.aid ? "（aid=" + r.aid + "）" : ""}`);
             } else {
-              failCount += 1;
-              log(`✗ ${processed}/${totalPlanned} 提交失败：${item.title || qid} → ${r.reason}`);
+              if (noteSubmitFailure(item, envLabel, r.reason)) break;
             }
             await new Promise((res) => setTimeout(res, 800 + Math.random() * 700));
           }
@@ -277,6 +337,11 @@ async function runSubmitTask(ctx, deps) {
           }
 
           successCount += 1;
+          // 成功一条就清掉**这个账号自己**的连败计数。
+          // ⚠️ 这一行原来写在 try/catch 的**外面** —— 于是失败路径走完 catch 也会执行到它，
+          // 连败计数永远回到 0，"连续 3 次失败熔断"数学上不可能触发（这是第二处：
+          // 第一处是默认的协议分支里压根没写熔断）。必须放在成功路径里。
+          failStreakByEnv[envLabel] = 0;
           const submitted = {
             ...item,
             title: pageTitle || item.title,
@@ -294,24 +359,10 @@ async function runSubmitTask(ctx, deps) {
           writeBackStatus(submitted);
           log(`提交成功：${submitted.title || submitted.questionUrl}`);
         } catch (error) {
-          failCount += 1;
-          const failedItem = { ...item, bitEnv: envLabel, status: `提交失败：${describeError(error)}` };
-          results.push(failedItem);
-          ctx.emitItem(failedItem);
-          log(`提交失败：${item.title || item.questionUrl}；${describeError(error)}`);
-          // 连续 3 次失败自动标记账号需人工检查（AccountManager 层拦截后续提交）
-          failStreakByEnv[envLabel] = (failStreakByEnv[envLabel] || 0) + 1;
-          if (deps.accountManager && failStreakByEnv[envLabel] >= FAIL_STREAK_LIMIT) {
-            if (deps.accountManager) {
-              const why = `连续 ${failStreakByEnv[envLabel]} 次提交失败`;
-              deps.accountManager.markBlocked(envLabel, why);
-              if (deps.emitEvent) deps.emitEvent("account.blocked", { account: envLabel, reason: why });
-            }
-            log(`⚠️ 账号 ${envLabel} 已连续多次失败，已标记需人工检查，本轮跳过该账号。`);
-            break;
-          }
+          // 与纯协议分支共用同一份失败处理（计数器、上报、熔断）——
+          // 以前两边各写一半，默认的协议分支里连熔断都没有。
+          if (noteSubmitFailure(item, envLabel, describeError(error))) break;
         }
-        failStreakByEnv[envLabel] = 0;   // 这个账号成功了一条，连败清零（只清自己的）
         ctx.report({ done: successCount + failCount, total: totalPlanned, status: "running" });
         if (processed < totalPlanned && !ctx.shouldStop()) {
           await ctx.delay(config.delayMin, config.delayMax, "下一条提交间隔");
@@ -364,11 +415,21 @@ async function runSubmitTask(ctx, deps) {
           row.confirmed = update.confirmed;
         }
       }
-      // 必须传日志回调：表格被 Excel 占用时 writeWorkbookSafe 会另存备份，
-      // 不提示的话原表状态永远停在"已生成"，而下一轮去重读的正是原表 → 整表重复提交。
-      excel.writeWorkbookSafe(filePath, rows.map(excel.answerToRow), "随机抽题", excel.ANSWER_HEADERS,
+      // writeWorkbookSafe 在**原表被 Excel 占用**时不会抛错，而是把内容写进
+      // 「xxx_备份_<时间戳>.xlsx」并把**那个路径**返回。以前这里完全忽略返回值，
+      // 紧接着无条件 clear() —— 等于"写没写进原表"根本没判断，却把状态当成已落盘丢掉了。
+      // 后果：原表状态一直停在「已生成回答」，下一轮对同一张表再跑提交时去重读的正是原表
+      //（candidateRows 只看表格 status 列）→ 已提交的题被整表重复提交。
+      // 所以：只有**确实写进了原表**才清空；写进备份的留着，等下一轮（或用户关掉 Excel 后）
+      // 再试，并把这件事说成一句能照做的话。
+      const writtenTo = excel.writeWorkbookSafe(filePath, rows.map(excel.answerToRow), "随机抽题", excel.ANSWER_HEADERS,
         (message) => log(message));
-      pendingWriteBack.clear();
+      if (writtenTo === filePath) {
+        pendingWriteBack.clear();
+      } else {
+        log(`⚠️ 状态没能写回原表（写进了备份：${writtenTo}）。原表里这些行仍会显示「未提交」，`
+          + `**请关掉 Excel/WPS 后重跑一次提交**，否则下一轮会把它们当没提交过而重复提交。`);
+      }
     } catch (error) {
       log(`写回表格状态失败（不影响提交记录）：${error.message}`);
     }

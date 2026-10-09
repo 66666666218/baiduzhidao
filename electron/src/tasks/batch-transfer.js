@@ -16,6 +16,7 @@ const { chromium } = require("playwright-core");
 const { createShare } = require("../netdisk/share");
 const { Jar, processOne } = require("../netdisk/protocol");
 const qaLib = require("../netdisk/qa-template-lib");
+const { envLabelsOf } = require("../domain/account-topic");
 
 
 // 打包后 __dirname 在 asar 内且安装目录不可写：数据一律放用户数据目录（%AppData%\zhidao-answer-studio）
@@ -45,6 +46,22 @@ function randomPwd() {
   return Array.from({ length: 4 }, () => c[Math.floor(Math.random() * c.length)]).join("");
 }
 
+/**
+ * 把 payload 里的环境名解析成干净的字符串数组。
+ *
+ * 以前这里是 `Array.isArray(x) ? x : String(x).split(",")` —— 既不 trim、也不认 `{label}` 写法。
+ * 于是 `"账号1, 账号2"`（逗号后带空格，用户手写时很常见）会得到名字 `" 账号2"`：
+ * 取不到已存的 Cookie、也匹配不上比特环境（比特那边要求名字一字不差），
+ * 最后报出来的是「没有任何窗口具备 pan.baidu.com 登录态」—— 完全看不出真凶是一个空格。
+ * 现在统一交给 `envLabelsOf`（trim + 剔空 + 取出 label），与其它任务同一套规则。
+ */
+function parseEnvList(payload) {
+  const p = payload || {};
+  const raw = (p.bitEnvs !== undefined && p.bitEnvs !== null && p.bitEnvs !== "") ? p.bitEnvs : p.bitEnv;
+  if (Array.isArray(raw)) return envLabelsOf(raw);
+  return envLabelsOf(String(raw || "").replace(/[，\r\n]/g, ",").split(","));
+}
+
 async function runBatchTransferTask(ctx, deps) {
   const { app } = require("electron"); // 主进程内可用：数据放用户数据目录（打包后安装目录不可写）
   const { browserPool, log } = deps;
@@ -54,7 +71,7 @@ async function runBatchTransferTask(ctx, deps) {
   const filePath = String(payload.filePath || "").trim().replace(/^"|"$/g, "");
   if (!filePath || !fs.existsSync(filePath)) throw new Error("请先选择资源表格（xlsx 或 txt，一行一个链接）");
   // 多账号：bitEnvs 数组（逗号分隔或数组），按窗口轮换；单账号兼容 bitEnv
-  const envList = (Array.isArray(payload.bitEnvs) ? payload.bitEnvs : String(payload.bitEnvs || payload.bitEnv || "").replace(/\，/g, ",").replace(/\n/g, ",").split(","))
+  const envList = parseEnvList(payload);
   if (!envList.length) throw new Error("请填写至少一个比特环境名（多账号每行一个）");
   const perEnv = Math.max(1, Number(payload.perEnv) || 50); // 每窗口连续处理条数（轮换粒度）
   const destRoot = String(payload.destDir || "/来自资源批量转存").trim() || "/来自资源批量转存";
@@ -317,4 +334,4 @@ async function runBatchTransferTask(ctx, deps) {
 // isGenericName 一并导出：scripts/pan-transfer-batch.js 里有同一段逻辑的拷贝，
 // 而它**只 import 了本文件以外的模块、却直接用这个名字** —— 跑到那里就 ReferenceError。
 // 与其让脚本再抄一份，不如从这里引（契约⑥ 扫出来的）。
-module.exports = { runBatchTransferTask, isGenericName };
+module.exports = { runBatchTransferTask, isGenericName, parseEnvList };

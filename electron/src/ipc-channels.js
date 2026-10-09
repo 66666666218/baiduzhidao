@@ -24,6 +24,8 @@ const INVOKE_CHANNELS = [
   "task:stop",
   "task:pause",
   "task:resume",
+  "accounts:overview",
+  "accounts:unblock",
   "task:history",
   "task:running",
 
@@ -49,6 +51,7 @@ const INVOKE_CHANNELS = [
   "netdisk:accounts:check",
   "netdisk:list",
   "netdisk:delete",
+  "netdisk:empty-recycle",
   "netdisk:records",
 
   // 文件与外部

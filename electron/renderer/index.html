@@ -160,7 +160,7 @@
             <p class="hint" id="autoRunModeHint"></p>
             <label>本次参与的账号（每行一个；<b>留空 = 用「比特环境」页里的全部账号</b>）</label>
             <textarea id="autoBitEnvs" rows="3" placeholder="留空即全部&#10;也可以只填想跑的那几个"></textarea>
-            <p class="hint">只想让一部分账号参与时在这里填。搜资源也会只按这些账号绑定的题材去搜。</p>
+            <p class="hint">只想让一部分账号参与时在这里填。<b>搜资源</b>按的是下面「网盘链 · 上传账号」那一栏绑定的题材（资源要匹配上传账号的题材，才能被正确分派）；那一栏留空时才用它这里的账号。</p>
           </div>
           <div class="field">
             <label>网盘链 · 转存账号（每行一个；<b>留空 = 用上面的账号</b>）</label>
@@ -211,6 +211,21 @@
       <!-- 账号总览 -->
       <section class="view" data-view="accounts-overview">
         <h2>账号总览</h2>
+        <div class="card">
+          <p class="hint">这是软件<b>本地</b>记的账号状态（不需要联网）：某个账号连续 3 次提交失败会自动被标为
+            <b>需人工检查</b>，在同一个进程内后续任务都会跳过它 —— 免得继续拿一个已经不行的号去撞风控。
+            重启软件即清除全部标记；也可以在这里单独解除。</p>
+          <div class="card-actions">
+            <button class="btn soft" id="refreshLocalAccounts">刷新本地账号状态</button>
+            <span class="hint" id="localAccountsHint">点一下开始</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>账号</th><th>状态</th><th>原因</th><th>今日已用</th><th>最近使用</th><th>操作</th></tr></thead>
+              <tbody id="localAccountsBody"></tbody>
+            </table>
+          </div>
+        </div>
         <div class="card">
           <p class="hint">按比特环境查每个账号的<b>剩余额度、上传条数、收录数、被拒数</b>。
             数据来自答主工作台，需要该环境已登录百度账号（纯协议读取，不驱动页面）。</p>
@@ -393,6 +408,12 @@
                 <option value="off">关闭：按普通轮询（排查用）</option>
               </select>
             </div>
+          </div>
+          <div class="field">
+            <label class="check"><input type="checkbox" id="skipReviewAnswers" /> 跳过「质检判为需复核」的答案</label>
+            <p class="hint">生成阶段会给每条答案做质检：<b>REVIEW</b> 表示有硬伤（带 AI 痕迹、答非所问、与既有回答高度重复…）。
+            <b>默认不勾</b>：那些答案仍会照常提交（毕竟是花钱生成的），但每次提交前都会把条数和原因报出来，你自己判断。
+            勾上之后，REVIEW 的行就不会被提交 —— 无人值守跑批时更稳妥，代价是提交量变少。</p>
           </div>
           <div class="field"><label>来源表格（含 回答内容 + 题目地址；留空则自动使用最近一次抽题表格）</label>
             <div class="pair">
@@ -654,7 +675,9 @@
           </ol>
           <p class="hint">⚠️ <b>最重要的其实是"别让多个账号同时做同样的事"。</b>
           百度知道的风控主要看行为而不是设备：同一 IP 下多个账号在同一时段、用雷同内容做同样动作，才是真正的触发点。
-          程序已经保证<b>同一时间只跑一个任务</b>（点两次「一键全自动」第二次会被挡下），账号之间也是串行处理，天然留有间隔。</p>
+          程序已经保证<b>同一时间只跑一个任务</b>（点两次「一键全自动」第二次会被挡下）。
+          账号之间<b>默认串行</b>，天然留有间隔 —— 但如果你在设置页把「<b>账号并发</b>」调到大于 1，这个间隔就没有了：
+          那时必须给每个账号配不同的出口 IP（设置页「账号代理」），否则等于把自己摆到风控最敏感的特征上。</p>
         </div>
       </section>
 

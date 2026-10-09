@@ -51,7 +51,11 @@ function randomPickQuestions(bank, usedKeys, options) {
   }
 
   const takeCount = Math.min(Math.max(1, Number(count) || 1), available.length);
-  const picked = sample(available, strategy, takeCount);
+  // 归一化后再采样：`sample()` 里是**大小写敏感**的字符串比较，而返回值那行
+  // 早就在用 normalizeStrategy()。传 `"Newest"` 时会走 random 分支、却回报 strategy:"newest" ——
+  // 即"报告说按最新抽、实际在乱抽"。当前 UI 的 select 值都是小写所以没暴露，
+  // 但任何脚本/新调用点传一次非小写就会中招。
+  const picked = sample(available, normalizeStrategy(strategy), takeCount);
   const nextUsed = Array.from(new Set([...used, ...picked.map(keyOf)]));
   const remainingAfter = Math.max(0, pool.length - nextUsed.length);
 

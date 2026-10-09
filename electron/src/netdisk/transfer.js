@@ -4,6 +4,13 @@
  * 百度网盘转存（v2.3 · 执行器架构）：
  *   他人分享 → verify → /share/list(shorturl 形态) → 转存 → 确认落盘。
  *
+ * ⚠️ **这份已被 `netdisk/protocol.js` 取代，软件本体不再使用它。**
+ *   现在唯一的使用者是 `scripts/pan-transfer-pipeline.js`（开发者脚本）。
+ *   不要把它接回 electron/ 里 —— 应用内的批量转存走的是
+ *   `tasks/batch-transfer.js` + `netdisk/protocol.js`（纯协议、实测 38 条/分钟、
+ *   带断点续传/熔断/代理贯通）。这份走的是"真浏览器上下文执行"的老路子，慢且难控。
+ *   —— 2026-10-09 加这条注释，是因为这个仓库里已经有太多"两份实现各改一半"的教训。
+ *
  * 为什么用执行器（executor）：百度对 Node 直连 fetch 有账号级限频/风控，
  * 而真浏览器上下文（比特浏览器窗口）天然通过。所有 API 通过注入的
  * call(path, opts) 执行——生产默认 createBrowserExecutor，调试可用 createNodeExecutor。

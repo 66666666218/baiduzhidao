@@ -239,3 +239,31 @@
 3. `passed-count.js` 的 `browser` 变量**声明在循环体内**——共享一个变量时，A 的 `finally` 会把 B 的 CDP 连接关掉。
 4. 结果数组按下标回填（`collected[index]`）而不是 `push`：并发下完成顺序是乱的，直接 push 会让界面里的账号顺序每次都变。
 5. 台账（`appendLedger`）、CSV 兜底（`appendCsvRow`）都是同步 `appendFileSync`，天然串行。
+
+## 6. 本轮新增通道
+
+| 通道 | 说明 | 请求 | 响应 |
+|------|------|------|------|
+| `netdisk:empty-recycle` | 清空指定网盘账号的回收站。`netdisk/manager.js` 的 `emptyRecycleBin()` 早就写好了，但通道/preload/界面绑定三处全缺，导致「清空回收站」按钮点了毫无反应 | `{ name }` | 网盘原始响应（判 `errno === 0`） |
+| `accounts:overview` | **本地**账号档案（不联网）：封禁标记 / 今日已用 / 最近使用 | — | `{ accounts: [{ name, blocked, blockedReason, usedToday, dailyLimit, remaining, lastUsedAt }] }` |
+| `accounts:unblock` | 解除某个账号的「需人工检查」标记 | `{ name }` | `{ ok, accounts }` |
+
+### 6.1 `accountManager` 现在是进程级单例
+
+`AccountManager`（账号封禁/额度档案）此前**从未被注入**：`submit.js` 写的是
+`deps.accountManager || new AccountManager(...)`，而 `deps()` 里没有这个字段；
+`markBlocked()` 外面还套了一层 `if (deps.accountManager)`。
+三者叠加的结果是 —— 注释里承诺的「连续失败自动标记账号需人工检查」**一次都没生效过**，
+`account.blocked` 事件也从未发出。
+
+现在：`app-context.js` 建一个单例注入 `deps()`，`settings:save` 时登记账号，
+并用 `accounts:overview` / `accounts:unblock` 把它暴露给界面。
+标记只活在本进程内（重启即清除），所以界面必须能**看见并解开**它 —— 否则用户只会发现
+"某个号突然不跑了"，却找不到原因也找不到开关。
+
+### 6.2 熔断在两条提交路径上必须一致
+
+`submit.js` 的「连续 3 次失败熔断」原先只写在**窗口分支**里，而软件默认是**纯协议**模式，
+于是最常用的那条路径上根本没有熔断；而且窗口分支里的连败计数复位写在了 `try/catch`
+**外面**，失败路径走完也会执行到 → 计数永远回到 0，阈值数学上不可能触发。
+现在两条分支共用同一个 `noteSubmitFailure()`，复位只放在成功路径里。

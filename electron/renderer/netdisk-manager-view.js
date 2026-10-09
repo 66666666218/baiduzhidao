@@ -123,6 +123,25 @@
   // 软件内登录提取：弹一个登录窗口，登进去自动关闭并填好 —— 不用 F12、不用比特。
   document.getElementById("nmLoginExtract").addEventListener("click", async function () {
     var url = document.getElementById("nmLoginUrl").value.trim();
+    var typed = document.getElementById("nmAccountName").value.trim();
+    // 上一轮"登录成功但没能自动取名"时，凭据留在了这里。用户按提示填好名字再点一次，
+    // 就该**直接用那份凭据入库** —— 以前这个变量写进去却从来没有任何地方读它，
+    // 提示里的"不用重新登录"是假的：照做只会又弹一次登录窗口、让人重登一遍。
+    var pending = window.__pendingCred;
+    if (pending && pending.ok && pending.bduss && typed) {
+      window.__pendingCred = null;
+      try {
+        var info = await rpc.invoke("netdisk:accounts:add", { name: typed, bduss: pending.bduss, stoken: pending.stoken });
+        appendLog("✅ " + typed + " 已入库（用的是上一次登录的 Cookie，没有重新登录）"
+          + (info && info.netdiskOk ? "，网盘已连接" : "，网盘未连接（只影响转存，答题链可用）"));
+        loadAccounts();
+      } catch (e) { appendLog("入库失败：" + e.message + "（可再点一次「登录并提取」重新登一次）"); }
+      return;
+    }
+    if (pending && !typed) {
+      appendLog("上一轮登录的 Cookie 还在，请先在「账号备注名」填一个名字，再点一次即可入库（不用重新登录）。");
+      return;
+    }
     appendLog("已打开登录窗口：在里面登录百度，登进去会自动关闭并入库。");
     try {
       var creds = await rpc.invoke("auth:login-and-extract", { url: url });
@@ -130,7 +149,6 @@
       // 备注名空着时**用百度账号名自动命名** —— 以前这里直接 return，
       // 等于"登录成功却把 Cookie 丢了、要用户再登一次"，与界面承诺的
       // "登进去就会自动关闭并填好"自相矛盾。
-      var typed = document.getElementById("nmAccountName").value.trim();
       var name = typed || String(creds.userName || "").trim();
       if (!name) {
         appendLog("登录成功（账号 " + (creds.userName || "?") + "），但没能自动取名 —— 请在「账号备注名」填一个再点一次；Cookie 已暂存在本次会话里，不用重新登录。");
@@ -138,8 +156,8 @@
         return;
       }
       if (!typed) appendLog("未填备注名，已用百度账号名「" + name + "」自动命名。这个名字要与其他任务里的账号名一致才能被用上。");
-      var info = await rpc.invoke("netdisk:accounts:add", { name: name, bduss: creds.bduss, stoken: creds.stoken });
-      appendLog("✅ " + name + " 已入库（账号 " + ((info && info.userName) || "?") + "）" + (info && info.netdiskOk ? "，网盘已连接" : "，网盘未连接（只影响转存，答题链可用）"));
+      var info2 = await rpc.invoke("netdisk:accounts:add", { name: name, bduss: creds.bduss, stoken: creds.stoken });
+      appendLog("✅ " + name + " 已入库（账号 " + ((info2 && info2.userName) || "?") + "）" + (info2 && info2.netdiskOk ? "，网盘已连接" : "，网盘未连接（只影响转存，答题链可用）"));
       loadAccounts();
     } catch (e) { appendLog("登录提取失败：" + e.message); }
   });
@@ -171,6 +189,19 @@
     } catch (e) { appendLog("删除失败：" + e.message); }
   });
   document.getElementById("nmRefreshRecords").addEventListener("click", loadRecords);
+
+  // ⚠️ 这个按钮以前**完全没有绑定**：HTML 有它、`manager.emptyRecycleBin()` 也早就写好了，
+  // 但中间的 IPC 通道、preload 白名单、渲染端监听三处全缺 —— 点下去毫无反应、连日志都没有。
+  // 网盘满了想清回收站时，用户只会以为软件坏了。现在把这条链补齐。
+  document.getElementById("nmClearRecycle").addEventListener("click", async function () {
+    if (!nmAccount) { appendLog("请先选择网盘账号。"); return; }
+    if (!confirm("清空「" + nmAccount + "」的回收站？回收站里的文件将无法恢复。")) return;
+    try {
+      var r = await rpc.invoke("netdisk:empty-recycle", { name: nmAccount });
+      if (r && r.errno === 0) appendLog("✅ 已清空「" + nmAccount + "」的回收站");
+      else appendLog("清空回收站失败 errno=" + (r && r.errno) + "（若是 -6 多为权限或账号问题）");
+    } catch (e) { appendLog("清空回收站失败：" + e.message); }
+  });
 
   loadAccounts();
   loadRecords();

@@ -8,7 +8,6 @@ var fs = require("fs");
 var protocol = require("./protocol");
 
 var PAN = "https://pan.baidu.com";
-var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 var NL = String.fromCharCode(10);
 
 function ManagerJar() {}
@@ -16,15 +15,17 @@ ManagerJar.prototype = Object.create(protocol.Jar.prototype);
 ManagerJar.prototype.call = function (pathAndQuery, opts) {
   opts = opts || {};
   var self = this;
-  return fetch(PAN + pathAndQuery, {
+  // 走协议层统一的 panFetch。以前这里是**裸 fetch**，后果很实在：
+  //  · 没带 dispatcher —— 账号配了代理，转存走代理、"管理网盘"（查空间/列目录/删除/清空回收站）却走直连，
+  //    同一批操作从两个 IP 发出，比全程直连更可疑（同一个坑在 share.js 里也踩过一次）；
+  //  · 没有超时 —— 网络卡住时界面会永久停在"加载中"；
+  //  · 不回收 set-cookie —— 百度中途换发的 Cookie 丢了，长会话可能掉登录态。
+  // UA 与 protocol.UA 本来就是同一个串，所以这里换成 panFetch 不改变浏览器特征。
+  return protocol.panFetch(self, PAN + pathAndQuery, {
     method: opts.method || "GET",
-    headers: {
-      "User-Agent": UA,
-      "Cookie": self.str(),
-      "Referer": opts.referer || (PAN + "/disk/main")
-    },
-    body: opts.body,
-    redirect: "follow"
+    referer: opts.referer || (PAN + "/disk/main"),
+    headers: opts.headers,
+    body: opts.body
   }).then(function (r) { return r.json().catch(function () { return {}; }); });
 };
 ManagerJar.prototype.bdstoken = function () {

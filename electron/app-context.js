@@ -25,6 +25,7 @@ const { INVOKE_CHANNELS } = require("./src/ipc-channels");
 const { describeUpdateError, describeError } = require("./src/errors");
 const { resolveNetdiskRoles } = require("./src/domain/account-topic");
 const { createAutoPipeline } = require("./src/workflows/auto-pipeline");
+const { AccountManager } = require("./src/browser/account-manager");
 // 查收录 / 权益检查要开窗口取 Cookie（runCheckPublishedTask），这里必须导入。
 // 之前漏了它，直接把「查收录」「账号总览」打成一跑就 ReferenceError: chromium is not defined，
 // 而日志只显示「查收录失败」，完全看不出是少了一行 import。
@@ -58,6 +59,13 @@ fs.mkdirSync(path.join(dataDir, "logs"), { recursive: true });
 const config = new Config(dataDir);
 const logger = new Logger(path.join(dataDir, "logs"));
 const store = new Store(dataDir, { owner: "gui" });
+// 账号档案（封禁/额度/健康度）**必须是进程级单例**。
+// 以前 `submit.js` 写的是 `deps.accountManager || new AccountManager(...)`，而 deps 里从来没有
+// 这个字段 —— 于是每次跑都是新建一个临时对象，`markBlocked()` 还额外套了一层
+// `if (deps.accountManager)` 的守卫。结果：注释里承诺的"连续失败自动标记账号需人工检查"
+// **一次都没生效过**，`account.blocked` 事件也从未发出过。这类"看着在工作、实际是空操作"
+// 的代码在这个项目里已经出过好几次，所以这里显式建单例并注入 deps。
+const accountManager = new AccountManager({ store, dailyLimit: 0 });
 const llm = new LlmClient({
   concurrency: config.load().aiConcurrency,
   apiKey: config.load().aiApiKey,
@@ -99,6 +107,9 @@ eventBus.on("task.*", ({ event, taskName, taskId, to, error, label }) => {
 function deps() {
   return {
     browserPool, store, config,
+    // 账号档案单例：任务通过它 acquire / markBlocked，状态在整个进程内共享
+    //（以前 submit 拿不到它，于是"连续失败标记账号"从未生效 —— 详见模块顶部的注释）
+    accountManager,
     dataDir,   // 与「打开数据目录」/批量转存输出一致的基准目录
     // 让任务能拿到「账号凭证」里存好的凭据：submit 用它走纯协议提交（不开窗口），
     // batch-transfer 用它免去开窗口取网盘凭证。
@@ -164,7 +175,13 @@ async function startTask(name, payload, runner) {
       if (item && String(item.status || "").startsWith("提交失败")) eventBus.emit("submission.failed", { questionId: item.questionUrl || item.title, account: item.bitEnv, reason: item.status });
     },
     });
-    store.flushAll();
+    // 落盘失败**不能把已经跑完的任务报成失败**（以前 flushAll 中途抛出就会那样），
+    // 但也不能装作没发生 —— 说清楚是哪份数据没写出去。
+    const flushFailed = store.flushAll();
+    if (flushFailed.length) {
+      logger.log(`⚠️ 有数据没能落盘：${flushFailed.map((f) => `${f.name}（${f.error}）`).join("、")}`
+        + "。任务本身已完成，但这些内容可能没保存下来 —— 请检查磁盘空间/文件是否被占用。");
+    }
     return result;
   } catch (error) {
     // 失败也要给渲染端终止信号，否则 UI 永久停在运行态（按钮禁用无法恢复）
@@ -483,6 +500,9 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     });
     browserPool.adapter = createAdapter({ apiUrl: saved.apiUrl });
     logger.setEnvLabels((saved.bitEnvs || []).map((env) => env.label || env));
+    // 把设置里的账号登记进账号档案，这样「账号档案」在没跑过任务时也能列出全部账号
+    //（已 blocked 的账号即使被移出设置也保留在档案里 —— 那正是需要被看见的状态）。
+    accountManager.register((saved.bitEnvs || []).map((env) => env.label || env));
     tasks.updateLiveSettings(patch || {});
     return saved;
   });
@@ -502,6 +522,16 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   ipcMain.handle("task:pause", () => tasks.pause());
   ipcMain.handle("task:resume", () => tasks.resume());
   ipcMain.handle("task:history", () => ({ current: tasks.currentState(), history: tasks.historyList() }));
+
+  // 账号档案（本地状态）：让"连续失败自动标记需人工检查"这件事**看得见、解得开**。
+  // 以前这个标记只存在于内存里、没有任何界面入口 —— 用户只会发现某个号突然不跑了。
+  ipcMain.handle("accounts:overview", () => ({ accounts: accountManager.list() }));
+  ipcMain.handle("accounts:unblock", (_event, payload) => {
+    const name = String((payload && payload.name) || "").trim();
+    if (!name) throw new Error("缺少账号名");
+    accountManager.unblock(name);
+    return { ok: true, accounts: accountManager.list() };
+  });
   ipcMain.handle("task:running", () => ({ running: tasks.isRunning() }));
 
   // 比特浏览器
@@ -801,6 +831,12 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     const paths = Array.isArray(p && p.paths) ? p.paths : [];
     if (!paths.length) throw new Error("未选择要删除的项");
     return manager.deleteItems(acc, paths);
+  });
+  ipcMain.handle("netdisk:empty-recycle", async (_e, p) => {
+    const name = String(p && p.name || "");
+    const acc = manager.loadAccounts(dataDir).find((a) => a.name === name);
+    if (!acc) throw new Error("账号不存在");
+    return manager.emptyRecycleBin(acc);
   });
   ipcMain.handle("netdisk:records", () => manager.transferRecords(dataDir));
   ipcMain.handle("task:batch-upload", (_event, payload) => startTask("batch-upload", payload, (ctx) => runBatchUploadTask(ctx, deps())));
@@ -1266,7 +1302,10 @@ async function smokeCheck() {
 /** 进程退出前落盘所有防抖中的数据 */
 function shutdown() {
   try {
-    store.flushAll();
+    // flushAll 现在不抛错、改成返回失败清单（见 store.js 的注释）。
+    // 退出路径上没人再能看到界面，只能落到 stderr —— 但至少不是"静默丢掉"。
+    const failed = store.flushAll();
+    if (failed.length) console.error("[shutdown] 有数据没能落盘：", failed);
   } catch (error) {
     console.error("[shutdown] flush failed:", error);
   }

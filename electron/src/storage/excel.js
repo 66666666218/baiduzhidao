@@ -61,6 +61,11 @@ function importRowToAnswer(row) {
     ...question,
     answer: String(pickCell(row, ["回答内容", "复制用答案", "answer"]) || "").replace(/\r\n/g, "\n"),
     status: String(pickCell(row, ["状态", "status"]) || "已导入").trim(),
+    // 质检结论必须**读回来**。`answerToRow` 一直在写「质检」列，这里却从来没读过 ——
+    // 于是"生成时判为需复核"的结论一进表格就丢了：一键全自动的提交阶段重读表格，
+    // AI 痕迹明显 / 答非所问的答案被当成正常答案提交出去，全程无人值守。
+    // 这就是典型的"写了一半的往返"：光写不读，等于没写。
+    quality: String(pickCell(row, ["质检", "quality"]) || "").trim(),
     createdAt: String(pickCell(row, ["生成时间", "采集时间", "时间"]) || "").trim(),
   };
 }

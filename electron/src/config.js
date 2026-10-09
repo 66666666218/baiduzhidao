@@ -66,6 +66,10 @@ const DEFAULTS = {
   // 账号 ↔ 题材绑定：{ "环境A": "情感类" }，带链接的答案据此严格一对一投递
   accountTopics: {},
   linkRouting: "strict",
+  // 提交时是否跳过「质检判为需复核」的答案。**默认 false**：不改变既有行为
+  //（那些答案本来就是花钱生成的，直接丢掉会让用户以为软件少提交了）。
+  // 但生成阶段判为 REVIEW 的结论会一路带到提交阶段，并在日志里报出条数 —— 用户知情后可以勾上。
+  skipReviewAnswers: false,
   // 上传侧的关键词分类规则（「分类名=关键词1|关键词2」每行一条，顺序敏感）
   topicRules: DEFAULT_TOPIC_RULES,
   // 搜资源：各题材的搜索词（同格式）。没给资源表时按账号绑定的题材自动搜
@@ -164,6 +168,7 @@ function normalizeSettings(payload) {
   next.closeAfter = Boolean(next.closeAfter);
   next.accountTopics = normalizeAccountTopicsSetting(next.accountTopics);
   next.linkRouting = LINK_ROUTING_MODES.includes(next.linkRouting) ? next.linkRouting : DEFAULTS.linkRouting;
+  next.skipReviewAnswers = next.skipReviewAnswers === true || next.skipReviewAnswers === "true";
   // 规则为空会让上传侧一行都分不出去，回退默认规则而不是静默全空
   if (!String(next.topicRules || "").trim()) next.topicRules = DEFAULT_TOPIC_RULES;
   if (!String(next.searchKeywords || "").trim()) next.searchKeywords = DEFAULT_SEARCH_KEYWORDS;

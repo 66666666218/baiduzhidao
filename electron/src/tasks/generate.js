@@ -6,6 +6,11 @@ const { buildQualityGate } = require("../quality/gate");
 
 /** 质检重复度比对窗口大小（条） */
 const DUPLICATE_WINDOW = 300;
+/**
+ * 单条回答的 token 成本**保守估计**，只用于"预算闸要不要放行"，
+ * 第一次拿到实测值后会被顶上去（取历史最大值，始终偏保守）。
+ */
+const ESTIMATED_TOKENS_PER_ANSWER = 1200;
 
 /**
  * AI 生成任务：对给定题目行批量生成回答。
@@ -28,9 +33,15 @@ async function runGenerateTask(ctx, deps) {
   // 重复度比对窗口：质检门的 duplicate 项需要既有回答，不传就恒为 0（等于形同虚设）。
   // 只取最近 N 条而不是全库：全库比对是 O(库容量×答案长度) 每条目，两万条时整轮会慢到不可用；
   // 而"批量生成雷同模板话"恰好发生在相邻的几十上百条之间。
+  //
+  // ⚠️ 方向别搞反：`loadAnswers()` 是**新在前**（store 用 unshift 插入），
+  // 所以"最近 N 条"= 取前 N 条。以前这里写的是 `.slice(-DUPLICATE_WINDOW)` —— 取到的
+  // 是**最旧**的 N 条，与上面这句注释正好相反。后果：库里累积几千条之后，昨天刚生成的那批
+  // 同模板答案根本不在比对窗口里，"跨轮次雷同"这条质检形同虚设。
+  const storedAnswers = (store.loadAnswers ? store.loadAnswers() : []).map((item) => item.answer).filter(Boolean);
   const duplicateWindow = (Array.isArray(deps.existingAnswers) ? deps.existingAnswers : [])
-    .concat((store.loadAnswers ? store.loadAnswers() : []).map((item) => item.answer).filter(Boolean))
-    .slice(-DUPLICATE_WINDOW);
+    .concat(storedAnswers.slice(0, DUPLICATE_WINDOW))
+    .slice(0, DUPLICATE_WINDOW);
 
   // 去重：同 URL/标题只生成一次；uniqueWork 是首次出现的行，完成后回填所有重复行
   const byKey = new Map();
@@ -59,7 +70,14 @@ async function runGenerateTask(ctx, deps) {
   let restored = 0;
   let skippedExisting = 0;
   let lastWriteAt = 0;
+  let autosaveWarned = false;
+  let lastWriteTarget = "";   // 最近一次真正写成功的路径（可能是备份文件）
+  let wroteToBackup = false;  // 是否至少有一次没能写进原表
   let budgetExhausted = false;
+  // 预算闸用的"在途"记账：inFlight = 已发出、还没回来的生成请求数；
+  // estPerAnswer = 单条回答的 token 成本估计，先用一个**保守的**常量，第一次实测到真实值后顶上去。
+  // 宁可高估：高估只会让我们早一点停手，低估则是真金白银的超支。
+  const budgetState = { inFlight: 0, estPerAnswer: ESTIMATED_TOKENS_PER_ANSWER };
 const total = slots.length;
   log(`开始批量生成回答：共 ${total} 行（去重后 ${byKey.size} 题${duplicateCount ? `，重复行 ${duplicateCount}` : ""}），并发 ${llm.semaphore.limit}。`);
   if (filePath) log(`生成结果将写回表格：${filePath}`);
@@ -79,24 +97,30 @@ const total = slots.length;
       if (results[index]) continue;
       const label = item.title || item.questionContent.slice(0, 30) || item.questionUrl;
 
-      // 日预算闸：今日 token 用量达到上限则暂停本轮生成（已有答案的行仍会跳过统计）
+      const saved = store.findAnswer(item);
+      // 历史恢复必须排在预算闸**之前**：这一步一分钱不花（答案就在库里）。
+      // 以前闸门写在前面，于是预算用尽时连"本来零成本、库里已有答案"的题也一起被放弃 ——
+      // 花钱买来的答案反而因为"今天不花钱了"而用不上。
+      if (!item.answer.trim() && saved && saved.answer.trim()) {
+        item.answer = saved.answer;
+        restored += 1;
+        log(`恢复历史答案 ${done}/${total}：${label}`);
+      }
+
+      // 日预算闸：今日 token 用量达到上限则暂停本轮生成。
       // 必须读 livePayload()：用户在任务运行中把预算调高，走的正是这条判断。
       const budget = Math.max(0, Number(ctx.livePayload().aiDailyTokenBudget) || 0);
       if (budget > 0 && !item.answer.trim()) {
-        const usedToday = store.getUsageToday();
+        // 把"已经放出去、还没回来"的请求也算进当日用量。一次生成要几十秒，
+        // 只读已落盘的用量会让 N 个 worker 在闸门处读到同一个（还不包含彼此的）数字而全部放行，
+        // 当日用量因此可能冲到并发数倍 —— 对"花钱上限"这个承诺是实质违约。
+        const spentToday = store.getUsageToday();
+        const usedToday = spentToday + budgetState.inFlight * budgetState.estPerAnswer;
         if (usedToday >= budget) {
           budgetExhausted = true;
-          log(`⛔ 已达到今日 AI token 预算上限（${usedToday}/${budget}），生成暂停。已处理 ${results.filter(Boolean).length}/${total} 行；可在设置中调高预算后明天继续。`);
+          log(`⛔ 已达到今日 AI token 预算上限（已落盘 ${spentToday}/${budget}，另有 ${budgetState.inFlight} 条在途），生成暂停。`
+            + `已处理 ${results.filter(Boolean).length}/${total} 行；可在设置中调高预算后明天继续。`);
           return;
-        }
-      }
-
-      const saved = store.findAnswer(item);
-      if (!item.answer.trim()) {
-        if (saved && saved.answer.trim()) {
-          item.answer = saved.answer;
-          restored += 1;
-          log(`恢复历史答案 ${done}/${total}：${label}`);
         }
       }
 
@@ -109,6 +133,11 @@ const total = slots.length;
         // 这里曾用任务 payload 覆盖它们，等于任何能发起 task:generate 的地方都能把
         // Bearer Key 和题目内容 POST 到自定义地址；表格链路里就带着这段 payload。
         log(`生成回答 ${done}/${total}：${label}`);
+        // 在途登记 + 实测成本回填：见 budgetState 的注释。
+        // 记账必须放在 try/finally 里 —— 中途抛错不回退 inFlight 的话，
+        // 后面的题会被一个永远不减少的"在途数"挡住，表现为"预算明明还有却一直说用完了"。
+        const spentBefore = store.getUsageToday();
+        budgetState.inFlight += 1;
         try {
           item.answer = await llm.generateAnswer(item, {
             titleTemplate: live.titleTemplate,
@@ -116,11 +145,15 @@ const total = slots.length;
             onLog: log,
           });
           generated += 1;
+          const spent = store.getUsageToday() - spentBefore;
+          if (spent > 0) budgetState.estPerAnswer = Math.max(budgetState.estPerAnswer, spent);
         } catch (error) {
           failed += 1;
           if (!firstError) firstError = String(error.message || error);
           item.status = `生成失败：${String(error.message).slice(0, 80)}`;
           log(`生成失败并继续下一题：${item.status}`);
+        } finally {
+          budgetState.inFlight -= 1;
         }
       }
 
@@ -151,8 +184,20 @@ const total = slots.length;
         duplicateWindow.push(item.answer);
         if (duplicateWindow.length > DUPLICATE_WINDOW) duplicateWindow.splice(0, duplicateWindow.length - DUPLICATE_WINDOW);
         store.upsertAnswer(item);
-        // CSV 自动保存兜底（防表格被占用/进程崩溃丢记录）
-        appendAutosave(deps.autosavePath, item);
+        // CSV 自动保存兜底（防表格被占用/进程崩溃丢记录）。
+        // 失败**必须说一句**：这条 CSV 的全部意义就是"表格写不进去时还能找回记录"，
+        // 静默 catch 等于用户以为有保险、其实没有（submit.js 那边一直是会告警的）。
+        // 只提醒一次，免得几百条各刷一行。
+        if (deps.autosavePath) {
+          try {
+            excel.appendCsvRow(deps.autosavePath, excel.answerToRow(item), excel.ANSWER_HEADERS);
+          } catch (csvErr) {
+            if (!autosaveWarned) {
+              autosaveWarned = true;
+              log(`⚠️ CSV 兜底写入失败（${csvErr.message}）—— 进程若异常退出，本轮记录可能丢失。`);
+            }
+          }
+        }
       }
 
       // 回填：该 key 的所有行（含重复行）都拿到同一答案
@@ -176,8 +221,15 @@ const total = slots.length;
     const touched = results.filter(Boolean);
     if (!touched.length) return;
     const allRows = slots.map((slot, index) => excel.answerToRow(results[index] || slot.item));
-    excel.writeWorkbookSafe(filePath, allRows, "随机抽题", excel.ANSWER_HEADERS,
+    // writeWorkbookSafe 在**原表被 Excel 占用**时不抛错，而是把内容写进
+    // 「xxx_备份_<时间戳>.xlsx」并把那个路径返回。必须接住这个返回值 ——
+    // 以前无视它、收尾还无条件打印"表格已更新：<原表>"，于是日志里既有"已另存备份"
+    // 又有"表格已更新"（自相矛盾），用户以为好了，实际原表一字未改；
+    // 紧接着的提交阶段读原表会说"表格里有题目链接但没有回答内容"，让人以为生成没干活。
+    const writtenTo = excel.writeWorkbookSafe(filePath, allRows, "随机抽题", excel.ANSWER_HEADERS,
       (message) => log(message));
+    lastWriteTarget = writtenTo;
+    if (writtenTo !== filePath) wroteToBackup = true;
   }
 
   await maybeWriteTable(true);
@@ -185,7 +237,14 @@ const total = slots.length;
   const stopped = ctx.shouldStop() || budgetExhausted;
   ctx.report({ done: total, total, status: budgetExhausted ? "stopped" : stopped ? "stopped" : "done" });
   log(`${budgetExhausted ? "生成暂停（日预算用尽）" : stopped ? "生成已停止" : "生成完成"}：新回答 ${generated} 条，历史恢复 ${restored} 条，已有跳过 ${skippedExisting} 条，失败 ${failed} 条。`);
-  if (filePath) log(`表格已更新：${filePath}`);
+  if (filePath) {
+    if (wroteToBackup && lastWriteTarget !== filePath) {
+      log(`⚠️ 表格没能写回原文件（写进了备份：${lastWriteTarget}）。原表里这些行**仍然没有回答内容** —— `
+        + "请关掉 Excel/WPS 后重跑一次生成，否则下一步「自动提交」读原表会报「表格里有题目链接但没有回答内容」。");
+    } else {
+      log(`表格已更新：${filePath}`);
+    }
+  }
   // 全军覆没要报失败：Key 失效、baseUrl 填错这类问题会让每一题都抛错，
   // 而任务仍以"生成完成"收尾，界面上看不出任何异常（失败数只躺在日志里）。
   if (failed > 0 && !generated && !restored && !skippedExisting) {
@@ -197,12 +256,5 @@ const total = slots.length;
 module.exports = { runGenerateTask };
 
 /** 追加一条到 CSV 自动保存文件（autosavePath 为空时跳过） */
-function appendAutosave(autosavePath, item) {
-  if (!autosavePath) return;
-  try {
-    excel.appendCsvRow(autosavePath, excel.answerToRow(item), excel.ANSWER_HEADERS);
-  } catch {
-    // 兜底通道失败不影响主流程
-  }
-}
+/** 删掉了 appendAutosave 包装：它唯一的用途是把异常吞掉（已改成在调用处告警）。 */
 

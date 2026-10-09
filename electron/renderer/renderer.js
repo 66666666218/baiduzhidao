@@ -184,6 +184,61 @@ $("autoAccountDailyLimit").addEventListener("input", () => {
   $("accountDailyLimit").value = $("autoAccountDailyLimit").value;
 });
 
+// 本地账号档案：把「连续失败被标记需人工检查」这件事变得看得见、解得开。
+// 这一栏不联网、不需要登录，随时可以刷。
+function renderLocalAccounts(list) {
+  const tbody = $("localAccountsBody");
+  tbody.textContent = "";
+  if (!list.length) {
+    tbody.innerHTML = '<tr><td colspan="6">还没有账号记录。跑过一次提交任务、或在设置页保存过账号列表，这里就会出现。</td></tr>';
+    return;
+  }
+  for (const account of list) {
+    const tr = document.createElement("tr");
+    const cells = [
+      account.name,
+      account.blocked ? "🚫 需人工检查" : "✅ 可用",
+      account.blocked ? (account.blockedReason || "未注明") : "",
+      account.dailyLimit > 0 ? `${account.usedToday}/${account.dailyLimit}` : `${account.usedToday}（不限）`,
+      account.lastUsedAt || "",
+    ];
+    for (const text of cells) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    const actionCell = document.createElement("td");
+    if (account.blocked) {
+      const button = document.createElement("button");
+      button.className = "btn soft";
+      button.textContent = "解除标记";
+      button.addEventListener("click", async () => {
+        try {
+          const r = await rpc.invoke("accounts:unblock", { name: account.name });
+          renderLocalAccounts(r.accounts || []);
+          $("localAccountsHint").textContent = `已解除「${account.name}」的标记`;
+        } catch (error) { $("localAccountsHint").textContent = `解除失败：${error.message}`; }
+      });
+      actionCell.appendChild(button);
+    }
+    tr.appendChild(actionCell);
+    tbody.appendChild(tr);
+  }
+}
+
+$("refreshLocalAccounts").addEventListener("click", async () => {
+  $("localAccountsHint").textContent = "读取中…";
+  try {
+    const r = await rpc.invoke("accounts:overview");
+    const list = (r && r.accounts) || [];
+    renderLocalAccounts(list);
+    const blocked = list.filter((a) => a.blocked).length;
+    $("localAccountsHint").textContent = blocked
+      ? `共 ${list.length} 个账号，其中 ${blocked} 个被标为需人工检查（后续任务会跳过它们）`
+      : `共 ${list.length} 个账号，都可用`;
+  } catch (error) { $("localAccountsHint").textContent = `读取失败：${error.message}`; }
+});
+
 $("refreshAccountOverview").addEventListener("click", async () => {
   $("accountOverviewHint").textContent = "查询中…";
   try {
@@ -632,6 +687,19 @@ if ($("autoRunMode")) {
     updateRunModeHint();
   });
 }
+// 反向同步：设置页改了「运行模式」，全自动页那个 select 必须跟着变。
+// 只做单向（全自动 → 设置页）出过一个很危险的 bug：用户在设置页选了「比特窗口」（想一账号一指纹），
+// 切到全自动页时那个 select 还是旧值「纯协议」，一点「开始」就把它写回 browserMode 并存盘 ——
+// 于是**实际按纯协议跑**（不开窗口、所有账号共用本机 IP 与指纹，正是他想规避的），
+// 而且设置被永久改回去，全程没有任何提示。两个入口写同一个设置，就必须双向同步。
+if ($("browserMode")) {
+  $("browserMode").addEventListener("change", () => {
+    if ($("autoRunMode")) {
+      $("autoRunMode").value = $("browserMode").value;
+      updateRunModeHint();
+    }
+  });
+}
 
 // 「账号并发」改了要立刻刷新全自动页那句提示（它引用了并发数）
 if ($("accountConcurrency")) {
@@ -777,7 +845,7 @@ rpc.on("task:item", () => {
   if (resultsRefreshTimer) return;
   resultsRefreshTimer = setTimeout(() => {
     resultsRefreshTimer = null;
-    if (document.querySelector(".view.results.active")) refreshResults();
+    if (document.querySelector('.view[data-view="results"].active')) refreshResults();
   }, 300);
 });
 
@@ -793,6 +861,7 @@ async function saveSettingsQuiet() {
   patch.uploadEnvs = $("autoUploadEnvs").value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   patch.accountTopics = $("accountTopics").value; // 文本形式「账号=题材」，由后端归一化
   patch.linkRouting = $("linkRouting").value;
+  patch.skipReviewAnswers = Boolean($("skipReviewAnswers") && $("skipReviewAnswers").checked);
   patch.topicRules = $("topicRules").value; // 上传侧分类规则，由后端解析
   patch.accountProxies = $("accountProxies").value; // 纯协议模式：每账号出口代理
   patch.accountConcurrency = Number($("accountConcurrency").value) || 1; // 账号并发（1=顺序）
@@ -803,7 +872,10 @@ async function saveSettingsQuiet() {
   patch.verifyWaitSeconds = Number($("verifyWaitSeconds").value) || 0;
   patch.delayMin = Number($("delayMin").value) || 0;
   patch.delayMax = Number($("delayMax").value) || 0;
-  patch.maxQuestions = Number($("maxQuestions").value) || undefined;
+  // ⚠️ 不能用 `Number(x) || undefined`：界面标签写着「0=不限」，而 `0 || undefined` 会把 0
+  // 变成 undefined，后端拿不到这个键就回落到默认 20 —— 用户填 0 想要"不限"，
+  // 结果每个分类只爬 20 题，输入框重开又显示 20。空着才表示"不改这个设置"。
+  patch.maxQuestions = $("maxQuestions").value.trim() === "" ? undefined : Number($("maxQuestions").value);
   patch.closeAfter = $("closeAfter").value === "true";
   patch.autoSubmit = $("autoSubmit").value === "true";
   patch.crawlStartPage = Number($("crawlStartPage").value) || 1;
@@ -839,6 +911,7 @@ async function loadSettings() {
   $("autoUploadEnvs").value = (settings.uploadEnvs || []).map((env) => env.label || env).join("\n");
   $("accountTopics").value = Object.entries(settings.accountTopics || {}).map(([account, topic]) => `${account}=${topic}`).join("\n");
   $("linkRouting").value = settings.linkRouting || "strict";
+  if ($("skipReviewAnswers")) $("skipReviewAnswers").checked = settings.skipReviewAnswers === true;
   $("topicRules").value = settings.topicRules || "";
   $("searchKeywords").value = settings.searchKeywords || "";
   $("searchPages").value = settings.searchPages || 1;
@@ -913,7 +986,7 @@ function appendLog(text) {
   if (atBottom) view.scrollTop = view.scrollHeight;
 }
 
-const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "startBatchUpload", "startSearchResources", "checkPublished", "refreshAccountOverview", "fetchPassed", "runSelfTest"];
+const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "startBatchUpload", "startSearchResources", "checkPublished", "refreshAccountOverview", "refreshLocalAccounts", "fetchPassed", "runSelfTest"];
 
 function setActionsEnabled(enabled) {
   for (const id of ACTION_BUTTON_IDS) {

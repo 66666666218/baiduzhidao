@@ -138,6 +138,8 @@ class Store {
     this.answers = null;
     this.answersByKey = new Map(); // key -> item（O(1) 定位，避免 unshift 全量重排）
     this.saveTimers = new Map();
+    this.saveRetries = new Map();  // name -> 已重试次数（防抖落盘失败的有限重试）
+    this.lastFlushError = null;    // 最近一次落盘失败（供界面/日志说明"有数据没写出去"）
     this.claimLock();
     // 锁必须跟着写入者一起续期：只有 GUI 开心跳的话，跑几十分钟的命令行任务会在 90 秒后
     // 被自己的锁判成"已死"，第二个写入者随即放行——整份内存缓存互相覆写，正是这把锁要防的事。
@@ -211,9 +213,31 @@ class Store {
   /** 持有者心跳续期（GUI 用；unref 保证不会因这把锁而不退出） */
   startLockHeartbeat(intervalMs = 30000) {
     this.stopLockHeartbeat();
-    this._lockTimer = setInterval(() => this.writeLock(), intervalMs);
+    this._lockTimer = setInterval(() => this.heartbeatTick(), intervalMs);
     if (this._lockTimer.unref) this._lockTimer.unref();
     return this._lockTimer;
+  }
+
+  /**
+   * 心跳续期：**只有当前锁是我们的、或原持有者已死/已过期时才写锁**。
+   *
+   * 以前心跳是无条件 `writeLock()`，于是"GUI 在脚本运行时被打开"会发生这件事：
+   *   ① 构造时 claimLock() 发现活着的脚本 → 警告一次（正确）；
+   *   ② 30 秒后心跳把 `.store.lock` 改写成 GUI 自己的 pid；
+   *   ③ 此后每次 `detectForeignWriter()` 读到的都是自己的 pid → 返回 null，
+   *      「另一个写入者正在写同一份数据目录」的警告**从此再也不会出现**。
+   * 也就是说：这把锁本来是防"两边各持内存缓存整份覆写 JSON"的，结果被自己的心跳废掉了。
+   * 现在别人的锁还活着就只续期"认知"（更新 foreignWriter），不去抢；等对方退出/失联后再接管。
+   */
+  heartbeatTick() {
+    const existing = this.readLock();
+    if (existing && existing.pid !== process.pid && isPidAlive(existing.pid)
+      && Date.now() - Number(existing.at || 0) < LOCK_STALE_MS) {
+      this.foreignWriter = { ...existing, idleMs: Date.now() - Number(existing.at || 0) };
+      return;
+    }
+    this.foreignWriter = null;
+    this.writeLock();
   }
 
   stopLockHeartbeat() {
@@ -552,7 +576,20 @@ class Store {
     if (this.saveTimers.has(name)) clearTimeout(this.saveTimers.get(name));
     const timer = setTimeout(() => {
       this.saveTimers.delete(name);
-      this.flush(name);
+      // 定时器回调里抛出来就是 uncaughtException，而且这次变更**再也没有任何定时器会重试**
+      //（条目在上面已经删掉了）。以前 main.js 只 console.error 一句，既没进日志也没到界面，
+      // 用户对"某几条没入库"毫无察觉。这里自己接住、有限次重排，并把错误记下来。
+      try {
+        this.flush(name);
+        this.saveRetries.delete(name);
+      } catch (error) {
+        const tries = (this.saveRetries.get(name) || 0) + 1;
+        this.saveRetries.set(name, tries);
+        this.lastFlushError = { at: new Date().toISOString(), name, error: error.message, tries };
+        // 磁盘满/杀软占用往往是暂时的，但无限重试会变成每 5 秒响一次的噪声 —— 试 3 次就停手，
+        // 把失败留给 flushAll（任务结束/退出时）再试一次。
+        if (tries < 3) this.scheduleSave(name, 5000);
+      }
     }, delayMs);
     this.saveTimers.set(name, timer);
   }
@@ -563,12 +600,29 @@ class Store {
     if (name === "progress" && this._progress) writeAtomic(this.files.progress, this._progress);
   }
 
+  /**
+   * 立即落盘全部脏文件。
+   *
+   * **逐文件独立容错**：某个文件写失败不能连累其余文件，也不再向上抛 ——
+   * 以前它写失败会在中途抛出、后面的文件一个都不写，而调用方在任务**成功**路径上调用它，
+   * 于是把一个已经跑完的任务报成"任务失败"；更糟的是 answers/progress 的防抖定时器
+   * 已经被这里清掉，内存里的提交状态/断点再也没有待触发的写入。
+   *
+   * @returns {Array<{name:string, error:string}>} 失败清单（空数组 = 全部写完）
+   */
   flushAll() {
     for (const timer of this.saveTimers.values()) clearTimeout(timer);
     this.saveTimers.clear();
-    this.flush("bank");
-    this.flush("answers");
-    this.flush("progress");
+    const failed = [];
+    for (const name of ["bank", "answers", "progress"]) {
+      try {
+        this.flush(name);
+      } catch (error) {
+        failed.push({ name, error: error.message });
+      }
+    }
+    if (failed.length) this.lastFlushError = { at: new Date().toISOString(), failed };
+    return failed;
   }
 }
 

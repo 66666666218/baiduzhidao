@@ -415,16 +415,27 @@ test("契约⑦：网盘协议层的请求都必须走 panFetch（UA/Cookie/代�
   //     比全程直连更可疑（实测时就漏了两处，其中一处是建分享）；
   //   · 漏超时 → 网络卡住时整条链永久吊住，日志里连一条错都没有。
   // 这类问题靠人眼复查 7 个调用点，迟早会再漏。
-  const targets = ["electron/src/netdisk/protocol.js", "electron/src/netdisk/share.js"];
+  // 覆盖范围要跟着"谁在发网盘请求"走。第一版只写了 protocol.js 和 share.js，
+  // 于是 manager.js（查空间/列目录/删除/清空回收站）里的裸 fetch 一直没被看住 ——
+  // 它同样漏了代理，同一个坑又踩了一次。新增发请求的文件就加到这里。
+  const targets = [
+    "electron/src/netdisk/protocol.js",
+    "electron/src/netdisk/share.js",
+    "electron/src/netdisk/manager.js",
+  ];
   const problems = [];
   for (const file of targets) {
     const code = stripStringsAndComments(read(file));
     // 匹配 fetch( 且前面不是 . 或字母 —— `panFetch(` 里是大写 F，不会被误匹配
     const hits = code.match(/(^|[^.\w])fetch\s*\(/g) || [];
-    if (hits.length !== 1) {
-      problems.push(`${file}：直接调用 fetch 共 ${hits.length} 处（应当只有 panFetch 内部那 1 处）`);
+    const definesPanFetch = /function panFetch\(/.test(code);
+    // 自己定义 panFetch 的文件里允许有且只有那一处裸 fetch（它就是封装本身）；
+    // 其它文件必须一处都没有 —— 全部经由 panFetch 出去。
+    const expected = definesPanFetch ? 1 : 0;
+    if (hits.length !== expected) {
+      problems.push(`${file}：直接调用 fetch 共 ${hits.length} 处（应为 ${expected} 处）`);
     }
-    if (!/function panFetch\(/.test(code)) problems.push(`${file}：找不到 panFetch 定义`);
+    if (!/panFetch/.test(code)) problems.push(`${file}：里找不到 panFetch（应统一走它发请求）`);
   }
   assert.deepEqual(problems, [], problems.join("\n"));
 });

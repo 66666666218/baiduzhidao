@@ -370,6 +370,12 @@ async function runTopicUploadTask(ctx, deps) {
       log(`提交前体检：${verdict.stats.total} 行 → 放行 ${verdict.stats.kept} 行`
         + `（自动修好 ${verdict.fixed} 行，建议重生成 ${verdict.retry} 行，拦下 ${verdict.stats.dropped} 行）`);
       for (const item of verdict.stats.reasons) log(`  · 拦下原因：${item.reason} —— ${item.count} 行`);
+      if (verdict.retry > 0) {
+        // 必须说清楚"建议重生成"不等于"被剔除"：这些行在 kept 里，**照常上传**。
+        // 以前只报一个数字，读起来像已经处理过了（"重生成由调用方做"，而调用方什么都没做）。
+        log(`  ⚠️ 其中 ${verdict.retry} 行内容有瑕疵（AI 痕迹 / 不确定词过多 / 正文过短），`
+          + "**仍会照常上传** —— 体检只标记、不自动剔除；想拦下它们得把质检规则改成 drop（见 quality/preflight.js）。");
+      }
       if (!verdict.kept.length) {
         log("⚠️ 体检后没有一行能提交，本次结束（先修模板/数据再跑）。");
         return { uploaded: 0, batches: 0, accounts: [], preflight: verdict.stats };

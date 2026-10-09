@@ -296,7 +296,8 @@ async function runCrawlTask(ctx, deps) {
     }
   }
 
-  store.flushAll();
+  const writeFailed = store.flushAll();
+  if (writeFailed.length) log(`⚠️ 题库没能落盘：${writeFailed.map((f) => `${f.name}（${f.error}）`).join("、")} —— 本轮爬到的题可能没保存。`);
 
   // 可选：把题库导出到自定义文件夹（UI 的"爬取结果文件夹"）
   if (crawlOutputDir) {
