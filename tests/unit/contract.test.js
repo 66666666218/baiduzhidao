@@ -285,9 +285,41 @@ function undefinedCallees(rawSrc) {
   // 直接赋值 / 函数 / 类
   for (const m of src.matchAll(/(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) defined.add(m[1]);
   for (const m of src.matchAll(/const\s*\[([^\]]+)\]/g)) for (const n of m[1].split(",")) defined.add(n.trim());
-  // 函数参数：具名与匿名都要（匿名形如 function (resolve)）
-  for (const m of src.matchAll(/function\s*[A-Za-z_$]?[\w$]*\s*\(([^)]*)\)/g)) {
-    for (const p of m[1].split(",")) defined.add(p.split("=")[0].trim());
+  // 形参收集：按"非标识符字符"切分，天然处理 `{ a, b }` / `a = 1` / `{ x: y }`。
+  const addParams = (raw) => {
+    for (const token of String(raw || "").split(/[^A-Za-z0-9_$]+/)) {
+      if (token) defined.add(token);
+    }
+  };
+  // 取 `(` 到**配对** `)` 之间的原文。必须做括号配平：正则的 [^)]* 遇到形参里的
+  // `()`（例如 `onLog = () => {}`）就会断在中间，后面的形参全被漏掉 ——
+  // search-crawler 的 shouldStop / fetchImpl 就是这么被误报成未定义的。
+  const closeParenOf = (openIdx) => {
+    let depth = 0;
+    for (let i = openIdx; i < src.length; i += 1) {
+      if (src[i] === "(") depth += 1;
+      else if (src[i] === ")") { depth -= 1; if (depth === 0) return i; }
+    }
+    return -1;
+  };
+  // function 声明（含 async / 生成器 / 匿名）
+  for (const m of src.matchAll(/function[ \t]*\*?[ \t]*[A-Za-z_$]?[A-Za-z0-9_$]*[ \t]*\(/g)) {
+    const open = m.index + m[0].length - 1;
+    const close = closeParenOf(open);
+    if (close > open) addParams(src.slice(open + 1, close));
+  }
+  // 类 / 对象方法，含 `async` 前缀：`async start(name, payload, run, {…} = {}) {`
+  // 以前只认 `function` 声明、且不接受 async 前缀，于是 manager.start 的 run、
+  // client.generateAnswer 的 onLog 都被误报。这里要求形参后紧跟方法体 `{`，
+  // 免得把普通调用 `foo(bar);` 的实参也当成形参收进来（那会掩盖真问题）。
+  const NOT_A_METHOD = /^(if|for|while|switch|catch|return|typeof|new|await|else|do|function|assert|expect)$/;
+  for (const m of src.matchAll(/^[ \t]*(?:async[ \t]+)?([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*\(/gm)) {
+    if (NOT_A_METHOD.test(m[1])) continue;
+    const open = m.index + m[0].length - 1;
+    const close = closeParenOf(open);
+    if (close < 0) continue;
+    if (!/^[ \t]*\{/.test(src.slice(close + 1, close + 80))) continue;
+    addParams(src.slice(open + 1, close));
   }
   // 箭头函数的参数：单个无括号的 (x) => 和 (a, b) =>
   for (const m of src.matchAll(/(?:^|[^\w$.])([A-Za-z_$][\w$]*)\s*=>/g)) defined.add(m[1]);
@@ -336,6 +368,7 @@ function undefinedCallees(rawSrc) {
     "AbortSignal", "globalThis", "URLSearchParams",
     // 脚本在 page.evaluate(() => ...) 回调里跑的是**浏览器**上下文，document/window 是那里的全局
     "document", "window", "localStorage", "location", "navigator",
+    "Event", "InputEvent", "CustomEvent", "MouseEvent", "KeyboardEvent",
     "if", "for", "while", "switch", "catch", "return", "typeof", "function", "new", "await",
     "this", "super", "import", "delete", "void", "in", "of", "do", "else", "try", "throw", "yield",
     "async", "await", "case", "default", "break", "continue", "instanceof", "undefined", "null", "true", "false",
@@ -349,7 +382,21 @@ test("契约⑥：主进程与脚本里调用的标识符都有来源（防 Refe
   // 加 scripts/ 是因为我在这上面栽过一次 —— 给 migrate-v1-bank.js 改成
   // 「按仓库位置推导默认路径」时用了 `root`，而那个文件里根本没有 `root`
   // （它用的是 __dirname）。node --check 只查语法，查不出这种。
-  const targets = ["electron/app-context.js",
+  // 扫描范围：主进程 + 全部 electron/src 源码 + 全部 CLI 脚本。
+  // 以前只扫 app-context 和 scripts，**electron/src 下的文件一个都没查过** ——
+  // 而 chromium 那次事故恰恰证明：同一个"少 import 一个模块"，换个调用路径就会在别处重现。
+  // 换电脑/换环境时最容易踩这类（走的代码路径平时跑不到）。
+  const walkJs = (dir) => {
+    const out = [];
+    for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+      const rel = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) out.push(...walkJs(rel));
+      else if (entry.name.endsWith(".js")) out.push(rel);
+    }
+    return out;
+  };
+  const targets = ["electron/app-context.js", "electron/main.js",
+    ...walkJs("electron/src"),
     ...fs.readdirSync(path.join(root, "scripts")).filter((f) => f.endsWith(".js")).map((f) => `scripts/${f}`)];
   const problems = [];
   for (const file of targets) {

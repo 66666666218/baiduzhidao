@@ -42,7 +42,13 @@ function defaultDataDir() {
   return path.join(app.getPath("appData"), "zhidao-answer-studio");
 }
 
-const dataDir = app.isPackaged ? defaultDataDir() : path.resolve(__dirname, "..", "运行缓存");
+// 数据目录：① 环境变量 ZHIDAO_DATA_DIR 优先 —— 用来把软件指到一个**干净目录**，
+//              模拟"换了一台新电脑"跑测试（否则永远只能用开发态那份带着历史数据的 运行缓存）；
+//            ② 打包版写用户数据目录 %APPDATA%\zhidao-answer-studio；
+//            ③ 开发态用仓库里的 运行缓存。
+const dataDir = process.env.ZHIDAO_DATA_DIR
+  ? path.resolve(process.env.ZHIDAO_DATA_DIR)
+  : (app.isPackaged ? defaultDataDir() : path.resolve(__dirname, "..", "运行缓存"));
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(path.join(dataDir, "logs"), { recursive: true });
 

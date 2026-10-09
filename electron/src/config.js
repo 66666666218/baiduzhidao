@@ -170,6 +170,13 @@ class Config {
       const raw = JSON.parse(fs.readFileSync(this.filePath, "utf8") || "{}");
       this.data = normalizeSettings(raw && typeof raw === "object" ? raw : {});
     } catch (error) {
+      // 文件**不存在**（首次运行 / 换了台新电脑）不算错误：静默用默认值就行。
+      // 以前这里一律报「settings.json 解析失败，且无法留底坏文件」——
+      // 新电脑第一次启动就会看到这句，让人以为装坏了（实测空目录下必现）。
+      if (error && error.code === "ENOENT") {
+        this.data = normalizeSettings({});
+        return this.data;
+      }
       // 静默回退默认值 = 下一次保存把默认值写回文件，API Key / 路径就此丢失。
       // 先把坏文件留底，再尝试抢救完整部分，最后才回退默认。
       const backup = `${this.filePath}.损坏备份_${new Date().toISOString().replace(/[:.]/g, "")}`;
