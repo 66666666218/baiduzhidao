@@ -454,7 +454,10 @@
           <div class="field-grid">
             <div class="field"><label>从比特窗口提取</label><div class="pair"><input type="text" id="nmWindowName" placeholder="窗口名" /><button class="btn soft" id="nmExtract">提取</button></div></div>
             <div class="field"><label>账号备注名</label><input type="text" id="nmAccountName" placeholder="如：测试组1" /></div>
-            <div class="field" style="grid-column: 1 / -1;"><label>Cookie 粘贴（推荐，无需比特浏览器）</label><textarea id="nmCookie" rows="3" placeholder="浏览器登录 pan.baidu.com 后：F12 → 网络 → 点任意请求 → 复制请求头整串 Cookie（含 BDUSS 与 STOKEN）粘贴到这里；也支持只粘贴纯 BDUSS 值"></textarea></div>
+            <div class="field" style="grid-column: 1 / -1;"><label>Cookie 粘贴（推荐，无需比特浏览器）</label><textarea id="nmCookie" rows="4" placeholder="【怎么取】用你自己的浏览器登录 zhidao.baidu.com 或 pan.baidu.com&#10;→ 按 F12 打开开发者工具 → 切到「网络 / Network」&#10;→ 刷新页面，点列表里任意一条请求 → 在「请求头」里找到 Cookie 那一行&#10;→ 整行复制，粘贴到这里（含 BDUSS 就够，STOKEN 有更好）"></textarea>
+            <p class="hint"><b>只需粘一份</b>：<code>BDUSS</code> 是百度<b>全域</b> Cookie，网盘和知道通用 —— 不用分别给网盘的和知道的。
+              <b>别把多个域的 Cookie 拼在一起</b>（同名不同域会互相覆盖，反而变成"未登录"），从哪个域复制就用哪一份。<br/>
+              添加时会立刻校验登录态：<b>有效的当场通过</b>；无效会告诉你原因，不会静默存进去。</p></div>
           </div>
           <div class="card-actions"><button class="btn primary" id="nmAddAccount">添加账号</button><button class="btn soft" id="nmRefreshAccounts">刷新</button><span class="hint">备注名留空时自动命名</span></div>
           <div class="table-wrap"><table id="nmAccountsTable"><thead><tr><th>名称</th><th>总容量</th><th>剩余</th><th>操作</th></tr></thead><tbody id="nmAccountsBody"></tbody></table></div>

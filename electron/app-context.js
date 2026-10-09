@@ -258,6 +258,19 @@ async function runSearchResourcesTask(ctx, deps) {
  *
  * 返回 "" 表示没存 → 调用方回落到开窗口取。
  */
+/**
+ * 用「知道侧」接口验证这份 Cookie 的登录态 —— 这是整条链的通行证。
+ * 只带这两条就够：BDUSS 是百度全域 Cookie，网盘和知道通用；STOKEN 给网盘侧用。
+ */
+async function fetchZhidaoLogin(account) {
+  const cookie = `BDUSS=${String(account.bduss || "").trim()}${account.stoken ? "; STOKEN=" + String(account.stoken).trim() : ""}`;
+  const res = await fetch(`https://zhidao.baidu.com/api/loginInfo?t=${Date.now()}`, {
+    headers: { Cookie: cookie, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36", Referer: "https://zhidao.baidu.com" },
+    signal: AbortSignal.timeout ? AbortSignal.timeout(12000) : undefined,
+  });
+  return JSON.parse(await res.text());
+}
+
 function storedCookieOf(envLabel, log) {
   try {
     const { credentialOf } = require("./src/netdisk/manager");
@@ -659,12 +672,24 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     if (!name || !bduss) throw new Error("名称与 BDUSS 必填");
     const stoken = String(acc && acc.stoken || "").trim();
     const account = { name, bduss, stoken, addedAt: new Date().toISOString() };
-    const check = await manager.quota(account).catch(() => ({ valid: false }));
-    if (!check.valid) throw new Error("凭证无效（BDUSS 失效或格式错误）");
+    // 校验分两步，**主次不能颠倒**：
+    //   ① 知道侧登录态（/api/loginInfo）—— 这才是"整个软件的通行证"，提交/爬题/上传都靠它，必须有效；
+    //   ② 网盘容量（/api/quota）—— 只影响网盘链，**失败不该拦住添加**：
+    //      只登录了知道、没登网盘的账号，对答题链完全够用，以前用网盘接口校验会把它们误拒。
+    const login = await fetchZhidaoLogin(account).catch(() => null);
+    if (!login || Number(login.isLogin) !== 1) {
+      throw new Error("这个 Cookie 的百度登录态无效或已过期（知道侧 isLogin≠1）。请重新登录后复制新的 Cookie。");
+    }
+    const quota = await manager.quota(account).catch(() => null);
     const accounts = manager.loadAccounts(dataDir).filter((a) => a.name !== name);
-    accounts.push({ ...account, totalGB: check.totalGB, freeGB: check.freeGB });
+    accounts.push({
+      ...account,
+      userName: String(login.userName || ""),
+      totalGB: quota && quota.valid ? quota.totalGB : null,
+      freeGB: quota && quota.valid ? quota.freeGB : null,
+    });
     manager.saveAccounts(dataDir, accounts);
-    return check;
+    return { valid: true, userName: String(login.userName || ""), totalGB: quota ? quota.totalGB : null, freeGB: quota ? quota.freeGB : null, netdiskOk: Boolean(quota && quota.valid) };
   });
   ipcMain.handle("netdisk:accounts:extract-from-window", async (_e, p) => {
     const env = String(p && p.bitEnv || "").trim();
