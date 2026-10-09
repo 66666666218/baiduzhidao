@@ -34,7 +34,6 @@ const startIdx = Math.max(0, Number(args.start) || 0);
 const limit = args.limit !== undefined ? Math.max(0, Number(args.limit)) : 20;
 const delayMinS = Math.max(3, Number(args["delay-min"]) || 6);
 const delayMaxS = Math.max(delayMinS, Number(args["delay-max"]) || 12);
-const keepImg = !args["no-img"];
 const destSelect = args["dest-select"] || "";
 
 const baseName = path.basename(inputFile).replace(/\.xlsx$/i, "").slice(0, 40);
@@ -177,7 +176,7 @@ function parseLinkCell(text) {
       const qaRow = {
         qid: "",
         问题标题: qaLib.buildTitle(meta, i),
-        回答内容: qaLib.buildAnswerHtml(ownLink, qaLib.buildIntro(meta), keepImg),
+        回答内容: qaLib.buildAnswerHtml(ownLink, qaLib.buildIntro(meta)),
       };
       const okEntry = { srcLink, name: rawName, status: "done", phase: "done", toPaths, ownLink, ownPwd: share.password, qaRow, at: new Date().toISOString() };
       state.set(srcLink, okEntry);

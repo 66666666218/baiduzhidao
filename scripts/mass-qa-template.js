@@ -16,7 +16,7 @@
  *   - 标题：多模板轮换 + 5~49 字硬校验 + 全局查重
  *   - 简介：按 元数据规则化生成（年份/国家/类型），200 字内
  *
- * 用法：node scripts/mass-qa-template.js <资源表.xlsx> [输出目录] [每文件行数=5000] [--no-img]
+ * 用法：node scripts/mass-qa-template.js <资源表.xlsx> [输出目录] [每文件行数=5000]
  */
 
 const path = require("path");
@@ -29,10 +29,9 @@ const srcFile = process.argv[2] && !process.argv[2].startsWith("--")
 const outDir = process.argv[3] && !process.argv[3].startsWith("--")
   ? path.resolve(process.argv[3]) : path.join(__dirname, "..", "运行缓存", "答题模板QA");
 const chunkRows = Math.max(100, Number(process.argv[4]) || 5000);
-const keepImg = !process.argv.includes("--no-img");
 
 if (!srcFile || !fs.existsSync(srcFile)) {
-  console.error("用法: node scripts/mass-qa-template.js <资源表.xlsx> [输出目录] [每文件行数=5000] [--no-img]");
+  console.error("用法: node scripts/mass-qa-template.js <资源表.xlsx> [输出目录] [每文件行数=5000]");
   process.exit(1);
 }
 
@@ -42,7 +41,7 @@ const parseName = qaLib.parseName;
 const reject = qaLib.reject;
 const buildTitle = qaLib.buildTitle;
 const buildIntro = qaLib.buildIntro;
-const buildAnswerHtml = (link, intro) => qaLib.buildAnswerHtml(link, intro, keepImg);
+const buildAnswerHtml = (link, intro) => qaLib.buildAnswerHtml(link, intro);
 
 // ---------- 主流程 ----------
 (async () => {

@@ -49,7 +49,6 @@ const limit = args.limit !== undefined && Number.isFinite(_limN) ? Math.max(0, _
 const CC = Math.max(1, Number(args.cc) || 4);
 const paceMs = Math.max(300, Number(args["pace-ms"]) || 1200);
 const destRoot = args.dest || "/来自资源批量转存";
-const keepImg = !args["no-img"];
 
 const baseName = path.basename(inputFile).replace(/\.(xlsx|txt)$/i, "").slice(0, 40);
 const workDir = path.join(root, "运行缓存", "transfer-batch", baseName);
@@ -322,7 +321,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
         const qaRow = {
           qid: "",
           问题标题: qaLib.buildTitle(meta, t.idx),
-          回答内容: qaLib.buildAnswerHtml(ownLink, qaLib.buildIntro(meta), keepImg),
+          回答内容: qaLib.buildAnswerHtml(ownLink, qaLib.buildIntro(meta)),
         };
         const okEntry = { srcLink: t.srcLink, name: displayName, status: "done", phase: "done", toPaths, ownLink, ownPwd: share.password, qaRow, at: new Date().toISOString() };
         state.set(t.srcLink, okEntry);

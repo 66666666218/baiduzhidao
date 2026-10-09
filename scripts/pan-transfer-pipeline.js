@@ -26,7 +26,6 @@
  *     --pace-ms=1500         同阶段相邻请求间隔（默认 1500，防风控）
  *     --dest=/目录           转存目标根目录（默认 /来自资源批量转存）
  *     --share-pwd=abcd       固定自有分享提取码（默认每条随机）
- *     --no-img               回答不带空 img 标签（默认按模板保留）
  *     --fresh                忽略历史状态全量重跑
  */
 
@@ -62,7 +61,6 @@ const cc = {
   share: Math.max(1, Number(args["cc-share"]) || 4),
 };
 const paceMs = Math.max(200, Number(args["pace-ms"]) || 800);
-const keepImg = !args["no-img"];
 const fixedPwd = typeof args["share-pwd"] === "string" ? args["share-pwd"] : "";
 
 const baseName = path.basename(inputFile).replace(/\.xlsx$/i, "").slice(0, 40);
@@ -287,7 +285,7 @@ function parseLinkCell(text) {
         t.qaRow = {
           qid: "",
           问题标题: qaLib.buildTitle(meta, t.idx),
-          回答内容: qaLib.buildAnswerHtml(t.ownLink, qaLib.buildIntro(meta), keepImg),
+          回答内容: qaLib.buildAnswerHtml(t.ownLink, qaLib.buildIntro(meta)),
         };
         qaRows.push(t.qaRow);
         done += 1;

@@ -101,7 +101,7 @@ function saveState(entry) {
       const qaRow = {
         qid: "",
         问题标题: qaLib.buildTitle(meta, i),
-        回答内容: qaLib.buildAnswerHtml(ownLink, qaLib.buildIntro(meta), true),
+        回答内容: qaLib.buildAnswerHtml(ownLink, qaLib.buildIntro(meta)),
       };
       const entry = { srcPath: u.path, name: u.name, status: "done", phase: "done", ownLink, ownPwd: share.password, qaRow, at: new Date().toISOString() };
       state.set(u.path, entry);

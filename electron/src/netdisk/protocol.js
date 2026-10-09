@@ -8,6 +8,7 @@
 
 const PAN = "https://pan.baidu.com";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class Jar {
   constructor(bduss, stoken) {
@@ -61,12 +62,23 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   if (vBody.errno !== 0 || !vBody.randsk) throw new Error(`verify errno=${vBody.errno}`);
 
   // 2) 分享页 → mset
-  const pResp = await fetch(`${PAN}/s/${fullCode}`, { headers: { "User-Agent": UA, "Cookie": jar.str() }, redirect: "follow" });
-  jar.apply(pResp.headers.getSetCookie ? pResp.headers.getSetCookie() : []);
-  const html = await pResp.text();
-  const mm = html.match(/(?:yunData\.setData|locals\.mset)\(([\s\S]+?)\);/);
-  if (!mm) throw new Error("分享页无数据（可能已失效）");
-  const data = JSON.parse(mm[1]);
+  // 分享页偶发返回不含 mset 的响应（限流 / 半渲染）。一次拿不到就整条判死太脆：
+  // 实测同一条链接、同一份 Cookie，第一次 fetch 解析为空、重试就能拿到。所以给 3 次。
+  const SHARE_DATA_RE = /(?:yunData\.setData|locals\.mset)\(([\s\S]+?)\);/;
+  let html = "";
+  let data = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const pResp = await fetch(`${PAN}/s/${fullCode}`, { headers: { "User-Agent": UA, "Cookie": jar.str() }, redirect: "follow" });
+    jar.apply(pResp.headers.getSetCookie ? pResp.headers.getSetCookie() : []);
+    html = await pResp.text();
+    const mm = html.match(SHARE_DATA_RE);
+    if (mm) {
+      try { data = JSON.parse(mm[1]); } catch { data = null; }
+      if (data && Number(data.errno) === 0) break;
+    }
+    if (attempt < 3) await sleep(1000 * attempt);
+  }
+  if (!data) throw new Error(`分享页无数据（重试 3 次仍失败；响应 ${html.length} 字节，多为限流或分享已失效）`);
   if (Number(data.errno) !== 0) throw new Error(`分享数据 errno=${data.errno}`);
   const uk = String(data.share_uk || data.uk || "");
   const shareid = String(data.shareid || "");
@@ -127,13 +139,18 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
 
   // 4) 建目录 + 转存
   //
-  // ★ 实测（2026-10-09）：百度的 /api/create **已经用不了** ——
-  //   即使逐层建、即使建的是全新的根目录，一律返回 errno=-6，
-  //   且列目录确认目录并未被创建（verify 也不再生效 bdstoken）。
-  //   后果：多层嵌套的目的路径永远建不出来，转存必定报 errno=2
-  //   「转存路径不存在」——而调用方只看到"转存失败"，完全看不出
-  //   是建目录那步没成（对照实验：同一条链接传到**已存在**的目录能成功）。
-  //   所以这里建目录只是尽力而为，真正兜底靠下面 errno=2 时回落到顶层目录。
+  // 逐层 create（/api/create?a=commit&isdir=1）。
+  //
+  // ⚠️ 更正（2026-10-09 复测）：这里曾写下一条**错误结论** ——
+  //   "百度的 /api/create 已经用不了，一律返回 errno=-6，目录并未被创建"。
+  //   真相是同一份代码当天重跑就通了：三层嵌套目录 errno=0、列目录可见、
+  //   转存落盘 4 个文件且未回落。当初那串 -6 来自账号侧（该账号网盘剩余 0）
+  //   叠加偶发限流，不是接口失效。把一次失败写死成"接口已死"，会让后来的人绕远路。
+  //
+  // 另一个真缺陷：建目录结果以前是 `await cResp.json().catch(() => ({}))` 直接丢掉的，
+  //   于是下文 errno=2「目的路径不存在」时，完全看不出是建目录那步没成。
+  //   现在把每层 errno 收进 createLog，跟着错误信息一起冒出来。
+  const createLog = [];
   const segments = String(destDir || "").split("/").filter(Boolean);
   let acc = "";
   for (const seg of segments) {
@@ -143,7 +160,10 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
       headers: { "User-Agent": UA, "Cookie": jar.str(), "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
       body: `path=${encodeURIComponent(acc)}&isdir=1`,
     });
-    await cResp.json().catch(() => ({}));
+    const cBody = await cResp.json().catch(() => ({}));
+    // errno=0 新建成功；目录已存在时百度会返回非 0（见过 -8），也算可用。
+    // 不在这里判成败——真正作数的是紧随其后的 transfer 结果，这里只留证据。
+    if (Number(cBody.errno) !== 0) createLog.push(`${acc}=${cBody.errno}`);
   }
 
   const transferTo = async (target) => {
@@ -181,7 +201,8 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
     if (!to.length) throw new Error("重复转存但未取得已有文件路径");
     return { toPaths: to, dup: true, usedDir, fellBack };
   }
-  if (Number(tBody.errno) !== 0 && !(infoErr === 0)) throw new Error(`转存 errno=${tBody.errno} ${tBody.show_msg || ""}`);
+  const createHint = createLog.length ? `（建目录返回：${createLog.join(", ")}）` : "";
+  if (Number(tBody.errno) !== 0 && !(infoErr === 0)) throw new Error(`转存 errno=${tBody.errno} ${tBody.show_msg || ""}${createHint}`);
 
   // 5) 权威落盘路径（extra.list 取 .to；duplicated.list 取 .path；全部字段化后合并）
   const extraPaths = ((tBody.extra && tBody.extra.list) || []).map((x) => x && x.to).filter(Boolean);

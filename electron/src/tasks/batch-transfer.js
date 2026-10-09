@@ -224,7 +224,7 @@ async function runBatchTransferTask(ctx, deps) {
         const qaRow = {
           qid: "",
           问题标题: title,
-          回答内容: qaLib.buildAnswerHtml(ownLink, qaLib.buildIntro(meta), true),
+          回答内容: qaLib.buildAnswerHtml(ownLink, qaLib.buildIntro(meta)),
         };
         const okEntry = { srcLink, name: rawName, status: "done", phase: "done", toPaths, ownLink, ownPwd, qaRow, at: new Date().toISOString() };
         state.set(srcLink, okEntry);
