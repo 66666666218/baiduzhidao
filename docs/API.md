@@ -45,7 +45,7 @@
 | `task:batch-upload` | 按账号批量上传 | `bitEnvs`、`filePath` | — |
 | **`task:upload-by-topic`** | **新增**。按分类规则给每行派生题材，**拆成一个题材一张表**，每张表交给绑定了该题材的账号上传 | `filePath`、`bitEnvs`、`accountTopics`、`topicRules`、`batchRows`、`maxBatches` | `uploaded`、`splitDir`、`topicTables[]`：`{ topic, file }`、`accounts[]`：`{ envLabel, topic, planned, uploaded, table, error? }` |
 | `task:crawl-home` | 从答主主页找网盘资源 | `homepages`、`enrichLimit` | `count`、`stats`、`outputPath` |
-| **`task:auto-pipeline`** | **新增**。一键全自动：按阶段串行跑「爬题 → 抽题 → 生成 → 提交 → 转存 → 按题材上传」 | `stages[]`（可选值 `crawl`/`pick`/`generate`/`submit`/`transfer`/`upload`）、`pickCount`、`batchRows`、`uploadTablePath`、`transferTablePath`、`transferDestDir`、`transferOutName`、`transferPerEnv`、`transferCc`、`transferDelayMin`、`transferDelayMax` | `ok`、`stopped`、`pickFile`、`stages[]`：`{ stage, label, ok, skipped?, error? }`、`skipped[]`：`{ stage, label, reason }` |
+| **`task:auto-pipeline`** | **新增**。一键全自动：按阶段串行跑「爬题 → 抽题 → 生成 → 提交 → 转存 → 按题材上传」 | `stages[]`（可选值 `crawl`/`pick`/`generate`/`submit`/`transfer`/`upload`）、`pickCount`、`batchRows`、`uploadTablePath`、`transferTablePath`、`transferDestDir`、`transferOutName`、`transferPerEnv`、`transferCc`、`transferDelayMin`、`transferDelayMax` | `ok`、`stopped`、`pickFile`、`stages[]`：`{ stage, label, ok, skipped?, error?, summary? }`、`skipped[]`：`{ stage, label, reason }`、`artifacts[]`：`{ label, path }` |
 
 > `task:auto-pipeline` 与其它任务通道不同：它**不是**单个 TaskManager 任务，
 > 而是在主进程按阶段串行调用 `startTask`（TaskManager 单任务互斥，包成一个大任务会直接冲突）。
@@ -70,6 +70,18 @@
 > 而第三行是**必须**留痕的 —— 历史上这里曾经静默跳过（不进 report、不算失败），
 > 界面于是报"全部阶段成功"，而用户等的恰恰是那一步。
 > **界面判成功不能只看 `ok`，必须同时看 `skipped[]` 是否为空。**
+>
+> **`stages[].summary`（成功的阶段）：** 报出这一步**实际做出了多少** ——
+> `新增 7 题` / `抽到 12 条 → D:\…\抽题.xlsx` / `生成 10 条，失败 2 条` /
+> `提交成功 9 条，失败 1 条` / `转存 25 条` / `上传 480 行` / `已收录 50 条，被拒 3 条`。
+> 整链是无人值守跑的，用户第二天回来看的就是这几行；只写「✅ 爬题」的话，爬了 0 题也是 ✅。
+> 摘要由 `summarizeStage(name, result)` 生成，字段名取自各任务**真实返回值**；对不上时宁可不显示。
+> 注意 `checkPublished` 的 `checked` 是**成功核对到的账号数**，不是收录条数 ——
+> 条数在每账号的 `accounts[].summary.successRows` 里。
+>
+> **`artifacts[]`（本轮产出）：** `{ label, path }`，供界面直接给「打开 / 定位」按钮。
+> 目前收集：抽题表、自动搜到的资源表、上传专用表、收录核对、被拒明细。
+> 空路径不进清单（否则界面上会出现点不开的按钮）。
 
 
 ## 3. `task:submit` 请求字段（含本轮变更）

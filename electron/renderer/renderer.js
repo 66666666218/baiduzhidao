@@ -568,13 +568,42 @@ function renderAutoReport(result) {
   box.textContent = "";
   const lines = (result.stages || []).map((stage) => {
     const mark = stage.ok ? "✅" : stage.skipped ? "⏭️" : "❌";
-    return `${mark} ${stage.label}${stage.ok ? "" : "：" + (stage.error || "")}`;
+    // 成功的阶段也带上"做出了多少"（后端给的 summary）—— 只显示「✅ 爬题」的话，
+    // 爬了 0 题也是 ✅，用户没法从结果表里看出哪一步其实是空转。
+    const detail = stage.ok ? (stage.summary ? `：${stage.summary}` : "") : `：${stage.error || ""}`;
+    return `${mark} ${stage.label}${detail}`;
   });
-  if (!lines.length) return;
-  const paragraph = document.createElement("p");
-  paragraph.className = "hint";
-  paragraph.textContent = `阶段结果：${lines.join("　|　")}`;
-  box.appendChild(paragraph);
+  if (lines.length) {
+    const paragraph = document.createElement("p");
+    paragraph.className = "hint";
+    paragraph.textContent = `阶段结果：${lines.join("　|　")}`;
+    box.appendChild(paragraph);
+  }
+  // 本轮产出的文件：无人值守跑完之后，用户最先想知道的就是"东西在哪"。
+  // 这些路径以前只散落在日志里，而日志会被后续输出顶上翻走。
+  const artifacts = Array.isArray(result.artifacts) ? result.artifacts : [];
+  if (artifacts.length) {
+    const row = document.createElement("p");
+    row.className = "hint";
+    row.appendChild(document.createTextNode("本轮产出："));
+    for (const art of artifacts) {
+      const openButton = document.createElement("button");
+      openButton.type = "button";
+      openButton.textContent = `打开${art.label}`;
+      openButton.addEventListener("click", async () => {
+        const r = await rpc.invoke("file:open", { filePath: art.path });
+        if (r && r.ok === false) appendLog(`打开「${art.label}」失败：${r.error}`);
+      });
+      const revealButton = document.createElement("button");
+      revealButton.type = "button";
+      revealButton.textContent = "定位";
+      revealButton.title = art.path;
+      revealButton.addEventListener("click", () => rpc.invoke("file:reveal", { filePath: art.path }));
+      row.appendChild(openButton);
+      row.appendChild(revealButton);
+    }
+    box.appendChild(row);
+  }
 }
 
 /** 全自动页的运行模式提示：把"这次要开几个窗口、多慢"说清楚 */

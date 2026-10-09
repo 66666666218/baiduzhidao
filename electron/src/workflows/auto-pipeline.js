@@ -25,6 +25,57 @@ function normEnvs(list) {
     .filter(Boolean);
 }
 
+/** 取一个"数字"（缺字段/非数字一律 0，别让摘要里出现 NaN） */
+function num(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * 阶段结果 → 一行摘要。
+ *
+ * 为什么值得单独写：整链是无人值守跑的，用户第二天回来看的就是结果表那几行。
+ * 只写「✅ 爬题」「✅ 提交」等于没说 —— 爬了 0 题也叫成功。所以每个阶段都要报出
+ * **做出了多少**（生成几条、提交成功几条、被拒几条），异常数字才有机会被一眼看见。
+ *
+ * 字段名是从各任务真实的返回值上抄的（不是猜的）；对不上时宁可不显示，也不显示 0 之外的假数据。
+ */
+function summarizeStage(name, result) {
+  const r = result && typeof result === "object" ? result : {};
+  const tail = (value) => (String(value || "").trim() ? ` → ${String(value).trim()}` : "");
+  switch (name) {
+    case "crawl":
+      return `新增 ${num(r.added)} 题`;
+    case "pick":
+      return `抽到 ${num(r.count)} 条${tail(r.filePath)}`;
+    case "generate":
+      return `生成 ${num(r.count)} 条${num(r.failed) ? `，失败 ${num(r.failed)} 条` : ""}`;
+    case "submit":
+      return `提交成功 ${num(r.count)} 条${num(r.failed) ? `，失败 ${num(r.failed)} 条` : ""}`;
+    case "checkPermission": {
+      const accounts = Array.isArray(r.accounts) ? r.accounts : [];
+      const allowed = accounts.filter((a) => a && a.hasPermission !== false).length;
+      return accounts.length ? `可用上传账号 ${allowed}/${accounts.length} 个` : "";
+    }
+    case "search":
+      return `搜到 ${num(r.count)} 条资源`;
+    case "transfer":
+      return `转存 ${num(r.count)} 条${tail(r.outputPath)}`;
+    case "upload":
+      return `上传 ${num(r.uploaded)} 行`;
+    case "checkPublished": {
+      // 注意 checked 是"成功核对到的账号数"，不是收录条数 —— 条数在每账号的 summary 里
+      const ok = (Array.isArray(r.accounts) ? r.accounts : []).filter((a) => a && a.summary);
+      if (!ok.length) return "";
+      const good = ok.reduce((sum, a) => sum + num(a.summary.successRows), 0);
+      const bad = num(r.failedRows);
+      return `已收录 ${good} 条${bad ? `，被拒 ${bad} 条` : ""}`;
+    }
+    default:
+      return "";
+  }
+}
+
 /**
  * @param {object} deps 全部显式注入 —— 这样这个模块不 import electron，
  *   可以脱离 Electron 用假依赖整条跑一遍（见 tests/unit/auto-pipeline.test.js）。
@@ -74,6 +125,14 @@ function createAutoPipeline(deps) {
     let uploadTable = String(p.uploadTablePath || "").trim();
     const stamp = () => new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
 
+    // 本轮产出的文件清单。无人值守跑完之后，用户最想要的就是"东西在哪"——
+    // 这些路径本来只散落在日志里，翻起来很费劲，而日志会被后续输出顶上翻走。
+    const artifacts = [];
+    const addArtifact = (label, file) => {
+      const path = String(file || "").trim();
+      if (path) artifacts.push({ label, path });
+    };
+
     const runStage = async (name, label, fn) => {
       if (aborted) {
         report.push({ stage: name, label, ok: false, skipped: true, error: "已停止" });
@@ -83,8 +142,11 @@ function createAutoPipeline(deps) {
       pulse();
       try {
         const result = await fn();
-        report.push({ stage: name, label, ok: true });
-        emit("task:log", `──── ${label} 完成 ────`);
+        // 带上"这一步到底做出了什么"。结果表里只写「✅ 爬题」等于没说 ——
+        // 用户跑的是无人值守的整链，第二天回来看的就是这几行。
+        const summary = summarizeStage(name, result);
+        report.push({ stage: name, label, ok: true, ...(summary ? { summary } : {}) });
+        emit("task:log", `──── ${label} 完成${summary ? `：${summary}` : ""} ────`);
         return result;
       } catch (error) {
         report.push({ stage: name, label, ok: false, error: error.message });
@@ -157,6 +219,7 @@ function createAutoPipeline(deps) {
             });
             if (result.canceled) throw new Error("抽题被取消");
             pickFile = result.filePath;
+            addArtifact("抽题表", result.filePath);
             return result;
           });
         }
@@ -260,7 +323,10 @@ function createAutoPipeline(deps) {
                 limit: Number(p.searchRowLimit) || 0,
               }, (c) => taskRunners.searchResources(c, taskDeps()))
             );
-            if (searched && searched.outputPath && fs.existsSync(searched.outputPath)) transferTable = searched.outputPath;
+            if (searched && searched.outputPath && fs.existsSync(searched.outputPath)) {
+              transferTable = searched.outputPath;
+              addArtifact("自动搜到的资源表", searched.outputPath);
+            }
           }
           if (!transferTable || !fs.existsSync(transferTable)) {
             skipStage("transfer", "网盘转存", "没有可用的资源表，自动搜索也没产出");
@@ -280,6 +346,7 @@ function createAutoPipeline(deps) {
               // 转存产出的上传专用表直接喂给下一阶段，不用人工再选一次文件
               if (result && result.outputPath) {
                 uploadTable = result.outputPath;
+                addArtifact("上传专用表", result.outputPath);
                 emit("task:log", `转存产出上传专用表：${uploadTable}（${result.count} 条）`);
               }
               return result;
@@ -310,9 +377,17 @@ function createAutoPipeline(deps) {
           // 上传完顺手核对收录。上传接口返回 200 只代表**平台收下了**，
           // 平台还要异步审核，收录结果要单独查——不查的话"上传成功"是句空话。
           if (uploaded && !failure && !aborted) {
-            await runStage("checkPublished", "查收录（核对是否被收录）", () =>
-              startTask("check-published", { bitEnvs }, (c) => taskRunners.checkPublished(c, taskDeps()))
+            // 只查**真正上传过的那批账号**（uploadEnvs 已被权益门收窄）。用全部账号查的话，
+            // 比特模式下会为没上传的号白开一圈窗口，而它们的工作台里本来就没有本轮的上传记录。
+            const publishedCheck = await runStage("checkPublished", "查收录（核对是否被收录）", () =>
+              startTask("check-published", { bitEnvs: uploadEnvs }, (c) => taskRunners.checkPublished(c, taskDeps()))
             );
+            // 查收录产出的两张表是"下一步该干什么"的直接依据（被拒明细里连原因都有），
+            // 所以必须进产物清单，不能只躺在日志里。
+            if (publishedCheck) {
+              addArtifact("收录核对", publishedCheck.outputPath);
+              addArtifact("被拒明细", publishedCheck.failedPath);
+            }
           }
         }
       }
@@ -340,8 +415,10 @@ function createAutoPipeline(deps) {
       pickFile,
       // 给界面用：ok 为 true 但这里有内容时，文案不能说"全部阶段成功"
       skipped: skipped.map((s) => ({ stage: s.stage, label: s.label, reason: s.error })),
+      // 本轮产出的文件（抽题表 / 上传专用表 / 收录核对 / 被拒明细 …），界面直接给"打开/定位"
+      artifacts,
     };
   }
 }
 
-module.exports = { createAutoPipeline, ALL_STAGES, normEnvs };
+module.exports = { createAutoPipeline, ALL_STAGES, normEnvs, summarizeStage };

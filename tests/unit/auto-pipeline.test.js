@@ -14,7 +14,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 const path = require("node:path");
 
-const { createAutoPipeline, ALL_STAGES, normEnvs } = require("../../electron/src/workflows/auto-pipeline");
+const { createAutoPipeline, ALL_STAGES, normEnvs, summarizeStage } = require("../../electron/src/workflows/auto-pipeline");
 
 /** 造一套假依赖：记录调用顺序，结果/异常可逐阶段定制 */
 function harness(overrides = {}) {
@@ -283,4 +283,111 @@ test("重入保护：连点两次「开始」，第二次直接拒绝（否则�
   release();
   const result = await first;
   assert.equal(result.ok, true, "第一次不该被第二次影响");
+});
+
+// ---------- 阶段摘要：结果表不能只写「✅ 爬题」 ----------
+// 整链是无人值守跑的，用户第二天回来看的就是结果表那几行。爬了 0 题也叫成功，
+// 所以每个阶段必须报出"做出了多少"，异常数字才有机会被一眼看见。
+
+test("summarizeStage：每个阶段都报出实际做出了多少", () => {
+  assert.equal(summarizeStage("crawl", { added: 7 }), "新增 7 题");
+  assert.equal(summarizeStage("pick", { count: 12, filePath: "D:/x/抽题.xlsx" }), "抽到 12 条 → D:/x/抽题.xlsx");
+  assert.equal(summarizeStage("generate", { count: 12, failed: 0 }), "生成 12 条");
+  assert.equal(summarizeStage("generate", { count: 10, failed: 2 }), "生成 10 条，失败 2 条");
+  assert.equal(summarizeStage("submit", { count: 9, failed: 1 }), "提交成功 9 条，失败 1 条");
+  assert.equal(summarizeStage("search", { count: 30 }), "搜到 30 条资源");
+  assert.equal(summarizeStage("transfer", { count: 25, outputPath: "D:/y/上传表.xlsx" }), "转存 25 条 → D:/y/上传表.xlsx");
+  assert.equal(summarizeStage("upload", { uploaded: 480 }), "上传 480 行");
+});
+
+test("summarizeStage：权益门报「可用账号数」，不能把「查不到」算成「没有」", () => {
+  // hasPermission=null 是"未知"（未登录/查询失败），按可用算 —— 与编排里的权益门同一口径
+  const accounts = [
+    { envLabel: "A", hasPermission: true },
+    { envLabel: "B", hasPermission: null },
+    { envLabel: "C", hasPermission: false },
+  ];
+  assert.equal(summarizeStage("checkPermission", { accounts }), "可用上传账号 2/3 个");
+  assert.equal(summarizeStage("checkPermission", { accounts: [] }), "", "一个账号都没查到时不必显示");
+});
+
+test("summarizeStage：查收录的「已收录」要按账号 summary 累加（checked 是账号数，不是条数）", () => {
+  const r = {
+    checked: 2,   // 成功核对到的**账号数**
+    failedRows: 3,
+    accounts: [
+      { envLabel: "A", ok: true, summary: { successRows: 40, failedRows: 3 } },
+      { envLabel: "B", ok: true, summary: { successRows: 10, failedRows: 0 } },
+      { envLabel: "C", ok: false, hasPermission: null, error: "未登录" },
+    ],
+  };
+  assert.equal(summarizeStage("checkPublished", r), "已收录 50 条，被拒 3 条");
+  assert.equal(summarizeStage("checkPublished", { accounts: [{ envLabel: "C", ok: false }] }), "",
+    "一条都没核对到时不该显示 0 条（那会被读成「确实收录了 0 条」）");
+});
+
+test("summarizeStage：字段缺失/非数字一律给 0，摘要里绝不出现 NaN/undefined", () => {
+  for (const stage of ["crawl", "pick", "generate", "submit", "search", "transfer", "upload"]) {
+    const text = summarizeStage(stage, undefined);
+    assert.doesNotMatch(text, /NaN|undefined|null/, `${stage} 的摘要不该带 NaN/undefined：${text}`);
+  }
+  assert.equal(summarizeStage("pick", { count: "abc" }), "抽到 0 条");
+  assert.equal(summarizeStage("不存在的阶段", { count: 1 }), "");
+});
+
+test("报告里成功阶段带 summary、失败/跳过阶段带 error（两者不同时出现）", async () => {
+  const h = harness();
+  // crawl 阶段会把任务的 `count` 累加成自己的 `added`（真实任务返回的是 count）
+  h.ov.taskResults = { crawl: () => ({ count: 5 }) };
+  const result = await h.pipeline.run({ stages: ["crawl", "pick"] });
+
+  const crawl = stageOf(result, "crawl");
+  assert.equal(crawl.summary, "新增 5 题");
+  assert.equal(crawl.error, undefined, "成功的阶段不该有 error");
+
+  const failed = harness({ taskResults: { crawl: "throw" } });
+  const r2 = await failed.pipeline.run({ stages: ["crawl"] });
+  assert.equal(stageOf(r2, "crawl").summary, undefined, "失败的阶段不该有 summary");
+  assert.ok(stageOf(r2, "crawl").error);
+});
+
+// ---------- 本轮产出清单 ----------
+// 无人值守跑完之后，用户最先想知道的是"东西在哪"。这些路径以前只散落在日志里。
+
+test("artifacts：抽题表/上传专用表/收录核对/被拒明细都要进清单", async () => {
+  const pick = path.join("/tmp", "抽题.xlsx");
+  const uploadTable = path.join("/tmp", "上传专用表.xlsx");
+  const collect = path.join("/tmp", "收录核对.xlsx");
+  const rejected = path.join("/tmp", "被拒明细.xlsx");
+  const h = harness({ accounts: [{ envLabel: "账号1", hasPermission: true }] });
+  h.ov.taskResults = {
+    "batch-transfer": () => ({ outputPath: uploadTable, count: 3 }),
+    "check-published": () => ({ accounts: [{ envLabel: "账号1", ok: true, summary: { successRows: 3, failedRows: 1 } }], outputPath: collect, failedPath: rejected, failedRows: 1, checked: 1 }),
+  };
+
+  const result = await h.pipeline.run({ stages: ["pick", "generate", "transfer", "upload"], ...WITH_TABLES, uploadTablePath: "" });
+  const paths = result.artifacts.map((a) => a.path);
+
+  assert.ok(paths.includes(pick), `抽题表应在产物里：${JSON.stringify(result.artifacts)}`);
+  assert.ok(paths.includes(uploadTable), "转存产出应进产物");
+  assert.ok(paths.includes(collect) && paths.includes(rejected), "收录核对与被拒明细都应进产物");
+  assert.ok(result.artifacts.every((a) => a.label && a.path), "每条都要有名字和路径");
+});
+
+test("artifacts：空路径不进清单（否则界面上会出现点不开的按钮）", async () => {
+  const h = harness();
+  h.ov.taskResults = {
+    // 查收录没产出任何表（一条都没核对上），outputPath/failedPath 都是空串
+    "check-published": () => ({ accounts: [], outputPath: "", failedPath: "", failedRows: 0, checked: 0 }),
+  };
+  const result = await h.pipeline.run({ stages: ["transfer", "upload"], ...WITH_TABLES });
+  assert.deepEqual(result.artifacts.map((a) => a.path).filter((x) => !x), []);
+  assert.ok(!result.artifacts.some((a) => a.path === ""));
+});
+
+test("artifacts：一个阶段都没跑成时是空数组，不是 null（界面直接 .length 读它）", async () => {
+  const h = harness({ taskResults: { crawl: "throw" } });
+  const result = await h.pipeline.run({ stages: ["crawl"] });
+  assert.ok(Array.isArray(result.artifacts));
+  assert.deepEqual(result.artifacts, []);
 });

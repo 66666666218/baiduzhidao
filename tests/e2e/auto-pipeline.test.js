@@ -67,11 +67,12 @@ test("E2E 一键全自动：编排器 → 爬题 → 抽题 → 生成 → 提�
     });
 
     // 抽题：行为与 app-context 里那份一致（读题库 → 随机抽 → 写 xlsx）
+    // 返回形状也必须一致（count / filePath）—— 摘要就是按它算的，形状错了摘要会显示 0。
     const pickQuestions = async ({ categories, count, outputPath }) => {
       const bank = rig.deps.store.loadBank();
       const picked = randomPickQuestions(bank, [], { categories, count });
       excel.writeWorkbook(outputPath, picked.picked.map(excel.answerToRow), "随机抽题", excel.ANSWER_HEADERS);
-      return { canceled: false, filePath: outputPath, picked: picked.picked.length };
+      return { canceled: false, filePath: outputPath, count: picked.picked.length, results: picked.picked };
     };
 
     const pipeline = createAutoPipeline({
@@ -110,11 +111,23 @@ test("E2E 一键全自动：编排器 → 爬题 → 抽题 → 生成 → 提�
     assert.ok(pulses.includes("running"), "每个阶段开始都要发进度脉冲");
     assert.ok(!pulses.includes("failed"), `不该出现失败脉冲${detail}`);
 
+    // ---------- 1b. ★ 每个成功阶段都要报出"做出了多少" ----------
+    // 这一段同时验证了一件容易错的事：summarizeStage 认的字段名必须与**真实任务的返回值**对得上。
+    // 对不上的话摘要会显示 0（看起来像"真的什么都没做"），比不显示更糟。所以这里读真实结果。
+    const summaryOf = (stage) => (result.stages.find((s) => s.stage === stage) || {}).summary || "";
+    for (const s of result.stages) assert.ok(s.summary, `「${s.label}」应有摘要${detail}`);
+    assert.match(summaryOf("crawl"), /新增 [1-9]\d* 题/, `爬题摘要应报出真实条数${detail}`);
+    assert.match(summaryOf("pick"), /抽到 [1-9]\d* 条/, `抽题摘要应报出真实条数${detail}`);
+    assert.match(summaryOf("generate"), /生成 [1-9]\d* 条/, `生成摘要应报出真实条数${detail}`);
+    assert.match(summaryOf("submit"), /提交成功 [1-9]\d* 条/, `提交摘要应报出真实条数${detail}`);
+
     // ---------- 2. 爬题真的入库了 ----------
     assert.ok(rig.deps.store.bankSize() > 0, `题库应有题${detail}`);
 
     // ---------- 3. 抽题产物存在且条数对 ----------
     assert.ok(result.pickFile && fs.existsSync(result.pickFile), `抽题表应存在：${result.pickFile}${detail}`);
+    assert.ok(result.artifacts.some((a) => a.path === result.pickFile),
+      `抽题表应进「本轮产出」清单，界面才有"打开/定位"的入口：${JSON.stringify(result.artifacts)}${detail}`);
     const pickedRows = excel.readTableRows(result.pickFile).map(excel.importRowToAnswer);
     assert.equal(pickedRows.length, 4, `应抽到 4 条${detail}`);
 
