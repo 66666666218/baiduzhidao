@@ -278,4 +278,7 @@ async function runBatchTransferTask(ctx, deps) {
   return { count: done, failed, totalOk, outputPath };
 }
 
-module.exports = { runBatchTransferTask };
+// isGenericName 一并导出：scripts/pan-transfer-batch.js 里有同一段逻辑的拷贝，
+// 而它**只 import 了本文件以外的模块、却直接用这个名字** —— 跑到那里就 ReferenceError。
+// 与其让脚本再抄一份，不如从这里引（契约⑥ 扫出来的）。
+module.exports = { runBatchTransferTask, isGenericName };

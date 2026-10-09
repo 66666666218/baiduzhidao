@@ -13,7 +13,11 @@ const fs = require("fs");
 const path = require("path");
 
 const root = path.resolve(__dirname, "..");
-const dataDir = path.join(process.env.APPDATA || "", "zhidao-answer-studio");
+// 数据目录：优先 ZHIDAO_DATA_DIR（与 scripts/live-crawl-all.js 同一约定），
+// 否则用打包版的默认位置。**不要写死本机路径**——这套要拿到新电脑新环境跑。
+const dataDir = process.env.ZHIDAO_DATA_DIR
+  ? path.resolve(process.env.ZHIDAO_DATA_DIR)
+  : path.join(process.env.APPDATA || "", "zhidao-answer-studio");
 const limit = Math.max(1, Number(process.argv[2]) || 10);
 const ENV = process.env.TEST_ENV || "测试组1";
 const TOPIC = process.env.TEST_TOPIC || "游戏";

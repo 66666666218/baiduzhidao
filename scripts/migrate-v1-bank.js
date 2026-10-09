@@ -11,7 +11,10 @@
 const fs = require("fs");
 const path = require("path");
 
-const v1Path = process.argv[2] || "D:/code/baiduzhidao/内置题库/question-bank.json";
+// 默认路径按仓库位置推导，不写死盘符：这套脚本要能在别的机器上用
+// （这个文件里没有 `root` 变量，用 __dirname 推：scripts/ → 仓库 → 上一级）
+const v1Default = path.resolve(__dirname, "..", "..", "内置题库", "question-bank.json");
+const v1Path = process.argv[2] || v1Default;
 const v1AnswersPath = process.argv[3] || "";
 const v2DataDir = path.resolve(__dirname, "..", "运行缓存");
 

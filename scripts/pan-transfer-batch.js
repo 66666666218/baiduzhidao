@@ -26,6 +26,9 @@ const XLSX = require("xlsx");
 const { chromium } = require("playwright-core");
 const { createShare } = require("../electron/src/netdisk/share");
 const qaLib = require("../electron/src/netdisk/qa-template-lib");
+// isGenericName 原本只写在 batch-transfer.js 里、没导出，本脚本却直接用 ——
+// 跑到 288/307 行就 ReferenceError（契约⑥ 扫出来的）。
+const { isGenericName } = require("../electron/src/tasks/batch-transfer");
 
 const root = path.resolve(__dirname, "..");
 const PAN = "https://pan.baidu.com";

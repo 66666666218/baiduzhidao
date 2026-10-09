@@ -215,8 +215,53 @@ test("契约⑤-b：extractStagePayloadKeys 能正确抠出（含嵌套）顶层
  * ReferenceError（`settings`、`log_uploadTable`、`describeError`），
  * 每次都是用户先发现的。这里做一次静态检查兜住。
  */
-test("契约⑥：app-context.js 调用的标识符都有来源（防 ReferenceError）", () => {
-  const src = read("electron/app-context.js");
+/**
+ * 去掉字符串、注释、正则字面量再分析。
+ * 不剥的话：`B2026...(1).xlsx` 这种文件名里的 `(` 会被当成函数调用；
+ * `// 用 root 推导` 这种注释里的词会被当标识符；
+ * `/…http(s)?:\/\/(?!pan\.)/i` 这种正则会冒出个假的 `http(` 调用。
+ * 误报一多守卫就没人看了，所以这三种都得剥。
+ */
+function stripStringsAndComments(src) {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === "/" && src[i + 1] === "/") { while (i < src.length && src[i] !== "\n") i += 1; continue; }
+    if (ch === "/" && src[i + 1] === "*") { const end = src.indexOf("*/", i + 2); i = end < 0 ? src.length : end + 2; continue; }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const quote = ch;
+      i += 1;
+      while (i < src.length && src[i] !== quote) i += src[i] === "\\" ? 2 : 1;
+      i += 1;
+      out += " ";
+      continue;
+    }
+    // 正则字面量：`/` 前面是运算符/括号/逗号这类位置时它是正则，不是除号
+    if (ch === "/" && /(?:[=(,:;[!&|?{]|\breturn|\btypeof)\s*$/.test(out)) {
+      i += 1;
+      let inClass = false;
+      while (i < src.length && src[i] !== "\n") {
+        if (src[i] === "\\") { i += 2; continue; }
+        if (src[i] === "[") inClass = true;
+        else if (src[i] === "]") inClass = false;
+        else if (src[i] === "/" && !inClass) break;
+        i += 1;
+      }
+      i += 1;
+      while (i < src.length && /[a-z]/i.test(src[i])) i += 1; // 收尾标志 gimsuy
+      out += " ";
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/** 对一个文件跑一遍"被调用的标识符是否有来源"的检查，返回缺失名单 */
+function undefinedCallees(rawSrc) {
+  const src = stripStringsAndComments(rawSrc);
 
   const defined = new Set();
   // require 解构：const { a, b: c } = require(...)
@@ -247,9 +292,15 @@ test("契约⑥：app-context.js 调用的标识符都有来源（防 ReferenceE
     for (const p of m[1].split(",")) defined.add(p.split("=")[0].trim().replace(/[{}[\]()]/g, ""));
   }
 
-  // 被当作函数调用的标识符（排除 obj.fn() / new X() / 关键字）
+  // 被当作函数调用的标识符（排除 obj.fn() / new X()）
+  // 再排除**方法定义**：`constructor(a) {` / `str() {` 这种是定义不是调用
   const called = new Set();
-  for (const m of src.matchAll(/(?<![.\w$'"])([A-Za-z_$][\w$]*)\s*\(/g)) called.add(m[1]);
+  for (const m of src.matchAll(/(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(/g)) {
+    const after = src.slice(m.index + m[0].length);
+    const closeIdx = after.indexOf(")");
+    const looksLikeDef = closeIdx >= 0 && /^\s*\{/.test(after.slice(closeIdx + 1));
+    if (!looksLikeDef) called.add(m[1]);
+  }
 
   // 语言内置 / 全局 / 关键字
   const KNOWN = new Set([
@@ -257,11 +308,29 @@ test("契约⑥：app-context.js 调用的标识符都有来源（防 ReferenceE
     "Promise", "Set", "Map", "WeakMap", "parseInt", "parseFloat", "isNaN", "isFinite", "fetch",
     "encodeURIComponent", "decodeURIComponent", "setTimeout", "clearTimeout", "setInterval",
     "clearInterval", "Buffer", "RegExp", "Symbol", "Proxy", "Reflect",
+    // 脚本环境（scripts/*.js）还会用到这些全局
+    "process", "console", "module", "exports", "__dirname", "__filename", "setImmediate",
+    "queueMicrotask", "structuredClone", "TextEncoder", "TextDecoder", "AbortController",
+    "AbortSignal", "globalThis", "URLSearchParams",
     "if", "for", "while", "switch", "catch", "return", "typeof", "function", "new", "await",
     "super", "import", "delete", "void", "in", "of", "do", "else", "try", "throw", "yield",
     "async", "await", "case", "default", "break", "continue", "instanceof", "undefined", "null", "true", "false",
   ]);
 
-  const missing = [...called].filter((name) => !defined.has(name) && !KNOWN.has(name));
-  assert.deepEqual(missing, [], `app-context.js 里这些被当作函数调用，但既没定义也没导入：${missing.join(", ")}`);
+  return [...called].filter((name) => !defined.has(name) && !KNOWN.has(name));
+}
+
+test("契约⑥：主进程与脚本里调用的标识符都有来源（防 ReferenceError）", () => {
+  // 文件清单：主进程装配根 + 全部 CLI 脚本。
+  // 加 scripts/ 是因为我在这上面栽过一次 —— 给 migrate-v1-bank.js 改成
+  // 「按仓库位置推导默认路径」时用了 `root`，而那个文件里根本没有 `root`
+  // （它用的是 __dirname）。node --check 只查语法，查不出这种。
+  const targets = ["electron/app-context.js",
+    ...fs.readdirSync(path.join(root, "scripts")).filter((f) => f.endsWith(".js")).map((f) => `scripts/${f}`)];
+  const problems = [];
+  for (const file of targets) {
+    const missing = undefinedCallees(read(file));
+    if (missing.length) problems.push(`${file}：${missing.join(", ")}`);
+  }
+  assert.deepEqual(problems, [], "这些文件里被当作函数调用、但既没定义也没导入：\n" + problems.join("\n"));
 });
