@@ -25,6 +25,10 @@ const DEFAULTS = {
   // 纯协议模式下所有账号共享本机 IP —— 配了代理才是真正的 IP 隔离。
   // 留空全直连，行为与本功能引入前完全一致。
   accountProxies: "",
+  // 账号并发数。**默认 1（串行）**：并发 = 同一时段多个账号做同样的事，
+  // 正是平台风控最敏感的点。要调高的话，用户得自己保证隔离（每个账号开比特窗口，
+  // 或每个账号挂一条代理）—— 界面上的提示就是这么写的。
+  accountConcurrency: 1,
   // 网盘链的账号分工：转存与上传可以不是同一批号。
   // 现实里常见「A 的网盘还有空间但没有批量发布权益，B 有权益但网盘已经满了」——
   // 分开之后 A 负责把资源转进自己盘并建好永久分享，B 只管把问答表传上工作台
@@ -134,6 +138,7 @@ function normalizeSettings(payload) {
   const mode = String(next.browserMode || "").toLowerCase();
   next.browserMode = ["protocol", "bit", "headless"].includes(mode) ? mode : "protocol";
   next.accountProxies = String(next.accountProxies || "");
+  next.accountConcurrency = clampInt(next.accountConcurrency, 1, 10, DEFAULTS.accountConcurrency);
   next.transferEnvs = normalizeBitEnvs(next.transferEnvs);
   next.uploadEnvs = normalizeBitEnvs(next.uploadEnvs);
   next.timeoutMs = clampInt(next.timeoutMs, 5000, 120000, DEFAULTS.timeoutMs);

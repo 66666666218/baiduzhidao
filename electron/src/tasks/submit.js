@@ -108,6 +108,15 @@ async function runSubmitTask(ctx, deps) {
     return { stopped: false, count: 0, failed: 0, total: 0, results: [] };
   }
 
+  // 一个账号都拿不到凭据 / 窗口时，**先说这件事**。
+  // 否则下一步会去检查表格，报出「表格里没有题目地址列」—— 用户会一直去改表格，
+  // 而真正的原因是压根没有可用的账号。
+  const hasAnyCred = usableEnvs.some((e) => typeof deps.credentialOf === "function" && deps.credentialOf(e));
+  if (!hasAnyCred) {
+    log("⚠️ 这些账号都没有已保存的 Cookie，将回落到比特窗口；若窗口也打不开就会失败。");
+    log("   建议先到「账号凭证」页点「登录并提取」存一份 Cookie —— 之后全程不需要窗口。");
+  }
+
   // 题材路由：带链接的答案严格一对一（账号只吃自己绑定的题材），纯文本答案宽松轮询。
   const topicMap = ctx.payload.accountTopics || {};
   const strictLinkRouting = String(ctx.payload.linkRouting || "strict") !== "off";

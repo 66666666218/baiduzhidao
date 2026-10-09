@@ -236,6 +236,25 @@ function buildTopicAllocation(rows, envLabels, topicMap, { classify } = {}) {
  *（任务 payload 里手填的形式），两种都得认。
  * 这段逻辑原先在 app-context 和 upload-batch 里各抄了一份，做账号分工时才收拢。
  */
+/**
+ * 按并发数跑一批任务。
+ *
+ * 为什么默认串行：并发 = "同一时段多个账号做同样的事"，那正是平台风控最敏感的点。
+ * 只有用户明确调高并发、并且自己承担（开比特窗口给每个账号独立指纹 / 或给每个账号挂代理）时才该用。
+ */
+async function runWithConcurrency(items, limit, worker, shouldStop) {
+  const queue = (Array.isArray(items) ? items : []).slice();
+  const n = Math.max(1, Math.min(Math.floor(Number(limit) || 1), queue.length || 1));
+  const runners = Array.from({ length: n }, async () => {
+    while (queue.length) {
+      if (typeof shouldStop === "function" && shouldStop()) break;
+      const item = queue.shift();
+      try { await worker(item); } catch { /* 单条失败不影响其他 */ }
+    }
+  });
+  await Promise.all(runners);
+}
+
 function envLabelsOf(list) {
   return (Array.isArray(list) ? list : [])
     .map((x) => (x && typeof x === "object" ? x.label ?? x.name : x))
@@ -262,6 +281,7 @@ function resolveNetdiskRoles(bitEnvs, { transferEnvs, uploadEnvs } = {}) {
 
 module.exports = {
   envLabelsOf,
+  runWithConcurrency,
   resolveNetdiskRoles,
   topicKey,
   normalizeAccountTopics,

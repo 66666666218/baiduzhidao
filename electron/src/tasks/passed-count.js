@@ -75,7 +75,10 @@ async function runPassedCountTask(ctx, deps) {
         }
         log(`${envLabel} 纯协议取数失败，回落到窗口`);
       }
-      const handle = await browserPool.acquire(envLabel);
+      const handle = await browserPool.acquire(envLabel).catch((err) => {
+        throw new Error(`${envLabel}：既没有已保存的 Cookie，比特窗口也打不开（${err.message}）。`
+          + `请到「账号凭证」页点「登录并提取」存一份 Cookie。`);
+      });
       browser = await chromium.connectOverCDP(handle.cdpUrl);
       const context = browser.contexts()[0] || (await browser.newContext());
       const page = await getWorkPage(context);
