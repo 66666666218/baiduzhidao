@@ -194,7 +194,10 @@ async function runBatchTransferTask(ctx, deps) {
         // 目录名带资源名（非占位名时）：08104_资源名，便于网盘里辨识
         const dirLabel = isGenericName(rawName) ? "" : rawName.replace(/[\/:*?"<>|\r\n]/g, " ").trim().slice(0, 20);
         const destDir = `${destRoot}/${cred.env}/${baseName}/${dirLabel ? idx + "_" + dirLabel : idx}`;
-        const jar = new Jar(cred.bduss, cred.stoken);
+        // 该账号配了代理就带着走：网盘域和知道域用同一条出口（不然转存走本机、
+        // 上传走代理，等于同一批操作从两个 IP 发出，反而更可疑）。
+        const dispatcher = typeof deps.proxyOf === "function" ? deps.proxyOf(cred.env) : undefined;
+        const jar = new Jar(cred.bduss, cred.stoken, dispatcher);
         const { toPaths } = await processOne(jar, {
           link: srcLink, pwd: cellPwd, destDir,
         });

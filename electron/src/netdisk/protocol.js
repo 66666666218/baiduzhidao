@@ -11,9 +11,14 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class Jar {
-  constructor(bduss, stoken) {
+  /**
+   * @param dispatcher 可选：该账号的代理（undici Agent）。挂在 Jar 上而不是模块级变量，
+   *   因为并发 cc>1 时每个 worker 有自己的 Jar —— 用模块级变量会让几条资源串用同一条代理。
+   */
+  constructor(bduss, stoken, dispatcher) {
     this.map = new Map([["BDUSS", bduss]]);
     if (stoken) this.map.set("STOKEN", stoken);
+    this.dispatcher = dispatcher;
   }
   apply(setCookies) {
     for (const sc of setCookies || []) {
@@ -54,6 +59,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   const vResp = await fetch(`${PAN}/share/verify?surl=${encodeURIComponent(surl)}&t=${Date.now()}&channel=chunlei&web=1&bdstoken=null&clienttype=0`, {
     method: "POST",
     headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": `${PAN}/share/init?surl=${encodeURIComponent(surl)}`, "Content-Type": "application/x-www-form-urlencoded" },
+    dispatcher: jar.dispatcher,
     body: `pwd=${pwd}&vcode=&vcode_str=`,
   });
   jar.apply(vResp.headers.getSetCookie ? vResp.headers.getSetCookie() : []);
@@ -158,6 +164,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
     const cResp = await fetch(`${PAN}/api/create?a=commit&bdstoken=${encodeURIComponent(bdstoken)}&web=1&channel=chunlei&clienttype=0`, {
       method: "POST",
       headers: { "User-Agent": UA, "Cookie": jar.str(), "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+      dispatcher: jar.dispatcher,
       body: `path=${encodeURIComponent(acc)}&isdir=1`,
     });
     const cBody = await cResp.json().catch(() => ({}));
@@ -170,6 +177,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
     const resp = await fetch(`${PAN}/share/transfer?shareid=${shareid}&from=${uk}&bdstoken=${encodeURIComponent(bdstoken)}&channel=chunlei&clienttype=0&web=1`, {
       method: "POST",
       headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": rawUrl, "Origin": PAN, "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+      dispatcher: jar.dispatcher,
       body: `fsidlist=${encodeURIComponent(JSON.stringify(fsIds))}&path=${encodeURIComponent(target)}`,
     });
     return resp.json().catch(() => ({}));
