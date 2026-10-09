@@ -1,6 +1,7 @@
 "use strict";
 
 const { chromium } = require("playwright-core");
+const protocolSubmit = require("../zhidao/protocol-submit");
 const zhidao = require("../pages/zhidao");
 const { nowText } = require("../config");
 const { getWorkPage } = require("./crawl");
@@ -164,6 +165,43 @@ async function runSubmitTask(ctx, deps) {
     const envLabel = slot.envLabel;
     let browser = null;
     try {
+      // ★ 纯协议优先：该账号在「网盘管理」里存过 Cookie 就直接走 HTTP 提交，**不开窗口**。
+      // 依据是实测：POST /msubmit/answer + `X-ik-token` 即可，不需要浏览器。
+      // 没存过 Cookie 才回落到比特窗口（保留指纹隔离那条路）。
+      const cred = typeof deps.credentialOf === "function" ? deps.credentialOf(envLabel) : null;
+      if (cred && cred.bduss) {
+        // 注意：只需 zhidao 域那一份。把全量跨域 Cookie 拼一起会因同名冲突冲掉登录态。
+        const cookie = `BDUSS=${cred.bduss}${cred.stoken ? "; STOKEN=" + cred.stoken : ""}`;
+        const tk = await protocolSubmit.fetchSubmitToken(cookie);
+        if (tk.ok) {
+          log(`【纯协议】${envLabel}（${tk.userName || "?"}）—— 不走窗口`);
+          for (const item of slot.rows) {
+            if (ctx.shouldStop()) break;
+            await ctx.pausePoint?.("提交·条间检查点");
+            processed += 1;
+            ctx.report({ done: successCount + failCount, total: totalPlanned, status: "running" });
+            const qid = protocolSubmit.qidOf(item.questionUrl) || String(item.qid || "");
+            const r = await protocolSubmit.submitAnswer({ qid, content: item.answer, cookie, token: tk.token });
+            if (r.ok) {
+              successCount += 1;
+              const submitted = { ...item, bitEnv: envLabel, status: "已提交", confirmed: true, aid: r.aid, submittedAt: nowText() };
+              store.upsertAnswer(submitted);
+              results.push(submitted);
+              if (deps.autosavePath) {
+                try { excel.appendCsvRow(deps.autosavePath, excel.answerToRow(submitted), excel.ANSWER_HEADERS); } catch { /* 兜底通道失败不影响提交 */ }
+              }
+              ctx.emitItem({ ...item, bitEnv: envLabel, status: "已提交" });
+              log(`✅ ${processed}/${totalPlanned} 已提交：${item.title || qid}${r.aid ? "（aid=" + r.aid + "）" : ""}`);
+            } else {
+              failCount += 1;
+              log(`✗ ${processed}/${totalPlanned} 提交失败：${item.title || qid} → ${r.reason}`);
+            }
+            await new Promise((res) => setTimeout(res, 800 + Math.random() * 700));
+          }
+          continue;
+        }
+        log(`纯协议不可用（${tk.reason}），本账号回落到窗口`);
+      }
       log(`打开比特环境：${envLabel}（本账号 ${slot.rows.length} 条）`);
       const handle = await browserPool.acquire(envLabel);
       browser = await chromium.connectOverCDP(handle.cdpUrl);

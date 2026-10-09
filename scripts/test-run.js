@@ -115,6 +115,11 @@ for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => exit(1));
   }, async (ctx) => runSubmitTask(ctx, {
     browserPool, store, config, log, copy: async () => {},
     autosavePath: path.join(dataDir, "autosave", `test-submit_${Date.now()}.csv`),
+    // 与软件内一致：存过 Cookie 的账号走纯协议提交（不开窗口）
+    credentialOf: (envLabel) => {
+      try { const { credentialOf: pick } = require("../electron/src/netdisk/manager"); return pick(dataDir, envLabel); }
+      catch { return null; }
+    },
   }));
 
   log(`=== 提交结束：成功 ${submitResult.count} 条，失败 ${submitResult.failed} 条 ===`);
