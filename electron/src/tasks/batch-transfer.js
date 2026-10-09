@@ -192,6 +192,15 @@ async function runBatchTransferTask(ctx, deps) {
   // 以前每个 worker 遇到风控都各自 `await sleep(10min)`，醒来时刻还各不相同——
   // 结果是"看起来全局静默了，其实 4 个 worker 在 10 分钟后集中爆发"，比不暂停更糟。
   let pausedUntil = 0;
+  // 限流（分享页取不到数据）专用的两个量：
+  //  · SHARE_LIMIT_COOLDOWN_MS：撞上限流后整批停多久（45 秒 —— 比风控的 10 分钟短得多，
+  //    因为这不是账号被打标，只是短时间请求太密）
+  //  · RETRY_COOLDOWN_MS：整批跑完到重试之间的等待。真机实测"隔几分钟"就恢复了，
+  //    取 150 秒；宁可多等，也好过重试一遍又全撞在窗口里白跑。
+  const SHARE_LIMIT_COOLDOWN_MS = 45 * 1000;
+  const RETRY_COOLDOWN_MS = 150 * 1000;
+  let shareLimited = 0;            // 本批因限流被推迟的条数（日志用）
+  let lastShareLimitPauseAt = 0;   // 上次因限流暂停的时刻（避免每条失败都触发一次暂停，把整批拖成慢动作）
   const qaRows = [];
 
   // 每条完整链（独立 Jar 会话，并发安全）；窗口按轮换粒度切换
@@ -201,7 +210,17 @@ async function runBatchTransferTask(ctx, deps) {
   function pickEnv() { return creds[envCursor % creds.length]; }
   let sharedCursor = 0;
   let reservedCount = 0;
+  // 「限流」重试轮：分享页取不到数据的条目，先在主轮里记下来，等整批跑完**再试一遍**。
+  // 依据是真机实测 —— 同一批里失败的链接，隔几分钟重跑同样的流程一次就成功；
+  // 而当场连试三次（2s/6s/12s）全撞在限流窗口里，等于白试。所以是"换个时间点重试"，不是"多试几次"。
+  let phase = "main";
+  const retryQueue = [];
   function nextIndex() {
+    if (phase === "retry") {
+      // 重试轮从队列取（队列空 = 这一轮结束）。注意重试轮里失败**不再回队**，否则会无限循环。
+      const next = retryQueue.shift();
+      return next === undefined ? null : next;
+    }
     if (limit > 0 && reservedCount >= limit) return null;
     const i = startIdx + sharedCursor;
     if (i >= rows.length) return null;
@@ -313,6 +332,23 @@ async function runBatchTransferTask(ctx, deps) {
           log(`⏸ 触发行控（${(e.message || "").slice(0, 40)}），全部账号暂停到 ${new Date(pausedUntil).toLocaleTimeString("zh-CN", { hour12: false })}…`);
           continue;
         }
+
+        // 分享页取不到数据 = 多半是我们打太快被限流（真机实测：同一条隔几分钟再跑同样的流程就成功）。
+        // 它与普通失败**必须区别对待**：不当场计失败、不写 failed 状态、也不算进连败 ——
+        // 那不是这个账号的错，而是节奏问题；硬记一笔既让失败数虚高，又会误触连败熔断。
+        // 做法：记下来，整批跑完再重试一遍；同时**让所有线程一起停一下**，别继续往上撞。
+        if (e.sharePageLimited && phase === "main") {
+          retryQueue.push(i);
+          shareLimited += 1;
+          if (Date.now() - lastShareLimitPauseAt > 90 * 1000) {
+            lastShareLimitPauseAt = Date.now();
+            pausedUntil = Math.max(pausedUntil, Date.now() + SHARE_LIMIT_COOLDOWN_MS);
+            log(`⏳ 分享页被限流（本批已遇到 ${shareLimited} 条），全部线程暂停 ${SHARE_LIMIT_COOLDOWN_MS / 1000} 秒；`
+              + `这几条已记下，整批跑完会再重试一遍 —— 不是链接坏了，是我们打太快。`);
+          }
+          continue;
+        }
+
         failed += 1;
         consecutiveFails += 1;
         const attempts = ((prev && prev.attempts) || 0) + 1;
@@ -332,6 +368,25 @@ async function runBatchTransferTask(ctx, deps) {
     }
   }
   await Promise.all(Array.from({ length: Math.min(cc, total || 1) }, () => worker()));
+
+  // ── 限流条目的延后重试轮 ──
+  // 只在主轮跑完之后做，而且**先把整批的并发降下来**（1 个线程串行重试）：
+  // 重试的目的是"换个时间点再试"，不是"再冲一次" —— 并发重试等于把刚过去的限流窗口又打一遍。
+  if (retryQueue.length && !fatalStop && !ctx.shouldStop()) {
+    const waiting = retryQueue.length;
+    log(`⏳ 有 ${waiting} 条因限流被推迟，等 ${Math.round(RETRY_COOLDOWN_MS / 1000)} 秒后**串行重试一遍**（不是链接问题，是节奏问题）…`);
+    await sleep(RETRY_COOLDOWN_MS);
+    if (!ctx.shouldStop()) {
+      phase = "retry";
+      await Promise.all([worker()]);
+      const stillQueued = retryQueue.length;
+      log(`重试轮结束：救回 ${waiting - stillQueued} 条${stillQueued ? `，仍有 ${stillQueued} 条没成功（它们已按普通失败记档，下次运行会再试）` : ""}`);
+      // 重试失败的会走普通失败分支（计失败 + 写 state），但那时仍处于 retry 阶段、
+      // 不会回队；这里再把残留清空，保证不会有人误用这个队列。
+      retryQueue.length = 0;
+    }
+  }
+
   ctx.report({ done, total, status: (fatalStop || ctx.shouldStop()) ? "stopped" : "done" });
 
   // 导出上传专用表

@@ -119,3 +119,25 @@ test("processOne：有提取码时 verify 被拒仍走原来的错误（不要�
     );
   });
 });
+
+test("processOne：分享页取不到数据时要打 sharePageLimited 标记（调用方靠它做冷却与延后重试）", async () => {
+  // 只有一句"多为限流"的提示没用 —— batch-transfer 得能**认出**这条值得待会儿再试一次，
+  // 否则当场连试三次就放弃了（真机实测：同一批失败 6/9，隔几分钟重跑几乎全好）。
+  const jar = new protocol.Jar("B", "");
+  let sharePageCalls = 0;
+  await withFetch(async (url) => {
+    if (url.includes("/share/verify")) return fakeResponse({ errno: 0, randsk: "r" });   // 先让 verify 过
+    sharePageCalls += 1;
+    return fakeResponse("<html>没有 mset 的页面</html>");
+  }, async () => {
+    await assert.rejects(
+      () => protocol.processOne(jar, { link: "https://pan.baidu.com/s/1abcdefghij", pwd: "ab12", destDir: "/x" }),
+      (err) => {
+        assert.equal(err.sharePageLimited, true, "必须带上这个标记");
+        assert.match(err.message, /限流/, "文案也要说清");
+        return true;
+      }
+    );
+  });
+  assert.equal(sharePageCalls, 3, "分享页要重试 3 次才放弃");
+});

@@ -18,7 +18,7 @@ const { runSubmitTask } = require("./src/tasks/submit");
 const { runPassedCountTask } = require("./src/tasks/passed-count");
 const { runBatchTransferTask } = require("./src/tasks/batch-transfer");
 const { runBatchUploadTask, runTopicUploadTask } = require("./src/tasks/upload-batch");
-const { randomPickQuestions } = require("./src/tasks/random-pick");
+const { makePickQuestions } = require("./src/tasks/pick");
 const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
 const { INVOKE_CHANNELS } = require("./src/ipc-channels");
@@ -279,76 +279,22 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
 
   // 随机抽题
   // 抽成具名函数：一键全自动编排要复用同一段逻辑，不能把它抄第二遍
-  const pickQuestions = async (payload) => {
-    const bank = store.loadBank();
-    if (!bank.length) throw new Error("题库为空，请先爬题或导入题库表格。");
-    // 已提交的题以 answers 台账为准永久出池：此前只靠 usedKeys 去重，
-    // 重开轮（题库抽满一轮自动清空）或题库重爬导致键失配时，答过的题会被再次抽中。
-    // 另外把"已生成过回答"的题一并出池（skipGenerated 默认开）：生成记录比提交记录
-    // 更容易留存（换机/手动提交/批量上传等任何答题方式，只要在软件里生成过就有标记），
-    // 这是防重复答题的主要防线；"已提交"是强标记，双保险。
-    const pickKeyOf = (item) => {
-      const url = String(item.questionUrl || "").trim().toLowerCase();
-      return url ? `url:${url}` : `title:${String(item.title || "").replace(/\s+/g, "").toLowerCase()}`;
-    };
-    // 默认开：显式传 false（勾选框取消）才允许重抽已生成过的题
-    const skipGenerated = !(payload && payload.skipGenerated === false);
-    const submittedKeys = new Set(
-      store.loadAnswers()
-        .filter((a) => a && (a.status === "已提交" || (skipGenerated && String(a.answer || "").trim())))
-        .map(pickKeyOf)
-        .filter(Boolean)
-    );
-    const result = randomPickQuestions(bank, store.loadUsedKeys(), {
-      categories: payload && payload.categories,
-      count: (payload && payload.count) || config.load().randomCount,
-      strategy: payload && payload.strategy,
-      excludeKeys: submittedKeys,
-    });
-    if (!result.picked.length) {
-      if (result.excludedSubmitted > 0) throw new Error("当前分类下的题目均已答过（已提交或已生成过回答），没有可抽的新题（可先爬题扩充题库）。");
-      throw new Error("当前分类下没有可抽的题目。");
-    }
-    if (result.excludedSubmitted > 0) emit("task:log", `去重：已排除 ${result.excludedSubmitted} 条答过的题目（已提交/已生成过回答），不会重复作答`);
-
-    // 先确定输出路径（用户取消则直接返回，不消耗去重额度）
-    let outputPath = String((payload && payload.outputPath) || config.load().randomOutputPath || "").trim().replace(/^"|"$/g, "");
-    if (outputPath && fs.existsSync(outputPath) && fs.statSync(outputPath).isDirectory()) {
-      outputPath = excel.uniqueFilePath(path.join(outputPath, `随机抽题_${result.picked.length}条_${stamp()}.xlsx`));
-    } else if (outputPath && !excel.isTableFile(outputPath)) {
-      outputPath = `${outputPath}.xlsx`;
-    }
-    if (!outputPath) {
+  // 抽题实现搬到了 src/tasks/pick.js —— 脚本跑整链时与界面**共用同一份**去重口径，
+  // 否则"我跑一遍"就不等于"你点一遍"，验证也就失去意义。
+  const pickQuestions = makePickQuestions({
+    store,
+    config,
+    emit,
+    defaultSaveDir: app.getPath("desktop"),
+    chooseSavePath: async (defaultPath) => {
       const choice = await dialog.showSaveDialog(mainWindow, {
         title: "保存随机抽题表格",
-        defaultPath: path.join(app.getPath("desktop"), `随机抽题_${result.picked.length}条_${stamp()}.xlsx`),
+        defaultPath,
         filters: [{ name: "Excel 表格", extensions: ["xlsx"] }],
       });
-      if (choice.canceled || !choice.filePath) return { canceled: true };
-      outputPath = choice.filePath;
-    }
-
-    // 表格成功落盘后才记去重额度：取消/写失败都不会白白消耗题目
-    const savedPath = excel.writeWorkbookSafe(
-      outputPath,
-      result.picked.map(excel.answerToRow),
-      "随机抽题",
-      excel.ANSWER_HEADERS,
-      (message) => emit("task:log", message)
-    );
-    store.addUsedKeys(result.usedKeys);
-    // 记住最近一次抽题表格：生成/提交视图默认使用，减少手动选文件
-    config.save({ lastPickFilePath: savedPath });
-    return {
-      canceled: false,
-      filePath: savedPath,
-      count: result.picked.length,
-      total: result.total,
-      remainingAfter: result.remainingAfter,
-      resetRound: result.resetRound,
-      results: result.picked,
-    };
-  };
+      return choice.canceled || !choice.filePath ? null : choice.filePath;
+    },
+  });
   ipcMain.handle("questions:random-pick", (_event, payload) => pickQuestions(payload));
 
   // AI 生成（未选表格时自动使用最近一次抽题表格）

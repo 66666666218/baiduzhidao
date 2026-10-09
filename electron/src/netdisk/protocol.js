@@ -123,10 +123,14 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
     if (attempt < 3) await sleep(SHARE_RETRY_DELAYS[attempt - 1] + Math.random() * 1500);
   }
   if (!data) {
-    throw new Error(`分享页无数据（重试 3 次仍失败；响应 ${html.length} 字节）。`
+    const err = new Error(`分享页无数据（重试 3 次仍失败；响应 ${html.length} 字节）。`
       + "**先别急着当链接失效**：连续跑批时这一条多半是限流 —— 隔几分钟重跑同一条若能成功就是限流，"
       + "把「转存并发」调小、或加大条间间隔再试（已转存的会自动跳过）。"
       + "若隔多久都拿不到，才是分享被取消或链接本身失效。");
+    // 打上标记：调用方（batch-transfer）据此做**自适应冷却**和**批次末尾延后重试** ——
+    // 光有一句提示没用，得让它自己知道"这条值得待会儿再试一次"。
+    err.sharePageLimited = true;
+    throw err;
   }
   if (Number(data.errno) !== 0) throw new Error(`分享数据 errno=${data.errno}`);
   const uk = String(data.share_uk || data.uk || "");
