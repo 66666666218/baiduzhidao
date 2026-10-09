@@ -703,7 +703,9 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
    */
   ipcMain.handle("auth:login-and-extract", async (_e, p) => {
     const { BrowserWindow, session } = require("electron");
-    const loginUrl = String((p && p.url) || "").trim() || "https://pan.baidu.com/";
+    // 默认直接跳到百度登录页 —— 它自带「扫码登录」tab，用户掏出手机扫一下就行，
+    // 省得还要在页面里找登录入口（以前默认去网盘首页，得先点"登录"）。
+    const loginUrl = String((p && p.url) || "").trim() || "https://passport.baidu.com/v2/?login&tpl=mn&u=https%3A%2F%2Fpan.baidu.com%2F";
     const partition = "persist:baidu-login";   // 独立分区，不和主窗口的 session 混
     const ses = session.fromPartition(partition);
     // UA 必须伪装成普通 Chrome：Electron 默认 UA 里带 `Electron/33.x`，

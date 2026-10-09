@@ -577,6 +577,26 @@ function renderAutoReport(result) {
   box.appendChild(paragraph);
 }
 
+/** 全自动页的运行模式提示：把"这次要开几个窗口、多慢"说清楚 */
+function updateRunModeHint() {
+  const box = $("autoRunModeHint");
+  const mode = $("autoRunMode") ? $("autoRunMode").value : "protocol";
+  if (!box) return;
+  if (mode === "protocol") {
+    box.textContent = "本次全程不开浏览器：爬题/提交/上传/查收录都走协议。账号之间串行处理，天然有间隔。若担心 IP 关联，可在设置页配「账号代理」。";
+  } else if (mode === "bit") {
+    box.textContent = "本次每个账号都会打开一个比特窗口：隔离最好，但比较慢、吃内存。建议一次只挑 1~2 个账号跑。";
+  } else {
+    box.textContent = "本次用系统 Edge 无头跑：内存比比特小，但所有账号共用同一份浏览器指纹。";
+  }
+}
+if ($("autoRunMode")) {
+  $("autoRunMode").addEventListener("change", () => {
+    if ($("browserMode")) $("browserMode").value = $("autoRunMode").value;
+    updateRunModeHint();
+  });
+}
+
 $("startAutoPipeline").addEventListener("click", async () => {
   const stages = [];
   if ($("autoStageCrawl").checked) stages.push("crawl");
@@ -585,6 +605,8 @@ $("startAutoPipeline").addEventListener("click", async () => {
   if ($("autoStageSubmit").checked) stages.push("submit");
   if ($("autoStageTransfer").checked) stages.push("transfer");
   if ($("autoStageUpload").checked) stages.push("upload");
+  // 全自动页的模式是"同一个设置"的第二个入口 —— 单向写回设置页那个，避免两处互相覆盖
+  if ($("autoRunMode") && $("browserMode")) $("browserMode").value = $("autoRunMode").value;
   if (!stages.length) { appendLog("请至少勾选一个阶段。"); return; }
   if (!await saveSettingsQuiet()) return;
 
@@ -742,6 +764,7 @@ async function loadSettings() {
   $("activityUrl").value = settings.activityUrl || "";
   $("bitEnvs").value = (settings.bitEnvs || []).map((env) => env.label || env).join("\n");
   $("browserMode").value = ["protocol", "bit", "headless"].includes(settings.browserMode) ? settings.browserMode : "protocol";
+  if ($("autoRunMode")) { $("autoRunMode").value = $("browserMode").value; updateRunModeHint(); }
   $("accountProxies").value = settings.accountProxies || "";
   $("autoTransferEnvs").value = (settings.transferEnvs || []).map((env) => env.label || env).join("\n");
   $("autoUploadEnvs").value = (settings.uploadEnvs || []).map((env) => env.label || env).join("\n");

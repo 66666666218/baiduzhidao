@@ -132,6 +132,13 @@
           <p class="hint">网盘链没指定资源表时，会先<b>按账号绑定的题材自动搜资源</b>（纯协议，不需要浏览器），搜到的结果直接喂给转存。</p>
           <p class="hint">上传完成后会<b>自动核对收录</b>——上传接口返回成功只代表平台收下了，平台还要异步审核，所以这一步单独查「收录了多少 / 被拒多少」。</p>
           <div class="field">
+            <label>运行模式（与设置页同一项，这里改会同步过去）</label>
+            <select id="autoRunMode">
+              <option value="protocol">① 纯协议 —— 最快最省内存，不开任何浏览器</option>
+              <option value="bit">② 比特浏览器窗口 —— 一账号一指纹，隔离最好（较慢）</option>
+              <option value="headless">③ 系统 Edge 无头 —— 内存居中，共用同一份指纹</option>
+            </select>
+            <p class="hint" id="autoRunModeHint"></p>
             <label>本次参与的账号（每行一个；<b>留空 = 用「比特环境」页里的全部账号</b>）</label>
             <textarea id="autoBitEnvs" rows="3" placeholder="留空即全部&#10;也可以只填想跑的那几个"></textarea>
             <p class="hint">只想让一部分账号参与时在这里填。搜资源也会只按这些账号绑定的题材去搜。</p>
