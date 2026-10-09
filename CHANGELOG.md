@@ -1,5 +1,7 @@
 # CHANGELOG
 
+- [2026-10-09 21:06] CHORE: 版本 2.0.12 → 2.0.13 本地重新打包交付。本版含**凭证录入引导 + 校验盲点修复**（详见上一条）。门禁：321 单测全绿 + 冒烟 `clicked=73` / `rendererErrors:[]`。产物放桌面：`百度知道答题助手v2-安装包-2.0.13.exe` + `百度知道答题助手-完整包-2.0.13.zip`，2.0.12 两个文件已删。**未发布 GitHub**（gh 未登录）。 (Files: package.json, CHANGELOG.md)
+
 - [2026-10-09 21:12] FEAT: **凭证录入引导 + 修掉一个会误拒账号的校验盲点**。①**盲点**：`netdisk:accounts:add` 原先用**网盘接口**（`/api/quota`）校验，于是「只登录了知道、没登网盘」的账号会被判"凭证无效"而拒绝 —— 可它对答题链（爬题/提交/上传/查收录）完全够用。改为**两步校验、主次分明**：先验**知道侧登录态**（`/api/loginInfo` 的 `isLogin`，这才是整条链的通行证，无效直接给出可操作提示），再**顺带**取网盘容量（失败不拦添加，只标记 `netdiskOk:false`）。新增 `fetchZhidaoLogin()` 辅助。②**引导**：Cookie 粘贴框换成**分步指引**（F12 → Network → 刷新 → 任意请求 → 请求头里复制 Cookie 整行），并写明两条最容易踩的规矩 —— **只需粘一份**（`BDUSS` 是全域 Cookie，网盘和知道通用）、**别把多个域的 Cookie 拼在一起**（同名不同域互相覆盖，反而变"未登录"）；添加时立即校验，有效当场通过、无效说明原因不静默入库。 [321 单测全绿；冒烟 clicked=73] (Files: electron/app-context.js, electron/renderer/index.html, CHANGELOG.md)
 
 - [2026-10-09 21:05] CHORE: 版本 2.0.11 → 2.0.12 本地重新打包交付。本版新增**爬题纯协议化**（接口 `/qa/api/query/result/category`，四个分类英文名 emotion/education/general/celebrity），至此**整条链路零窗口、一处不剩**：爬题、搜题、拿回答原文、提交回答、当天通过数、权益/额度、查收录、上传工作台、网盘转存/建分享/搜索全部纯协议。门禁：321 单测全绿 + 冒烟 `clicked=73` / `rendererErrors:[]`。产物放桌面：`百度知道答题助手v2-安装包-2.0.12.exe` + `百度知道答题助手-完整包-2.0.12.zip`，2.0.11 两个文件已删。**未发布 GitHub**（gh 未登录）。 (Files: package.json, CHANGELOG.md)
