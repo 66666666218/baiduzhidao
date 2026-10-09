@@ -322,8 +322,10 @@ test("summarizeStage：查收录的「已收录」要按账号 summary 累加（
     ],
   };
   assert.equal(summarizeStage("checkPublished", r), "已收录 50 条，被拒 3 条");
-  assert.equal(summarizeStage("checkPublished", { accounts: [{ envLabel: "C", ok: false }] }), "",
-    "一条都没核对到时不该显示 0 条（那会被读成「确实收录了 0 条」）");
+  // 查了但一个都没核对成功：不能只留一个光秃秃的 ✅（那和"核对了、结果为零"长得一样），
+  // 也不能显示"已收录 0 条"（那会被读成"确实收录了 0 条"）。
+  assert.match(summarizeStage("checkPublished", { accounts: [{ envLabel: "C", ok: false }] }), /未核对到任何账号/);
+  assert.equal(summarizeStage("checkPublished", { accounts: [] }), "", "压根没查时不必显示");
 });
 
 test("summarizeStage：字段缺失/非数字一律给 0，摘要里绝不出现 NaN/undefined", () => {

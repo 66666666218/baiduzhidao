@@ -53,6 +53,7 @@ async function runCrawlTask(ctx, deps) {
   // **爬题故意不加账号并发**（其他任务都有）：题目列表接口返回的是"这个分类下的题"，
   // 与用哪个账号问无关 —— N 个账号并发爬只会拿到 N 份一样的列表，全部撞去重，
   // 反而徒增请求量。多账号在这里的正确用法是**兜底**：第一个账号拿不到就换下一个。
+  const envErrors = [];
   for (const envLabel of bitEnvs) {
     if (ctx.shouldStop()) break;
     let browser = null;
@@ -73,7 +74,14 @@ async function runCrawlTask(ctx, deps) {
         log(`【纯协议】${envLabel} 爬取「${category}」（不走窗口）`);
         while (!ctx.shouldStop()) {
           const got = await protocolCrawl.fetchQuestionPage({ cookie, category, base, rn: PAGE_SIZE, dispatcher });
-          if (!got.ok) { log(`纯协议爬题失败：${got.reason}`); break; }
+          if (!got.ok) {
+            // 一条都没爬到这个账号就失败了 → 记进 envErrors，让底下的"全军覆没"判据能看见它。
+            // 纯协议这条路径**不会抛异常**（失败是以 got.ok=false 返回的），
+            // 所以光靠 catch 收集不到它 —— 漏了这一步，Cookie 全失效时会"成功爬到 0 题"。
+            if (!added && !envErrors.some((e) => e.env === envLabel)) envErrors.push({ env: envLabel, reason: got.reason });
+            log(`纯协议爬题失败：${got.reason}`);
+            break;
+          }
           if (!got.rows.length) { empty += 1; if (empty >= 2) break; base += PAGE_SIZE; continue; }
           empty = 0;
           let fresh = 0;
@@ -289,11 +297,26 @@ async function runCrawlTask(ctx, deps) {
       }
       break; // 单个环境即可完成全量爬取
     } catch (error) {
+      envErrors.push({ env: envLabel, reason: describeError(error) });
       log(`比特环境 ${envLabel} 爬取失败：${describeError(error)}`);
     } finally {
       await browser?.close?.().catch(() => {});
       await browserPool.release(envLabel, { close: config.closeAfter });
     }
+  }
+
+  // **一个环境都没能开始爬取 → 必须抛出去**，不能"正常返回 count: 0"。
+  // 以前这里是静默的：编排层只看有没有抛错，于是爬题被记成"成功"（0 题），
+  // 紧接着抽题报「题库为空，请先爬题」—— 用户被告知去爬题，可他刚才就是在爬题，
+  // 排查方向被彻底带偏。新电脑上这是最常见的一幕：账号没存过 Cookie、比特也没开。
+  // 判据用"每个环境都抛了错"而不是"doneCount === 0"：后者在"确实没新题"时也成立，
+  // 那种情况不是失败，不该报错。
+  if (!doneCount && envErrors.length >= bitEnvs.length) {
+    throw new Error(
+      `所有账号都没能开始爬取（${envErrors.map((e) => `${e.env}：${e.reason}`).join("；")}）。`
+      + "新环境请到「账号凭证」页点「登录并提取」存一份 Cookie —— 存过之后爬题不需要开任何窗口；"
+      + "若要用比特的指纹隔离，请在设置页选「比特窗口」模式并先打开对应环境。"
+    );
   }
 
   const writeFailed = store.flushAll();

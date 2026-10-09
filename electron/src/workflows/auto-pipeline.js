@@ -65,8 +65,11 @@ function summarizeStage(name, result) {
       return `上传 ${num(r.uploaded)} 行`;
     case "checkPublished": {
       // 注意 checked 是"成功核对到的账号数"，不是收录条数 —— 条数在每账号的 summary 里
-      const ok = (Array.isArray(r.accounts) ? r.accounts : []).filter((a) => a && a.summary);
-      if (!ok.length) return "";
+      const all = Array.isArray(r.accounts) ? r.accounts : [];
+      const ok = all.filter((a) => a && a.summary);
+      // 查了但一个账号都没核对成功（全未登录 / 全查询失败）时，**不能只留一个光秃秃的 ✅**。
+      // 那种行和"确实核对了、结果为零"看起来一模一样，而这正是"界面在撒谎"的典型形态。
+      if (!ok.length) return all.length ? `未核对到任何账号（${all.length} 个账号全部失败，详见日志）` : "";
       const good = ok.reduce((sum, a) => sum + num(a.summary.successRows), 0);
       const bad = num(r.failedRows);
       return `已收录 ${good} 条${bad ? `，被拒 ${bad} 条` : ""}`;

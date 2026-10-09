@@ -200,6 +200,9 @@ async function runSubmitTask(ctx, deps) {
   let failCount = 0;
   let processed = 0;
   const results = [];
+  // 每个账号"一条都没处理"就失败的记录（见下面的收尾判据）。
+  // 必须用**本账号自己的**尝试计数，不能用全局 processed —— 并发 >1 时别的账号会把它推着走。
+  const slotErrors = [];
   // 每账号的连续失败计数。**必须是 per-env**：
   // 以前用的是 `failCount - lastSuccessByEnv[envLabel]` —— 两边都是**全局**计数，
   // 于是账号 A 的失败会算进账号 B 的"连续失败"，把好账号误熔断。
@@ -250,6 +253,7 @@ async function runSubmitTask(ctx, deps) {
     if (ctx.shouldStop() || !slot.rows.length) return;
     const envLabel = slot.envLabel;
     let browser = null;
+    let slotAttempted = 0;   // 本账号尝试过的条数（用于判断"是不是根本没起来"）
     try {
       // ★ 纯协议优先：该账号在「账号凭证」里存过 Cookie 就直接走 HTTP 提交，**不开窗口**。
       // 依据是实测：POST /msubmit/answer + `X-ik-token` 即可，不需要浏览器。
@@ -269,6 +273,7 @@ async function runSubmitTask(ctx, deps) {
             if (ctx.shouldStop()) break;
             await ctx.pausePoint?.("提交·条间检查点");
             processed += 1;
+            slotAttempted += 1;
             ctx.report({ done: successCount + failCount, total: totalPlanned, status: "running" });
             const qid = protocolSubmit.qidOf(item.questionUrl) || String(item.qid || "");
             const r = await protocolSubmit.submitAnswer({ qid, content: item.answer, cookie, token: tk.token, dispatcher });
@@ -314,6 +319,7 @@ async function runSubmitTask(ctx, deps) {
         if (ctx.shouldStop()) break;
         await ctx.pausePoint?.("提交·条间检查点");
         processed += 1;
+        slotAttempted += 1;
         ctx.report({ done: successCount + failCount, total: totalPlanned, status: "running" });
         log(`打开题目链接 ${processed}/${totalPlanned}：${item.title || item.questionUrl}`);
         try {
@@ -369,6 +375,10 @@ async function runSubmitTask(ctx, deps) {
         }
       }
     } catch (error) {
+      // 这个账号**一条都没处理**就挂了（最常见的：模式是纯协议但没存 Cookie，回落到比特
+      // 又打不开窗口）。记下来，最后判断"是不是所有账号都没起来" —— 以前这里只 log 一句，
+      // 任务以"提交成功 0 条"收尾，编排层据此把这一阶段记成**成功**。
+      if (!slotAttempted) slotErrors.push({ env: envLabel, reason: describeError(error) });
       log(`比特环境 ${envLabel} 自动提交失败：${describeError(error)}`);
     } finally {
       await browser?.close?.().catch(() => {});
@@ -383,6 +393,17 @@ async function runSubmitTask(ctx, deps) {
   await writeBackStatus(null, true);   // 等队列排空，确保最后一次落盘真的写完
 
   const stopped = ctx.shouldStop();
+
+  // 一个账号都没能开始提交 → 抛出去，别报"提交成功 0 条"。
+  // 新电脑上最常见的一幕：模式是纯协议但没存过 Cookie，回落到比特又打不开窗口。
+  // 以前这种情况任务会"正常完成"，编排层把它记成**阶段成功**，用户只看到一句"成功 0 条"。
+  if (!stopped && slotErrors.length && !successCount && !failCount) {
+    throw new Error(
+      `所有账号都没能开始提交（${slotErrors.map((e) => `${e.env}：${e.reason}`).join("；")}）。`
+      + "请到「账号凭证」页点「登录并提取」给这些账号存一份 Cookie —— 存过之后提交全程不需要开窗口。"
+    );
+  }
+
   ctx.report({ done: successCount + failCount, total: totalPlanned, status: stopped ? "stopped" : "done" });
   log(`${stopped ? "已停止" : "自动提交完成"}：成功 ${successCount} 条，失败 ${failCount} 条。`);
   return { stopped, count: successCount, failed: failCount, total: totalPlanned, results };

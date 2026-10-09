@@ -258,9 +258,19 @@ test("提交任务：容量不足时告警且不静默丢弃（日志断言）",
       release: async () => true,
     },
   };
-  const result = await runSubmitTask(noopCtx, deps);
-  assert.equal(result.total, 10, "2 账号 × 每账号每日限额 5 条容量");
-  assert.ok(logs.some((line) => line.includes("剩余 5 条本轮不提交")), `应有容量告警：\n${logs.join("\n")}`);
+  // 这个桩让每个账号都开不了窗口 —— 也就是说"所有账号都没能开始提交"确实成立，
+  // 任务现在会**明确失败**（以前它静默返回"成功 0 条"，编排层据此把阶段记成成功）。
+  // 容量告警在那之前就打了，所以这里断言日志，而不是断言返回值。
+  await assert.rejects(
+    () => runSubmitTask(noopCtx, deps),
+    (error) => {
+      assert.match(error.message, /都没能开始提交/, "全账号起不来时必须明确报错");
+      assert.match(error.message, /账号凭证/, "并且要告诉用户去哪儿解决");
+      return true;
+    }
+  );
+  assert.ok(logs.some((line) => line.includes("只放行 10 条") && line.includes("剩余 5 条")),
+    `应有容量告警（2 账号 × 5 = 10，剩 5 条）:\n${logs.join("\n")}`);
 });
 
 test("提交任务：爬题参数 maxQuestionsPerEnv 不再截断提交容量（回归）", async () => {
@@ -299,9 +309,12 @@ test("提交任务：爬题参数 maxQuestionsPerEnv 不再截断提交容量（
       release: async () => true,
     },
   };
-  const result = await runSubmitTask(noopCtx, deps);
-  assert.equal(result.total, 10, "容量只由每账号每日限额决定：2×5=10，而非 maxQuestionsPerEnv 的 2×2=4");
+  // 同上：桩让每个账号都开不了窗口，任务现在会明确失败 —— 断言"容量只由每账号每日限额决定"
+  await assert.rejects(() => runSubmitTask(noopCtx, deps), /都没能开始提交/);
+  assert.ok(logs.some((line) => line.includes("只放行 10 条")),
+    `容量只由每账号每日限额决定：2×5=10，而非 maxQuestionsPerEnv 的 2×2=4\n${logs.join("\n")}`);
 });
+
 
 // ---------- 纯函数 ----------
 
