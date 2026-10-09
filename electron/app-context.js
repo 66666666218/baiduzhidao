@@ -23,6 +23,10 @@ const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
 const { INVOKE_CHANNELS } = require("./src/ipc-channels");
 const { describeUpdateError, describeError } = require("./src/errors");
+// 查收录 / 权益检查要开窗口取 Cookie（runCheckPublishedTask），这里必须导入。
+// 之前漏了它，直接把「查收录」「账号总览」打成一跑就 ReferenceError: chromium is not defined，
+// 而日志只显示「查收录失败」，完全看不出是少了一行 import。
+const { chromium } = require("playwright-core");
 
 let mainWindow = null;
 let clipboardApi = null; // registerIpc 时注入（供任务内剪贴板兜底）

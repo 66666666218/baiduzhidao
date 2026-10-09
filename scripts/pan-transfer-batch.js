@@ -201,7 +201,10 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   // 5) 权威落盘路径
   const toPaths = ((tBody.extra && tBody.extra.list) || []).map((x) => x.to)
     .concat((tBody.duplicated && tBody.duplicated.list) || []).filter(Boolean);
-  return { toPaths: toPaths.length ? toPaths : files.map(f => f.path), fsIds };
+  // 这里以前写的是 `files.map(f => f.path)` —— 而 `files` 在这个文件里**根本没有定义**，
+  // 一旦 extra/duplicated 都为空就会 ReferenceError（守卫扩到 obj.method( 形式后抓出来的）。
+  if (!toPaths.length) throw new Error("转存返回成功但未取得落盘路径（extra/duplicated 均为空）");
+  return { toPaths, fsIds };
 }
 
 // ---------- 主流程 ----------

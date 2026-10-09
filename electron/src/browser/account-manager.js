@@ -14,6 +14,15 @@
 
 const { nowText } = require("../config");
 
+/**
+ * 从 `2026/10/9 14:38:25`（nowText 的中文格式，月日**不补零**）里取"年月日"。
+ * 正则故意用 [0-9] 而不是 \d —— 省得反斜杠在层层转义里丢掉。取不到返回空串。
+ */
+function dayKey(text) {
+  const m = String(text || "").match(/([0-9]{4})[^0-9]+([0-9]{1,2})[^0-9]+([0-9]{1,2})/);
+  return m ? `${m[1]}-${Number(m[2])}-${Number(m[3])}` : "";
+}
+
 class AccountManager {
   constructor({ store, dailyLimit = 0 } = {}) {
     this.store = store; // 电子主进程的 Store（读 answers 推今日用量）
@@ -53,15 +62,22 @@ class AccountManager {
     }));
   }
 
-  /** 今日已用：以 answers 存储中该账号已提交记录数为准 + 进程内偏移 */
+  /**
+   * 今日已用：只数**今天**提交的，加进程内偏移。
+   *
+   * 以前这里把 status==="已提交" 的记录**全部历史都算进来**（注释自己写着"简化口径"），
+   * 于是历史越多这个数越大：从旧机器/旧版本带过来的 answers.json 一载入，每个账号都成了
+   * "今日额度已用完（3000/10）"——明明今天一条都没发。换新电脑、迁移数据时必踩。
+   * 没有时间戳的老记录一律不计（宁可少算，不可多算）。
+   */
   usedToday(envLabel) {
     let count = 0;
     const offset = this.accounts.get(envLabel);
+    const today = dayKey(nowText());
     for (const item of this.store.loadAnswers()) {
-      if (item.status === "已提交" && item.bitEnv === envLabel) {
-        // 简化口径：统计全部已提交记录（跨天精确口径由 passed-count 任务提供）
-        count += 1;
-      }
+      if (item.status !== "已提交" || item.bitEnv !== envLabel) continue;
+      if (dayKey(item.submittedAt) !== today) continue;
+      count += 1;
     }
     return count + (offset ? offset.usedTodayOffset : 0);
   }

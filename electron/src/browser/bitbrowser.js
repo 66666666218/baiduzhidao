@@ -31,29 +31,42 @@ class BitBrowserAdapter {
   async listByName(name) {
     const cleanName = String(name || "").trim();
     if (!cleanName) throw new Error("比特环境名称不能为空");
+    let candidates = [];
     for (const page of [0, 1]) {
       const response = await this.post("/browser/list", { page, pageSize: 100, name: cleanName });
       const browsers = extractBrowserList(response);
-      if (browsers.length) {
-        const exact = browsers.find((item) => String(item.name || item.browserName || "").trim() === cleanName);
-        return exact || browsers[0];
-      }
+      if (browsers.length) { candidates = browsers; break; }
     }
-    throw new Error(`没有找到名称包含“${cleanName}”的比特浏览器环境`);
+    if (!candidates.length) throw new Error(`没有找到名称包含“${cleanName}”的比特浏览器环境`);
+    const nameOf = (item) => String(item.name || item.browserName || "").trim();
+    const exact = candidates.find((item) => nameOf(item) === cleanName);
+    if (exact) return exact;
+    // 【为什么宁可报错也不兜底】/browser/list 的 name 是**模糊**匹配，返回的列表里
+    // 可能一个精确匹配都没有。以前这里是 `return exact || browsers[0]`：名字差一个字
+    // （多空格/带后缀/大小写不同）就会静默打开**另一个**窗口 —— 那个窗口没登录百度就报
+    // 「未登录百度账号」，登录的是别的号就读到别的额度；而日志从头到尾只显示你配的那个
+    // 名字，于是"名字明明写对了"怎么查都查不出来。换新电脑/新环境时最容易踩这个。
+    const near = candidates.map(nameOf).filter(Boolean).slice(0, 8);
+    throw new Error(`比特环境名不匹配：没有名为“${cleanName}”的窗口。`
+      + `名称里含“${cleanName}”的有：${near.join("、") || "（无）"}。`
+      + `请把「比特环境」页里的名称改成与比特浏览器里的窗口名一字不差。`);
   }
 
   async open(idOrName) {
     const target = String(idOrName || "").trim();
     let id = target;
+    let windowName = "";
     if (!/^[0-9a-f]{8,}$/i.test(target)) {
       const browser = await this.listByName(target);
       id = browser.id || browser.browserId;
+      windowName = String(browser.name || browser.browserName || "").trim();
     }
     if (!id) throw new Error(`比特环境没有有效 id：${target}`);
     const data = await this.post("/browser/open", { id });
     const cdpUrl = extractCdpUrl(data);
     if (!cdpUrl) throw new Error(`比特浏览器已响应但没有调试地址：${JSON.stringify(data)}`);
-    return { id: String(id), cdpUrl, driverPath: data?.data?.driver || "" };
+    // 把实际窗口名透出去，调用方才能在日志里报"打开的是哪个窗口"（见 upload-batch）
+    return { id: String(id), cdpUrl, name: windowName || target, driverPath: data?.data?.driver || "" };
   }
 
   async close(id) {

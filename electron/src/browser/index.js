@@ -27,12 +27,12 @@ class BrowserPool {
     const existing = this.active.get(envLabel);
     if (existing) {
       existing.refCount += 1;
-      return { envLabel, cdpUrl: existing.cdpUrl, id: existing.id, reused: true };
+      return { envLabel, cdpUrl: existing.cdpUrl, id: existing.id, name: existing.name || "", reused: true };
     }
     const opened = await this.adapter.open(envLabel);
-    const handle = { id: opened.id, cdpUrl: opened.cdpUrl, refCount: 1 };
+    const handle = { id: opened.id, cdpUrl: opened.cdpUrl, name: opened.name || "", refCount: 1 };
     this.active.set(envLabel, handle);
-    return { envLabel, cdpUrl: opened.cdpUrl, id: opened.id, reused: false };
+    return { envLabel, cdpUrl: opened.cdpUrl, id: opened.id, name: handle.name, reused: false };
   }
 
   async release(envLabel, { close = true } = {}) {

@@ -267,14 +267,18 @@ function undefinedCallees(rawSrc) {
   // require 解构：const { a, b: c } = require(...)
   for (const m of src.matchAll(/const\s*\{([^}]+)\}\s*=\s*require\(/g)) {
     for (const part of m[1].split(",")) {
-      const name = part.split(":")[0].trim();
+      // 解构重命名 `const { chromium: pw } = require(...)` 要取**冒号右边**那个别名。
+      // 以前取的是左边，于是真别名（pw）反而没进 defined，守卫把好好的代码报成未定义。
+      const halves = part.split(":");
+      const name = (halves.length > 1 ? halves[1] : halves[0]).trim();
       if (name) defined.add(name);
     }
   }
   // 解构赋值（不管右边是什么）：const { log } = deps()
   for (const m of src.matchAll(/const\s*\{([^}]+)\}\s*=/g)) {
     for (const part of m[1].split(",")) {
-      const name = part.split(":")[0].trim().replace(/^\.\.\./, "");
+      const halves = part.split(":");
+      const name = (halves.length > 1 ? halves[1] : halves[0]).trim().replace(/^\.\.\./, "");
       if (name) defined.add(name);
     }
   }
@@ -289,7 +293,16 @@ function undefinedCallees(rawSrc) {
   for (const m of src.matchAll(/(?:^|[^\w$.])([A-Za-z_$][\w$]*)\s*=>/g)) defined.add(m[1]);
   for (const m of src.matchAll(/\(([^)]*)\)\s*=>/g)) {
     // 嵌套括号（new Promise((resolve) => …)）会让捕获组带上半个左括号，所以圆括号也要剥
-    for (const p of m[1].split(",")) defined.add(p.split("=")[0].trim().replace(/[{}[\]()]/g, ""));
+    for (const p of m[1].split(",")) {
+      // 形如 `"response", async (res` —— 捕获组会把前面的实参一起带进来，
+      // 直接剥括号只会得到 "async res" 这种假名字，真参数 res 反而漏掉。
+      // 这里按空白切开取最后一个词，并把引号实参整个跳过。
+      if (/["']/.test(p)) continue;
+      const raw = p.split("=")[0].replace(/[{}[\]()]/g, " ").replace("async", " ").trim();
+      const words = raw.split(" ").filter(Boolean);
+      const name = words.length ? words[words.length - 1] : "";
+      if (name) defined.add(name);
+    }
   }
 
   // 被当作函数调用的标识符（排除 obj.fn() / new X()）
@@ -300,6 +313,15 @@ function undefinedCallees(rawSrc) {
     const closeIdx = after.indexOf(")");
     const looksLikeDef = closeIdx >= 0 && /^\s*\{/.test(after.slice(closeIdx + 1));
     if (!looksLikeDef) called.add(m[1]);
+  }
+  // 被 `X.Y(` 引用的顶层标识符 X —— 例如 app-context.js 里的 `chromium.connectOverCDP(...)`。
+  // 上面那条正则只认 `foo(`；`obj.method(` 里的 obj 后面跟的是点、压根不匹配，
+  // 于是"少 require 一个模块"这类错误它一声不响。实测就漏掉了 chromium：
+  // 「查收录 / 账号总览」一跑就 ReferenceError: chromium is not defined，
+  // 而日志只显示「查收录失败」，完全看不出是少了一行 import。
+  // （正则用 [.] / [(] / [A-Za-z0-9_] 而不是反斜杠写法，省得在层层转义里丢掉。）
+  for (const m of src.matchAll(/(?<![.A-Za-z0-9_$])([A-Za-z_$][A-Za-z0-9_$]*)[ ]*[.][A-Za-z_$][A-Za-z0-9_$]*[ ]*[(]/g)) {
+    called.add(m[1]);
   }
 
   // 语言内置 / 全局 / 关键字
@@ -312,8 +334,10 @@ function undefinedCallees(rawSrc) {
     "process", "console", "module", "exports", "__dirname", "__filename", "setImmediate",
     "queueMicrotask", "structuredClone", "TextEncoder", "TextDecoder", "AbortController",
     "AbortSignal", "globalThis", "URLSearchParams",
+    // 脚本在 page.evaluate(() => ...) 回调里跑的是**浏览器**上下文，document/window 是那里的全局
+    "document", "window", "localStorage", "location", "navigator",
     "if", "for", "while", "switch", "catch", "return", "typeof", "function", "new", "await",
-    "super", "import", "delete", "void", "in", "of", "do", "else", "try", "throw", "yield",
+    "this", "super", "import", "delete", "void", "in", "of", "do", "else", "try", "throw", "yield",
     "async", "await", "case", "default", "break", "continue", "instanceof", "undefined", "null", "true", "false",
   ]);
 

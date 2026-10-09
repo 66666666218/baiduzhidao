@@ -98,8 +98,15 @@ async function runBatchUploadTask(ctx, deps) {
   log(`已填回答 ${filled.length} 行（随机排序防查重）`);
 
   // 打开比特窗口
-  log(`打开比特窗口：${bitEnv}`);
   const handle = await browserPool.acquire(bitEnv);
+  // 报出**实际打开**的窗口名：比特的 /browser/list 是模糊匹配，配置名差一个字就可能
+  // 打开另一个窗口（那个窗口也许没登录、也许登录的是别的账号）。只打配置名的话，
+  // 出问题永远看不出是"开错了窗口"。换新电脑/新环境时尤其要盯这一行。
+  if (handle.name && handle.name !== bitEnv) {
+    log(`⚠️ 实际打开的窗口是「${handle.name}」，与配置的「${bitEnv}」不一致 —— 请核对是不是同一个账号`);
+  } else {
+    log(`打开比特窗口：${bitEnv}${handle.name ? "（" + handle.name + "）" : ""}`);
+  }
   let browser;
   try {
     browser = await chromium.connectOverCDP(handle.cdpUrl);
