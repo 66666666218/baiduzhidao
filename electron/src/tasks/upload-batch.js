@@ -22,6 +22,19 @@ const UPLOAD_API = "/qa/api/bulkqa/upload";
 const UA_PROTO = http.UA;   // UA 只有一处定义（zhidao/http.js）
 
 /**
+ * 批量追加台账。一批一次 IO —— 以前每行一次 `appendFileSync`，
+ * 500 行就是 500 次磁盘写入，在机械盘/杀软实时扫描下会明显拖慢。
+ * 内容是 JSONL（每行一条），一次写多行与逐行写在语义上完全等价。
+ */
+function appendLedger(ledgerFile, links) {
+  const rows = (links || []).filter(Boolean);
+  if (!rows.length) return;
+  const at = new Date().toISOString();
+  const text = rows.map((link) => JSON.stringify({ link, at })).join("\n") + "\n";
+  fs.appendFileSync(ledgerFile, text);
+}
+
+/**
  * 取 X-ik-token。**上传和提交都要它** —— 缺了只会得到含糊的「参数错误」，
  * 很容易误判成字段名写错（我就这么绕了很久）。它来自 /api/loginInfo 的 stoken 字段。
  */
@@ -171,10 +184,7 @@ async function runBatchUploadTask(ctx, deps) {
         log(`批次 ${b + 1}/${pBatches}: ${chunk.length} 行 → ${r.ok ? `成功 taskId=${r.taskId}` : `失败(${r.reason})`}`);
         ctx.emitItem({ title: `批次 ${b + 1}/${pBatches}`, status: r.ok ? `上传成功 ${chunk.length} 行` : `上传失败：${r.reason}` });
         if (!r.ok) { log("本批失败，停止（可稍后重跑续传）。"); break; }
-        for (const row of chunk) {
-          const link = linkOf(row);
-          if (link) fs.appendFileSync(ledgerFile, JSON.stringify({ link, at: new Date().toISOString() }) + "\n");
-        }
+        appendLedger(ledgerFile, chunk.map((row) => linkOf(row)));
         okRows += chunk.length;
         ctx.report({ done: b + 1, total: pBatches, status: "running" });
         if (b < pBatches - 1) await new Promise((res) => setTimeout(res, 3000));
@@ -288,10 +298,7 @@ async function runBatchUploadTask(ctx, deps) {
     log(`批次 ${b + 1}/${totalBatches}: ${chunk.length} 行 → ${ok ? "成功" : `失败(${msg})`}`);
     if (!ok) { log("本批失败，停止（可稍后重跑续传）。"); break; }
     // 成功后记台账（保守：记录本批所有链接，避免重复提交被拒）
-    for (const r of chunk) {
-      const link = linkOf(r);
-      if (link) fs.appendFileSync(ledgerFile, JSON.stringify({ link, at: new Date().toISOString() }) + "\n");
-    }
+    appendLedger(ledgerFile, chunk.map((row) => linkOf(row)));
     uploaded += chunk.length;
     ctx.report({ done: b + 1, total: totalBatches, status: "running" });
     if (b < totalBatches - 1) await page.waitForTimeout(30000);
@@ -461,4 +468,4 @@ async function runTopicUploadTask(ctx, deps) {
   };
 }
 
-module.exports = { runBatchUploadTask, runTopicUploadTask, pickTitleKey, safeFileToken, collectTopicRows, fetchIkToken, uploadByProtocol };
+module.exports = { runBatchUploadTask, runTopicUploadTask, pickTitleKey, safeFileToken, collectTopicRows, fetchIkToken, uploadByProtocol, appendLedger };

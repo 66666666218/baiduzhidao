@@ -167,7 +167,13 @@ async function runSubmitTask(ctx, deps) {
   let failCount = 0;
   let processed = 0;
   const results = [];
-  const lastSuccessByEnv = {}; // envLabel -> 最近一次成功时的全局成功数（用于连续失败判定）
+  // 每账号的连续失败计数。**必须是 per-env**：
+  // 以前用的是 `failCount - lastSuccessByEnv[envLabel]` —— 两边都是**全局**计数，
+  // 于是账号 A 的失败会算进账号 B 的"连续失败"，把好账号误熔断。
+  // 而且旧判据要求 `lastSuccessByEnv[envLabel] !== undefined`（得先成功过一次），
+  // 导致**首次就连败的账号永远不熔断** —— 正好漏掉了最该拦的那种。
+  const failStreakByEnv = {};   // envLabel -> 连续失败次数
+  const FAIL_STREAK_LIMIT = 3;  // 连续失败到这个数就标记账号需人工检查
 
   for (const slot of allocation) {
     if (ctx.shouldStop() || !slot.rows.length) continue;
@@ -280,16 +286,18 @@ async function runSubmitTask(ctx, deps) {
           ctx.emitItem(failedItem);
           log(`提交失败：${item.title || item.questionUrl}；${describeError(error)}`);
           // 连续 3 次失败自动标记账号需人工检查（AccountManager 层拦截后续提交）
-          if (deps.accountManager && failCount - lastSuccessByEnv[envLabel] >= 3 && lastSuccessByEnv[envLabel] !== undefined) {
+          failStreakByEnv[envLabel] = (failStreakByEnv[envLabel] || 0) + 1;
+          if (deps.accountManager && failStreakByEnv[envLabel] >= FAIL_STREAK_LIMIT) {
             if (deps.accountManager) {
-              deps.accountManager.markBlocked(envLabel, `连续 ${failCount - lastSuccessByEnv[envLabel]} 次提交失败`);
-              if (deps.emitEvent) deps.emitEvent("account.blocked", { account: envLabel, reason: `连续 ${failCount - lastSuccessByEnv[envLabel]} 次提交失败` });
+              const why = `连续 ${failStreakByEnv[envLabel]} 次提交失败`;
+              deps.accountManager.markBlocked(envLabel, why);
+              if (deps.emitEvent) deps.emitEvent("account.blocked", { account: envLabel, reason: why });
             }
             log(`⚠️ 账号 ${envLabel} 已连续多次失败，已标记需人工检查，本轮跳过该账号。`);
             break;
           }
         }
-        lastSuccessByEnv[envLabel] = successCount;
+        failStreakByEnv[envLabel] = 0;   // 这个账号成功了一条，连败清零（只清自己的）
         ctx.report({ done: successCount + failCount, total: totalPlanned, status: "running" });
         if (processed < totalPlanned && !ctx.shouldStop()) {
           await ctx.delay(config.delayMin, config.delayMax, "下一条提交间隔");

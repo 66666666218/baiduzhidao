@@ -143,7 +143,17 @@ async function runBatchTransferTask(ctx, deps) {
   log(`开始纯协议批量转存：目标 ${total} 条 | 并发 ${cc} | 目标目录 ${destRoot}`);
   ctx.report({ done: 0, total, status: "running" });
 
-  let done = 0, failed = 0, consecutiveFails = 0, fatalStop = false;
+  let done = 0, failed = 0, fatalStop = false;
+  // 连续失败计数**必须是全局共享的**（它判的是"整条管线是不是在持续失败"），
+  // 但**绝不能由单个 worker 的 break 来表达停止** —— 那样只停自己，另外三个照跑。
+  // 做法：计数共享，一旦到阈值就置 `fatalStop`（while 条件已共享检查它），
+  // 与下面容量不足的 `e.fatal` 用同一套停止语义。
+  let consecutiveFails = 0;
+  const FAIL_STREAK_LIMIT = 10;
+  // 风控暂停用**共享的时间戳**，而不是各 worker 自己 sleep：
+  // 以前每个 worker 遇到风控都各自 `await sleep(10min)`，醒来时刻还各不相同——
+  // 结果是"看起来全局静默了，其实 4 个 worker 在 10 分钟后集中爆发"，比不暂停更糟。
+  let pausedUntil = 0;
   const qaRows = [];
 
   // 每条完整链（独立 Jar 会话，并发安全）；窗口按轮换粒度切换
@@ -164,6 +174,11 @@ async function runBatchTransferTask(ctx, deps) {
   async function worker() {
     let myCount = 0;
     while (!fatalStop && !ctx.shouldStop()) {
+      // 全局暂停：任何 worker 触发风控，其它 worker 也在这里一起等
+      if (pausedUntil > Date.now()) {
+        await sleep(Math.min(pausedUntil - Date.now(), 60 * 1000));
+        continue;
+      }
       if (myCount > 0 && myCount % perEnv === 0) { envCursor += 1; myCount = 0; } // 轮换下一窗口
       const cred = pickEnv();
       const i = nextIndex();
@@ -246,14 +261,16 @@ async function runBatchTransferTask(ctx, deps) {
         saveState(okEntry);
         qaRows.push(qaRow);
         done += 1;
-        consecutiveFails = 0;
+        consecutiveFails = 0;   // 成功一条，全局连败清零
         ctx.emitItem({ ...itemBase, status: "已转存分享", ownLink });
         ctx.report({ done, total, status: "running" });
         log(`✅ [${done}/${total}] ${rawName.slice(0, 26)} → ${ownLink}`);
       } catch (e) {
         if (e.risk) {
-          log(`⏸ 触发行控（${(e.message || "").slice(0, 40)}），全局暂停 10 分钟后继续…`);
-          await sleep(10 * 60 * 1000);
+          // 取 max 而不是直接赋值：多个 worker 几乎同时撞上风控时，
+          // 暂停窗口从"最后一次触发"起算，不会被前一个的旧值缩短。
+          pausedUntil = Math.max(pausedUntil, Date.now() + 10 * 60 * 1000);
+          log(`⏸ 触发行控（${(e.message || "").slice(0, 40)}），全部账号暂停到 ${new Date(pausedUntil).toLocaleTimeString("zh-CN", { hour12: false })}…`);
           continue;
         }
         failed += 1;
@@ -265,7 +282,11 @@ async function runBatchTransferTask(ctx, deps) {
         ctx.emitItem({ ...itemBase, status: `转存失败：${(e.message || "").slice(0, 60)}` });
         log(`✗ ${rawName.slice(0, 26)} → ${e.message.slice(0, 70)}`);
         if (e.fatal) { log("⛔ 容量不足，停止本次任务（已完成部分完好）。"); fatalStop = true; break; }
-        if (consecutiveFails >= 10) { log(`⚠️ 连续 ${consecutiveFails} 条失败，自动停止（断点已存档）。`); break; }
+        if (consecutiveFails >= FAIL_STREAK_LIMIT) {
+          log(`⚠️ 连续 ${consecutiveFails} 条失败，整条管线停止（断点已存档）。`);
+          fatalStop = true;   // 让**所有** worker 都停，而不是只停当前这个
+          break;
+        }
       }
       await sleep((delayMin + Math.random() * (delayMax - delayMin)) * 1000);
     }
