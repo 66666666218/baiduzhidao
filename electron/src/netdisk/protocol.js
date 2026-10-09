@@ -126,18 +126,50 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   }
 
   // 4) 建目录 + 转存
-  const cResp = await fetch(`${PAN}/api/create?a=commit&bdstoken=${encodeURIComponent(bdstoken)}&web=1&channel=chunlei&clienttype=0`, {
-    method: "POST",
-    headers: { "User-Agent": UA, "Cookie": jar.str(), "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
-    body: `path=${encodeURIComponent(destDir)}&isdir=1`,
-  });
-  await cResp.json().catch(() => ({}));
-  const tResp = await fetch(`${PAN}/share/transfer?shareid=${shareid}&from=${uk}&bdstoken=${encodeURIComponent(bdstoken)}&channel=chunlei&clienttype=0&web=1`, {
-    method: "POST",
-    headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": rawUrl, "Origin": PAN, "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
-    body: `fsidlist=${encodeURIComponent(JSON.stringify(fsIds))}&path=${encodeURIComponent(destDir)}`,
-  });
-  const tBody = await tResp.json().catch(() => ({}));
+  //
+  // ★ 实测（2026-10-09）：百度的 /api/create **已经用不了** ——
+  //   即使逐层建、即使建的是全新的根目录，一律返回 errno=-6，
+  //   且列目录确认目录并未被创建（verify 也不再生效 bdstoken）。
+  //   后果：多层嵌套的目的路径永远建不出来，转存必定报 errno=2
+  //   「转存路径不存在」——而调用方只看到"转存失败"，完全看不出
+  //   是建目录那步没成（对照实验：同一条链接传到**已存在**的目录能成功）。
+  //   所以这里建目录只是尽力而为，真正兜底靠下面 errno=2 时回落到顶层目录。
+  const segments = String(destDir || "").split("/").filter(Boolean);
+  let acc = "";
+  for (const seg of segments) {
+    acc += `/${seg}`;
+    const cResp = await fetch(`${PAN}/api/create?a=commit&bdstoken=${encodeURIComponent(bdstoken)}&web=1&channel=chunlei&clienttype=0`, {
+      method: "POST",
+      headers: { "User-Agent": UA, "Cookie": jar.str(), "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+      body: `path=${encodeURIComponent(acc)}&isdir=1`,
+    });
+    await cResp.json().catch(() => ({}));
+  }
+
+  const transferTo = async (target) => {
+    const resp = await fetch(`${PAN}/share/transfer?shareid=${shareid}&from=${uk}&bdstoken=${encodeURIComponent(bdstoken)}&channel=chunlei&clienttype=0&web=1`, {
+      method: "POST",
+      headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": rawUrl, "Origin": PAN, "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+      body: `fsidlist=${encodeURIComponent(JSON.stringify(fsIds))}&path=${encodeURIComponent(target)}`,
+    });
+    return resp.json().catch(() => ({}));
+  };
+
+  let usedDir = destDir;
+  let tBody = await transferTo(usedDir);
+  // errno=2：目的路径不存在。子目录建不出来时，回落到顶层目录再试一次——
+  // 顶层（如 /来自资源批量转存）通常是早就存在的，能传进去。
+  if (Number(tBody.errno) === 2) {
+    const fallback = `/${segments[0] || ""}`;
+    if (fallback !== destDir) {
+      const retry = await transferTo(fallback);
+      if (Number(retry.errno) === 0 || Number(retry.errno) === 4) {
+        tBody = retry;
+        usedDir = fallback;
+      }
+    }
+  }
+  const fellBack = usedDir !== destDir;
   const infoErr = tBody.info && tBody.info[0] && Number(tBody.info[0].errno);
   if (tBody.errno === 12 || tBody.errno === -10) throw Object.assign(new Error("网盘容量不足"), { fatal: true });
 
@@ -147,7 +179,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
     const alt = (tBody.info || []).map((x) => x.path).filter(Boolean);
     const to = dupPaths.length ? dupPaths : alt;
     if (!to.length) throw new Error("重复转存但未取得已有文件路径");
-    return { toPaths: to, dup: true };
+    return { toPaths: to, dup: true, usedDir, fellBack };
   }
   if (Number(tBody.errno) !== 0 && !(infoErr === 0)) throw new Error(`转存 errno=${tBody.errno} ${tBody.show_msg || ""}`);
 
@@ -156,7 +188,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   const dupPaths = ((tBody.duplicated && tBody.duplicated.list) || []).map((x) => x && x.path).filter(Boolean);
   const toPaths = extraPaths.concat(dupPaths);
   if (!toPaths.length) throw new Error("转存返回成功但未取得落盘路径（extra/duplicated 均为空）");
-  return { toPaths, fsIds };
+  return { toPaths, fsIds, usedDir, fellBack };
 }
 
 module.exports = { PAN, UA, Jar, processOne };
