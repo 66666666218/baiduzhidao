@@ -1,5 +1,7 @@
 # CHANGELOG
 
+- [2026-10-09 11:08] FEAT: 按「批量发布权益」自动区分网盘链——一键全自动在跑网盘链前先查各账号的 `hasPermission`（工作台 userinfo 字段，实测 true/false），**没权益的账号自动跳过网盘链**（答题链不受影响），免得白白把资源转进一个传不出去的号；查询失败给 null 并按「不拦」处理，不因查不到就误封账号。「账号总览」新增「批量发布权益」列（✅有 / ❌无 / ?未查到）。另附实测确认：平台官方上传模板表头是 `qid（非必填，自问自答创建的问题无此字段）/问题标题/回答内容`，**与我们生成的表完全一致**——顺带解释了 qid 为空是平台认可的「自问自答」形态。(272 单测全绿；冒烟 clicked=73、rendererErrors:[]) (Files: electron/app-context.js, electron/renderer/index.html, electron/renderer/renderer.js, CHANGELOG.md, docs/自审日志.md)
+
 - [2026-10-09 10:54] FIX: 配置体检修三处——①「账号总览」新增**绑定题材**列：绑定表是按比特环境名做 key 的，差一个字就匹配不上，而那种错只有跑到任务深处才报；现在一眼看出谁没绑，并在日志里点名 + 说明冒号左边必须与环境名一字不差。②删掉死参数「每账号单轮条数」（maxQuestionsPerEnv）——提交任务早就不读它（之前专门移除过，因为它会导致「多账号时总量 = 账号数 × 5」的隐蔽截断），字段却一直挂在界面上误导人；界面/渲染端/config 三处一并清掉。③补上「命令行跑批时自动提交」开关——`autoSubmit` 全仓只在 `scripts/daily-batch.js` 被读，**界面上根本没有控件**（只能手改 settings.json），而 README 却写着「设置页「自动提交」开关」；现已做成可见开关并标明它只管线命令行跑批，界面里的链由「一键全自动」页的阶段勾选框控制 (272 单测全绿；冒烟 clicked=73、rendererErrors:[]) (Files: electron/renderer/index.html, electron/renderer/renderer.js, electron/src/config.js, CHANGELOG.md, docs/自审日志.md)
 
 - [2026-10-09 10:23] FEAT: 新增「账号总览」视图——按比特环境列出每个账号的 **剩余额度 / 上传任务数 / 总条数 / 已收录 / 被拒 / 状态**。复用 `task:check-published` （它本来就按账号返回这些字段，没必要再写一个任务去拿同样的数据），带 `withReasons:false` 避免为总览去逐批拉结果文件。表格用 `createElement` + `textContent` 渲染（错误信息里可能带用户数据）。起因是用户反馈「抽题 50 条但只提交了 10 条」——查证是**每账号每日限额默认 10** （`accountDailyLimit:10`，1 个账号 × 10 = 10 条），不是 bug；顺带做了这个让额度/成败一眼可见的视图 (272 单测全绿；**冒烟未跑——软件正在运行**) (Files: electron/renderer/index.html, electron/renderer/renderer.js, CHANGELOG.md, docs/自审日志.md)

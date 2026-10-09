@@ -279,6 +279,10 @@ async function runCheckPublishedTask(ctx, deps) {
         envLabel,
         ok: true,
         name: info.name,
+        // 「批量发布权益」：工作台 userinfo 里的 hasPermission（实测 true/false）。
+        // 没这个权益的账号上传会被拒，所以网盘链要据此跳号。
+        // 查询失败时给 null（未知），调用方按"不拦"处理——不能因为查不到就误封账号。
+        hasPermission: info.hasPermission === undefined ? null : info.hasPermission,
         remainingQuota: Number.isFinite(info.remainingQuota) ? info.remainingQuota : null,
         taskTotal: workbench.pickTaskTotal(resp),
         summary,
@@ -780,15 +784,33 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
         });
       }
 
+      // 网盘链前置：确认哪些账号有「批量发布权益」。没权益的账号上传会被拒，
+      // 先查清楚再转存，免得白白把资源转进一个传不出去的号。
+      // 只在网盘链真的有勾选时才查，避免多开一轮浏览器。
+      let netdiskEnvs = bitEnvs;
+      if (!failure && !autoPipelineAborted && (enabled.has("transfer") || enabled.has("upload"))) {
+        const checked = await runStage("checkPermission", "确认批量发布权益", () =>
+          startTask("check-published", { bitEnvs, withReasons: false }, (c) => runCheckPublishedTask(c, deps()))
+        );
+        if (checked && Array.isArray(checked.accounts) && checked.accounts.length) {
+          // hasPermission 为 null 表示"没查到"，按不拦处理——不能因为查不到就误封账号
+          const allowed = checked.accounts.filter((a) => a.ok && a.hasPermission !== false).map((a) => a.envLabel);
+          const denied = bitEnvs.filter((e) => !allowed.includes(e));
+          if (denied.length) emit("task:log", `⚠️ 这些账号没有「批量发布权益」或未登录，网盘链本次跳过：${denied.join("、")}`);
+          netdiskEnvs = allowed;
+          if (!allowed.length) emit("task:log", "没有账号具备「批量发布权益」，网盘链整段跳过（答题链不受影响）。");
+        }
+      }
+
       // 5) 网盘转存：脚本套模板生成问答行（qa-template-lib），产出即上传专用表
-      if (enabled.has("transfer") && !failure) {
+      if (enabled.has("transfer") && !failure && netdiskEnvs.length) {
         let transferTable = String(p.transferTablePath || "").trim();
         // 没给资源表 → 按账号绑定的题材自动搜一批（纯协议搜百度知道，不需要浏览器）
         if (!transferTable || !fs.existsSync(transferTable)) {
           emit("task:log", "没有指定资源表，改为按账号绑定的题材自动搜资源…");
           const searched = await runStage("search", "搜资源（按账号题材）", () =>
             startTask("search-resources", {
-              bitEnvs,
+              bitEnvs: netdiskEnvs,
               pages: Number(p.searchPages) || 0,
               limit: Number(p.searchRowLimit) || 0,
             }, (c) => runSearchResourcesTask(c, deps()))
@@ -802,7 +824,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
           await runStage("transfer", "网盘转存（套模板生成问答）", async () => {
             const result = await startTask("batch-transfer", {
               filePath: transferTable,
-              bitEnvs,
+              bitEnvs: netdiskEnvs,
               destDir: String(p.transferDestDir || "").trim() || "/来自资源批量转存",
               outName: String(p.transferOutName || "").trim(),
               perEnv: Number(p.transferPerEnv) || 50,
@@ -822,7 +844,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       }
 
       // 6) 按题材分账号上传（用转存产出，或调用方指定的现成表）
-      if (enabled.has("upload") && !failure) {
+      if (enabled.has("upload") && !failure && netdiskEnvs.length) {
         if (!uploadTable || !fs.existsSync(uploadTable)) {
           emit("task:log", "跳过「按题材上传」：没有可用的上传专用表（请先跑转存，或指定一张现成的表）。");
           report.push({ stage: "upload", label: "按题材上传", ok: false, skipped: true, error: "未指定上传专用表" });
@@ -830,7 +852,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
           const uploaded = await runStage("upload", "按题材上传", () =>
             startTask("upload-by-topic", {
               filePath: uploadTable,
-              bitEnvs,
+              bitEnvs: netdiskEnvs,
               accountTopics: settings.accountTopics,
               topicRules: settings.topicRules,
               batchRows: Number(p.batchRows) || 500,

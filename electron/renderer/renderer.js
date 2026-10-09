@@ -137,7 +137,7 @@ function renderAccountOverview(accounts, topicMap = {}) {
   if (!accounts.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 9;
+    td.colSpan = 10;
     td.className = "empty-hint";
     td.textContent = "没有可显示的账号：请先在设置页填写「比特环境名称」。";
     tr.appendChild(td);
@@ -150,11 +150,16 @@ function renderAccountOverview(accounts, topicMap = {}) {
     // 而那种错只有跑到任务深处才报错。这里直接摊开，一眼能看出谁没绑。
     const topic = topicMap[account.envLabel];
     const topicText = topic ? topic : "⚠️ 未绑定";
+    // 「批量发布权益」= 工作台 userinfo 的 hasPermission。没有它上传会被拒，
+    // 一键全自动的网盘链会自动跳过这些账号。null 表示没查到（按不拦处理）。
+    const permText = account.hasPermission === true ? "✅ 有"
+      : account.hasPermission === false ? "❌ 无（网盘链会跳过）" : "? 未查到";
     const cells = account.ok
       ? [
           account.envLabel,
           topicText,
           account.name || "(未取到)",
+          permText,
           account.remainingQuota == null ? "未知" : String(account.remainingQuota),
           String(account.taskTotal || 0),
           String(account.summary.totalRows),
@@ -162,7 +167,7 @@ function renderAccountOverview(accounts, topicMap = {}) {
           String(account.summary.failedRows),
           account.summary.hasFailure ? "⚠️ 有被拒" : "✅ 正常",
         ]
-      : [account.envLabel, topicText, "-", "-", "-", "-", "-", "-", `❌ ${account.error}`];
+      : [account.envLabel, topicText, "-", "-", "-", "-", "-", "-", "-", `❌ ${account.error}`];
     for (const text of cells) {
       const td = document.createElement("td");
       td.textContent = text; // textContent 而不是 innerHTML：错误信息里可能带用户数据
