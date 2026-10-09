@@ -66,7 +66,22 @@ const llm = new LlmClient({
   temperature: config.load().aiTemperature,
   onUsage: (entry) => store.addUsage(entry),
 });
-const browserPool = new BrowserPool(createAdapter({ apiUrl: config.load().apiUrl }));
+// 把「按环境名取网盘凭据」交给 BrowserPool：存过凭据的环境会改用 headless Edge，
+// **完全不开比特窗口** —— 内存不够的机器靠这个才能跑起来。
+// 没存过的仍走比特（同时也保留比特的指纹隔离能力）。
+// 浏览器引擎由设置决定：默认 "bit"（指纹浏览器，一环境一指纹）。
+// 选 "headless" 才用系统 Edge —— 省内存，但**所有账号共用同一份指纹**，
+// 隔离性下降，多账号运营需自行权衡（设置页有明确说明）。
+const browserMode = String(config.load().browserMode || "bit") === "headless" ? "headless" : "bit";
+const browserPool = new BrowserPool(createAdapter({ apiUrl: config.load().apiUrl }), {
+  mode: browserMode,
+  credentialOf: (envLabel) => {
+    try {
+      const { credentialOf: pick } = require("./src/netdisk/manager");
+      return pick(dataDir, envLabel);
+    } catch { return null; }
+  },
+});
 const eventBus = new EventBus();
 const auditLogger = new AuditLogger({ auditDir: path.join(dataDir, "audit"), eventBus });
 const tasks = new TaskManager({ eventBus });

@@ -702,6 +702,7 @@ async function saveSettingsQuiet() {
   patch.apiUrl = $("apiUrl").value;
   patch.activityUrl = $("activityUrl").value.trim();
   patch.bitEnvs = $("bitEnvs").value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  patch.browserMode = $("browserMode").value;
   patch.transferEnvs = $("autoTransferEnvs").value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   patch.uploadEnvs = $("autoUploadEnvs").value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   patch.accountTopics = $("accountTopics").value; // 文本形式「账号=题材」，由后端归一化
@@ -739,6 +740,7 @@ async function loadSettings() {
   $("apiUrl").value = settings.apiUrl || "";
   $("activityUrl").value = settings.activityUrl || "";
   $("bitEnvs").value = (settings.bitEnvs || []).map((env) => env.label || env).join("\n");
+  $("browserMode").value = settings.browserMode === "headless" ? "headless" : "bit";
   $("autoTransferEnvs").value = (settings.transferEnvs || []).map((env) => env.label || env).join("\n");
   $("autoUploadEnvs").value = (settings.uploadEnvs || []).map((env) => env.label || env).join("\n");
   $("accountTopics").value = Object.entries(settings.accountTopics || {}).map(([account, topic]) => `${account}=${topic}`).join("\n");
