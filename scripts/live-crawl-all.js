@@ -101,6 +101,11 @@ let restoreFn = null;
         crawlStartPage: 1,
         resume: false, // 题库级去重已足够；页级断点由 crawlOutput 内部进度维护
         pageDelayMs: 1500,
+        // ★ 上限必须走 payload：crawl.js 读的是 payload.maxQuestions。
+        //   以前这里只 config.save() 了它，而 crawl.js 根本不读 config ——
+        //   于是 ZHIDAO_MAX_QUESTIONS 设了也没用，脚本一直是"不限量全量爬"
+        //   （实测设 50、情感类爬到 145 条还没停）。
+        maxQuestions,
       }, async (ctx) => runCrawlTask(ctx, { browserPool, store, config, log, copy: async () => {} }));
     } catch (error) {
       failedCategories.push(category);

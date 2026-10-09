@@ -1,5 +1,7 @@
 # CHANGELOG
 
+- [2026-10-09 13:10] FIX+TEST: 实操跑通答题链（每账号 50 条）+ 修 live-crawl-all 的上限失效。**实测结果：抽题 100 → 生成 100（质检 PASS 100）→ 提交 100，两个账号各 50 条，成功 100 / 失败 0，每条都拿到平台「回答已发布」确认**；题库 139→326 条。过程中发现并修：**`scripts/live-crawl-all.js` 的 `ZHIDAO_MAX_QUESTIONS` 一直没生效**——它把上限 `config.save()` 了，而 `crawl.js` 读的是 `payload.maxQuestions`（我上一轮才让 crawl.js 开始读它），两边对不上，于是脚本一直是"不限量全量爬"（实测设 50、情感类爬到 206 条还没停）。改为在 payload 里传。另：该脚本被强杀时不会走到设置还原逻辑，导致它覆写的 4 项（closeAfter/crawlStartPage/pageDelayMs/maxQuestions）留在用户配置里；已手工恢复并把 maxQuestions 设成建议值 100。新增 `scripts/test-run.js` 作为可复用的实操测试脚本。 [285 单测全绿] (Files: scripts/live-crawl-all.js, scripts/test-run.js, CHANGELOG.md, docs/自审日志.md)
+
 - [2026-10-09 12:12] FIX: 「从比特窗口提取」只读网盘域 Cookie——用户澄清一个窗口一个独立账号后，这条要能用得起来。顺带发现：**UI 早就支持"账号名留空 = 用窗口名"**（`name || win`），所以"给每个窗口各存一条同名 Cookie"不用手工打字；但提取只读 `pan.baidu.com`，**账号只登录了知道没登网盘时提取会失败**——而查收录走的正是知道域。改为先读网盘域、没有再退回知道域（BDUSS 是百度全域 Cookie，两个域哪个有都能用），错误信息也从「无百度网盘登录态」改成「没有百度登录态（网盘和知道都没登录）」。 [285 单测全绿；冒烟 clicked=73、rendererErrors:[]] (Files: electron/app-context.js, CHANGELOG.md, docs/自审日志.md)
 
 - [2026-10-09 12:05] FEAT: 查收录/权益检查优先用存好的 Cookie（能不开窗口）——用户指出「说是纯协议还是开窗口了」。实测：**只带 BDUSS 就能调通工作台接口**（BDUSS 是百度全域 Cookie，裸 curl 返回 200 + 真实账号数据），所以「网盘管理」里存过的账号不必为每次查收录再开一次浏览器。新增 `storedCookieOf(envLabel)`：按**比特环境名**去「网盘账号.json」匹配，命中就用存的 Cookie，没命中才回落到开窗口取（与「账号题材绑定」同一条规矩：名字必须一字不差）。顺带实测发现用户存的 `账号10081452` 与知道答主账号**不是同一个号**（那条 `hasPermission:false`、`quota:0`，而测试组1 里的是 `俊哦情0I`、额度 10000、有权益）——正好验证了权益门会把它挡下。 [285 单测全绿；冒烟 clicked=73、rendererErrors:[]] (Files: electron/app-context.js, CHANGELOG.md, docs/自审日志.md)
