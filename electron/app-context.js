@@ -270,7 +270,7 @@ async function runCheckPublishedTask(ctx, deps) {
         const bduss = (cookies.find((c) => c.name === "BDUSS") || {}).value || "";
         if (!bduss) {
           log(`⚠️ ${envLabel} 未登录百度账号，跳过（查收录需要登录态）。`);
-          accounts.push({ envLabel, ok: false, error: "未登录百度账号" });
+          accounts.push({ envLabel, ok: false, hasPermission: null, error: "未登录百度账号" });
           continue;
         }
         cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
@@ -293,7 +293,7 @@ async function runCheckPublishedTask(ctx, deps) {
       const tasks = workbench.pickTaskList(resp);
       if (!tasks.length) {
         log(`⚠️ ${envLabel} 没取到上传记录——接口结构可能变了，或该账号还没上传过。`);
-        accounts.push({ envLabel, ok: false, error: "没有取到上传记录" });
+        accounts.push({ envLabel, ok: false, hasPermission: null, error: "没有取到上传记录" });
         continue;
       }
       const summary = workbench.summarizeTasks(tasks);
@@ -362,7 +362,7 @@ async function runCheckPublishedTask(ctx, deps) {
       }
     } catch (error) {
       log(`⚠️ ${envLabel} 查收录失败：${describeError(error)}`);
-      accounts.push({ envLabel, ok: false, error: error.message });
+      accounts.push({ envLabel, ok: false, hasPermission: null, error: error.message });
     } finally {
       await browser?.close?.().catch(() => {});
       await browserPool.release(envLabel, { close: settings.closeAfter }).catch(() => {});
@@ -838,7 +838,13 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
         );
         if (checked && Array.isArray(checked.accounts) && checked.accounts.length) {
           // hasPermission 为 null 表示"没查到"，按不拦处理——不能因为查不到就误封账号
-          const allowed = checked.accounts.filter((a) => a.ok && a.hasPermission !== false).map((a) => a.envLabel);
+          // 只看 hasPermission，**不看 ok**：ok=false 有三种成因（未登录 / 没取到上传记录 /
+          // 查询抛错），它们在"有没有批量发布权益"这件事上都是**未知**，不是"没有"。
+          // 以前写成 `a.ok && a.hasPermission !== false`，等于把"未知"一律当成"没有"——
+          // 上面注释明明白白写着"不能因为查不到就误封账号"，实际却恰好反过来：
+          // 从没上传过的新账号（没记录 → ok=false）和查询报错的账号全被判「没有权益」，
+          // 网盘链整段跳过。用户在新电脑上看到的就是这句。
+          const allowed = checked.accounts.filter((a) => a.hasPermission !== false).map((a) => a.envLabel);
           const denied = bitEnvs.filter((e) => !allowed.includes(e));
           if (denied.length) emit("task:log", `⚠️ 这些账号没有「批量发布权益」或未登录，网盘链本次跳过：${denied.join("、")}`);
           netdiskEnvs = allowed;
