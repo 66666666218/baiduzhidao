@@ -127,6 +127,20 @@ async function runBatchUploadTask(ctx, deps) {
     await page.goto("https://zhidao.baidu.com/b/batch/batch-upload", { waitUntil: "domcontentloaded", timeout: 40000 }).catch(() => {});
     await page.waitForTimeout(4500);
   }
+  // 被动探针：把真实上传请求的形态记进日志。
+  // 「上传纯协议化」需要知道表单字段名，而它只能从真实请求里读 —— 与其专门抓一次包，
+  // 不如让每次正常上传都顺手留下证据（零额外成本）。日志里能直接看到 postData 的开头，
+  // 里面有 `name="xxx"` 形式的字段名。
+  page.on("request", (req) => {
+    if (!req.url().includes("bulkqa/upload")) return;
+    const headers = req.headers() || {};
+    const keep = ["content-type", "referer", "x-requested-with", "origin"];
+    const headerBrief = keep.map((k) => `${k}=${headers[k] || "-"}`).join(" | ");
+    log("【上传请求形态】" + req.method() + " " + req.url());
+    log("  headers: " + headerBrief);
+    log("  postData: " + String(req.postData() || "").slice(0, 600).replace(/[\r\n]+/g, " "));
+  });
+
   // 剩余额度自适应
   const quotaText = await page.evaluate(() => (document.body.innerText.match(/剩余额度：([\d,]+)/) || [])[1] || "").catch(() => "");
   const quotaNum = Number(String(quotaText || "").replace(/,/g, ""));

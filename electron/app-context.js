@@ -231,11 +231,11 @@ async function runSearchResourcesTask(ctx, deps) {
  */
 function storedCookieOf(envLabel, log) {
   try {
-    const manager = require("./src/netdisk/manager");
-    const hit = manager.loadAccounts(dataDir).find((a) => String(a.name || "").trim() === envLabel);
-    if (!hit || !String(hit.bduss || "").trim()) return "";
-    const parts = [`BDUSS=${String(hit.bduss).trim()}`];
-    if (String(hit.stoken || "").trim()) parts.push(`STOKEN=${String(hit.stoken).trim()}`);
+    const { credentialOf } = require("./src/netdisk/manager");
+    const cred = credentialOf(dataDir, envLabel);
+    if (!cred) return "";
+    const parts = [`BDUSS=${cred.bduss}`];
+    if (cred.stoken) parts.push(`STOKEN=${cred.stoken}`);
     log(`查收录：${envLabel} 用已保存的 Cookie（不开窗口）`);
     return parts.join("; ");
   } catch (e) {

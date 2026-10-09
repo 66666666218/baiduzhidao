@@ -85,20 +85,30 @@ async function runBatchTransferTask(ctx, deps) {
   const pwdKey = keys.find((k) => /提取码|密码|访问码/.test(k)) || "";
   log(`资源表 ${rows.length} 行 | 名称列="${nameKey}" 链接列="${linkKey}"`);
 
-  // 从各比特窗口提取一次网盘凭证（之后全程纯协议，窗口无操作）
+  // 取各账号的网盘凭证。**优先用「网盘管理」里存好的 Cookie —— 存过就完全不开窗口**。
+  // 转存之后的全程本来就不碰浏览器（纯 HTTP 协议），所以只要凭据能拿到，
+  // 整条网盘链可以做到零窗口 —— 内存紧张的机器尤其需要这一点。
+  const { credentialOf } = require("../netdisk/manager");
   const creds = []; // {env, bduss, stoken}
   for (const env of envList) {
-    log(`提取网盘凭证：${env}`);
-    const h = await browserPool.acquire(env);
-    const b = await chromium.connectOverCDP(h.cdpUrl);
-    const cs = await b.contexts()[0].cookies("https://pan.baidu.com");
-    const bd = (cs.find((c) => c.name === "BDUSS") || {}).value || "";
-    const st = (cs.find((c) => c.name === "STOKEN") || {}).value || "";
-    await browserPool.release(env, { close: false });
-    await b.close().catch(() => {});
-    if (!bd) { log(`⚠️ 窗口 ${env} 无网盘登录态，跳过该账号`); continue; }
+    let bd = "", st = "";
+    const stored = credentialOf(baseDataDir, env);
+    if (stored) {
+      bd = stored.bduss;
+      st = stored.stoken;
+    } else {
+      log(`提取网盘凭证：${env}（未存 Cookie，开窗口取登录态）`);
+      const h = await browserPool.acquire(env);
+      const b = await chromium.connectOverCDP(h.cdpUrl);
+      const cs = await b.contexts()[0].cookies("https://pan.baidu.com");
+      bd = (cs.find((c) => c.name === "BDUSS") || {}).value || "";
+      st = (cs.find((c) => c.name === "STOKEN") || {}).value || "";
+      await browserPool.release(env, { close: false });
+      await b.close().catch(() => {});
+    }
+    if (!bd) { log(`⚠️ ${env} 没有网盘登录态（既没存 Cookie，窗口里也没登录），跳过该账号`); continue; }
     creds.push({ env, bduss: bd, stoken: st });
-    log(`✅ ${env} 凭证就绪 BDUSS(${bd.length}字符)`);
+    log(`✅ ${env} 凭证就绪 BDUSS(${bd.length}字符)${stored ? "（用存的 Cookie，未开窗口）" : ""}`);
   }
   if (!creds.length) throw new Error("没有任何窗口具备 pan.baidu.com 登录态");
   const bduss = creds[0].bduss;   // 兼容旧引用（分享创建用首个窗口凭证）

@@ -163,8 +163,21 @@ function transferRecords(dataDir) {
   return { count: records.length, records: records };
 }
 
+/**
+ * 按环境名取已保存的网盘凭据（BDUSS/STOKEN），没存过返回 null。
+ * 名字必须与「网盘管理」里存的那条**一字不差**（和账号题材绑定同一套规矩）。
+ */
+function credentialOf(dataDir, envLabel) {
+  var wanted = String(envLabel || "").trim();
+  if (!wanted) return null;
+  var hit = loadAccounts(dataDir).find(function (a) { return String(a.name || "").trim() === wanted; }) || null;
+  if (!hit || !String(hit.bduss || "").trim()) return null;
+  return { bduss: String(hit.bduss).trim(), stoken: String(hit.stoken || "").trim() };
+}
+
 module.exports = {
   ManagerJar: ManagerJar,
+  credentialOf: credentialOf,
   clientOf: clientOf,
   loadAccounts: loadAccounts,
   saveAccounts: saveAccounts,
