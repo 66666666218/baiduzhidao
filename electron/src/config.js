@@ -14,10 +14,13 @@ const LINK_ROUTING_MODES = ["strict", "off"];
 const DEFAULTS = {
   apiUrl: "http://127.0.0.1:54345",
   bitEnvs: [],
-  // 浏览器引擎：默认 "bit"（指纹浏览器，一环境一指纹，隔离性好）。
-  // "headless" 用系统 Edge 跑无头，内存小得多，但**所有账号共用同一份设备指纹**，
-  // 隔离性下降 —— 只有用户明确选择时才用，绝不默认切过去。
-  browserMode: "bit",
+  // 运行模式，三种，让用户自己选（不替他决定）：
+  //   protocol —— 纯协议，不开任何浏览器；最快最省内存（上传一批 0 秒 vs 窗口 6 秒）。
+  //               代价：所有账号共用本机 IP 与同一份网络指纹，建议配「账号代理」补 IP 隔离。
+  //   bit      —— 走比特窗口，一环境一指纹，隔离最好；代价是内存（每个窗口几百 MB）。
+  //   headless —— 用系统 Edge 跑无头，内存比比特小一个量级；但所有账号共用同一份 Edge 指纹。
+  // 默认 protocol：既然整条链已经纯协议化了，默认就该用最省的；要隔离的用户会自己去选。
+  browserMode: "protocol",
   // 每个账号的出口代理（文本，形如「账号=代理地址」一行一个）。
   // 纯协议模式下所有账号共享本机 IP —— 配了代理才是真正的 IP 隔离。
   // 留空全直连，行为与本功能引入前完全一致。
@@ -128,7 +131,8 @@ function normalizeBitEnvs(value) {
 function normalizeSettings(payload) {
   const next = { ...DEFAULTS, ...(payload || {}) };
   next.bitEnvs = normalizeBitEnvs(next.bitEnvs);
-  next.browserMode = String(next.browserMode || "").toLowerCase() === "headless" ? "headless" : "bit";
+  const mode = String(next.browserMode || "").toLowerCase();
+  next.browserMode = ["protocol", "bit", "headless"].includes(mode) ? mode : "protocol";
   next.accountProxies = String(next.accountProxies || "");
   next.transferEnvs = normalizeBitEnvs(next.transferEnvs);
   next.uploadEnvs = normalizeBitEnvs(next.uploadEnvs);

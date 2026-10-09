@@ -741,7 +741,7 @@ async function loadSettings() {
   $("apiUrl").value = settings.apiUrl || "";
   $("activityUrl").value = settings.activityUrl || "";
   $("bitEnvs").value = (settings.bitEnvs || []).map((env) => env.label || env).join("\n");
-  $("browserMode").value = settings.browserMode === "headless" ? "headless" : "bit";
+  $("browserMode").value = ["protocol", "bit", "headless"].includes(settings.browserMode) ? settings.browserMode : "protocol";
   $("accountProxies").value = settings.accountProxies || "";
   $("autoTransferEnvs").value = (settings.transferEnvs || []).map((env) => env.label || env).join("\n");
   $("autoUploadEnvs").value = (settings.uploadEnvs || []).map((env) => env.label || env).join("\n");

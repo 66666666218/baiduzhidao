@@ -153,7 +153,12 @@ async function runBatchUploadTask(ctx, deps) {
 
   // ★ 纯协议优先：存过 Cookie 的账号直接 HTTP 上传，**不开窗口**。
   const cred = typeof deps.credentialOf === "function" ? deps.credentialOf(bitEnv) : null;
-  if (cred && cred.bduss) {
+  // 只有「纯协议」模式才走这里。模式由用户在设置页选，软件不替他决定 ——
+  // 要比特的指纹隔离，就得让任务开窗口（选 bit / headless）。
+  // 这个文件没有 config 变量（它从 deps 取），契约⑥ 抓出来的
+  const _cfg = deps.config;
+  const _mode = String((_cfg && _cfg.load && _cfg.load().browserMode) || "protocol");
+  if (_mode === "protocol" && cred && cred.bduss) {
     const cookie = `BDUSS=${cred.bduss}${cred.stoken ? "; STOKEN=" + cred.stoken : ""}`;
     const dispatcher = typeof deps.proxyOf === "function" ? deps.proxyOf(bitEnv) : undefined;
     const tk = await fetchIkToken(cookie, { dispatcher });

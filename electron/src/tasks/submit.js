@@ -169,7 +169,10 @@ async function runSubmitTask(ctx, deps) {
       // 依据是实测：POST /msubmit/answer + `X-ik-token` 即可，不需要浏览器。
       // 没存过 Cookie 才回落到比特窗口（保留指纹隔离那条路）。
       const cred = typeof deps.credentialOf === "function" ? deps.credentialOf(envLabel) : null;
-      if (cred && cred.bduss) {
+      // 只有「纯协议」模式才走这里。模式由用户在设置页选，软件不替他决定 ——
+      // 要比特的指纹隔离，就得让任务开窗口（选 bit / headless）。
+      const _mode = String((config && config.load && config.load().browserMode) || "protocol");
+      if (_mode === "protocol" && cred && cred.bduss) {
         // 注意：只需 zhidao 域那一份。把全量跨域 Cookie 拼一起会因同名冲突冲掉登录态。
         const cookie = `BDUSS=${cred.bduss}${cred.stoken ? "; STOKEN=" + cred.stoken : ""}`;
         const dispatcher = typeof deps.proxyOf === "function" ? deps.proxyOf(envLabel) : undefined;

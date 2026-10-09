@@ -59,11 +59,15 @@
           <div class="field-row">
             <label>比特环境名称（每行一个账号）</label>
             <textarea id="bitEnvs" rows="4" placeholder="账号1&#10;账号2"></textarea>
-            <p class="hint">浏览器引擎：<select id="browserMode">
-              <option value="bit">比特浏览器（推荐 · 一账号一指纹，隔离性好）</option>
-              <option value="headless">系统 Edge 无头（省内存 · 但所有账号共用同一指纹）</option>
-            </select>
-            <b>选「系统 Edge 无头」能大幅降低内存占用</b>，适合内存吃紧的机器；代价是<b>账号间不再有指纹隔离</b>（每个账号仍有独立的 Cookie/缓存目录）。多账号运营请谨慎——隔离性是防关联的关键。</p>
+            <p class="hint"><b>运行模式</b>（由你选，软件不替你决定）：<select id="browserMode">
+              <option value="protocol">① 纯协议 —— 最快最省内存，不开任何浏览器（推荐）</option>
+              <option value="bit">② 比特浏览器窗口 —— 一账号一指纹，隔离最好</option>
+              <option value="headless">③ 系统 Edge 无头 —— 内存比比特小，但账号共用同一指纹</option>
+            </select></p>
+            <p class="hint">• <b>纯协议</b>：内存几乎为零，上传一批只要 0 秒（窗口模式要 6 秒）。代价是所有账号共用本机 IP 和同一份网络指纹 —— <b>想隔离就配下面的「账号代理」</b>（每个账号一个出口 IP，比指纹隔离更实在）。<br/>
+            • <b>比特窗口</b>：每个环境一套指纹，隔离最彻底；代价是内存（每窗口几百 MB）。<br/>
+            • <b>Edge 无头</b>：内存介于两者之间，但所有账号共用同一份 Edge 指纹。<br/>
+            <b>注意</b>：Cookie 里不含指纹 —— 从比特提取的 Cookie 跑纯协议时<b>不会带上比特的指纹</b>；要真正用上比特的隔离，就得选「比特窗口」模式。</p>
           </div>
           <div class="field">
             <label>账号题材绑定（每行一个「账号=题材」；答题侧填 情感/教育/综合/人物，上传侧填下面的分类名）</label>

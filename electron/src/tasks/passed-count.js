@@ -52,7 +52,10 @@ async function runPassedCountTask(ctx, deps) {
       log(`读取 ${envLabel} 的当天通过数...`);
       // ★ 纯协议优先：存过 Cookie 就直接问接口，不开窗口。
       const cred = typeof deps.credentialOf === "function" ? deps.credentialOf(envLabel) : null;
-      if (cred && cred.bduss) {
+      // 只有「纯协议」模式才走这里。模式由用户在设置页选，软件不替他决定 ——
+      // 要比特的指纹隔离，就得让任务开窗口（选 bit / headless）。
+      const _mode = String((config && config.load && config.load().browserMode) || "protocol");
+      if (_mode === "protocol" && cred && cred.bduss) {
         const cookie = `BDUSS=${cred.bduss}${cred.stoken ? "; STOKEN=" + cred.stoken : ""}`;
         const dispatcher = typeof deps.proxyOf === "function" ? deps.proxyOf(envLabel) : undefined;
         const got = await fetchProgressByProtocol(cookie, { dispatcher });
