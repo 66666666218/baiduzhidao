@@ -24,6 +24,7 @@ const { AuditLogger } = require("./src/audit/logger");
 const { INVOKE_CHANNELS } = require("./src/ipc-channels");
 const { describeUpdateError, describeError } = require("./src/errors");
 const { resolveNetdiskRoles } = require("./src/domain/account-topic");
+const { createAutoPipeline } = require("./src/workflows/auto-pipeline");
 // 查收录 / 权益检查要开窗口取 Cookie（runCheckPublishedTask），这里必须导入。
 // 之前漏了它，直接把「查收录」「账号总览」打成一跑就 ReferenceError: chromium is not defined，
 // 而日志只显示「查收录失败」，完全看不出是少了一行 import。
@@ -33,9 +34,10 @@ let mainWindow = null;
 let clipboardApi = null; // registerIpc 时注入（供任务内剪贴板兜底）
 let currentAutosavePath = ""; // 当前任务的 CSV 自动保存文件
 let autosaveSeq = 0; // 同一分钟内连起两个任务时区分自动保存文件
-// 一键全自动的"停止"旗标：TaskManager.stop 只能停当前任务，而编排在阶段之间还要
-// 决定"下一阶段是否该开始"。没有这个旗标，用户点了停止，编排仍会把后续阶段依次拉起来。
-let autoPipelineAborted = false;
+// 一键全自动的编排实例（在 registerIpc 里装配）。放在模块级是因为
+// 「停止」按钮要对它喊一声：TaskManager.stop 只能停当前任务，而编排在阶段之间
+// 还要决定"下一阶段是否该开始"。没有它，用户点了停止，编排仍会把后续阶段依次拉起来。
+let autoPipeline = null;
 
 // ---------- 单例服务 ----------
 
@@ -494,7 +496,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
 
   // 任务控制
   ipcMain.handle("task:stop", () => {
-    autoPipelineAborted = true; // 手动停止时一并中止一键全自动的后续阶段
+    if (autoPipeline) autoPipeline.abort(); // 手动停止时一并中止一键全自动的后续阶段
     return tasks.stop();
   });
   ipcMain.handle("task:pause", () => tasks.pause());
@@ -806,260 +808,46 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   ipcMain.handle("task:upload-by-topic", (_event, payload) => startTask("upload-by-topic", payload, (ctx) => runTopicUploadTask(ctx, deps())));
 
   /**
-   * 一键全自动：把「爬题 → 抽题 → 生成 → 提交 → 按题材上传」串成一条链。
+   * 一键全自动：把「爬题 → 抽题 → 生成 → 提交 → 转存 → 上传」串成一条链。
+   *
+   * 编排本体搬到了 src/workflows/auto-pipeline.js（原来这里是 245 行的内联实现）。
+   * 搬出来主要不是为了好看：内联版每个阶段都写成「勾选了 && !failure && 前置条件」，
+   * 前置条件不满足时**直接不进分支、不留任何记录**，于是结论照样是"全部阶段成功"。
+   * 新版所有"选了却没跑成"的跳过都会进 report，结论文案据此如实生成。
    *
    * 为什么在主进程按阶段串行调 startTask，而不是包成一个大任务：
    * TaskManager 是单任务互斥的（运行中再 start 会抛错）。分阶段串行，每个阶段
    * 各自是一个正常任务，进度/暂停/停止/日志语义完全不变；阶段之间检查中止旗标。
-   *
-   * 任何阶段抛错即停（后续不再执行），前面已完成的成果保留。
-   * stages 数组可挑选参与阶段，未选的跳过。
    */
-  ipcMain.handle("task:auto-pipeline", async (_event, payload) => {
-    const p = payload && typeof payload === "object" ? payload : {};
-    const enabled = new Set(
-      Array.isArray(p.stages) && p.stages.length ? p.stages : ["crawl", "pick", "generate", "submit", "transfer", "upload"]
-    );
-    const settings = config.load();
-    // 本次参与的账号：调用方显式指定优先（一键全自动页可以只挑几个号跑），默认用设置页的全部
-    const requestedEnvs = (Array.isArray(p.bitEnvs) ? p.bitEnvs : [])
-      .map((env) => (env && typeof env === "object" ? env.label ?? env.name : env))
-      .map((x) => String(x || "").trim())
-      .filter(Boolean);
-    const bitEnvs = requestedEnvs.length
-      ? requestedEnvs
-      : (settings.bitEnvs || []).map((env) => env.label || env).filter(Boolean);
-    const report = [];
-    let failure = null;
-    let pickFile = "";
-    // 上传专用表：优先用转存阶段的产出，其次用调用方指定的现成表
-    let uploadTable = String(p.uploadTablePath || "").trim();
-    const stamp = () => new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
-
-    autoPipelineAborted = false;
-
-    /**
-     * 进度脉冲：让界面立刻进入「运行中」。
-     *
-     * 为什么必须有：暂停/停止按钮只在收到 task:progress 事件后才启用，而各阶段
-     * 往往要跑很久才第一次上报（爬题是在**整页爬完**才 report——此前要开浏览器、
-     * 导航、等待，几十秒）。这段时间界面是死的、暂停点不动，看起来像卡死了。
-     */
-    const pulse = () => sendToRenderer("task:progress", { done: 0, total: 0, status: "running" });
-
-    const runStage = async (name, label, fn) => {
-      if (autoPipelineAborted) {
-        report.push({ stage: name, label, ok: false, skipped: true, error: "已停止" });
-        return null;
-      }
-      emit("task:log", `══════ 一键全自动 · ${label} ══════`);
-      pulse();
-      try {
-        const result = await fn();
-        report.push({ stage: name, label, ok: true });
-        emit("task:log", `──── ${label} 完成 ────`);
-        return result;
-      } catch (error) {
-        report.push({ stage: name, label, ok: false, error: error.message });
-        emit("task:log", `⚠️ ${label} 失败，后续阶段不再执行：${error.message}`);
-        failure = error;
-        return null;
-      }
-    };
-
-    try {
-      if (!bitEnvs.length) throw new Error("请先在设置页「比特环境名称」填写账号。");
-
-      // 1) 爬题：逐分类各跑一次（爬题是只读的，用一个账号即可）
-      if (enabled.has("crawl")) {
-        const categories = Array.isArray(p.categories) && p.categories.length ? p.categories : CATEGORIES;
-        await runStage("crawl", `爬题（${categories.join("、")}）`, async () => {
-          let added = 0;
-          for (const category of categories) {
-            if (autoPipelineAborted || failure) break;
-            const result = await startTask(
-              "crawl",
-              {
-                bitEnvs,
-                category,
-                crawlStartPage: settings.crawlStartPage,
-                maxQuestions: settings.maxQuestions,
-                // 续爬：暂停/停止后重跑时从上次那页接着走，而不是从头再扫一遍。
-                // 已入库的题本来就会自动跳过，所以从头扫不会重复入库、但会白白多花几十分钟。
-                resume: true,
-              },
-              (ctx) => runCrawlTask(ctx, deps())
-            );
-            added += Number(result && result.count) || 0;
-          }
-          return { added };
-        });
-      }
-
-      // 2) 抽题：输出路径必须显式给（不能弹保存对话框，否则无人值守会卡死）
-      if (enabled.has("pick") && !failure) {
-        await runStage("pick", "抽题", async () => {
-          const outDir = path.join(dataDir, "一键跑批");
-          const result = await pickQuestions({
-            categories: p.categories,
-            count: Number(p.pickCount) || settings.randomCount,
-            outputPath: path.join(outDir, `抽题_${stamp()}.xlsx`),
-            skipGenerated: true,
-          });
-          if (result.canceled) throw new Error("抽题被取消");
-          pickFile = result.filePath;
-          return result;
-        });
-      }
-
-      // 3) 生成答案
-      if (enabled.has("generate") && !failure && pickFile) {
-        await runStage("generate", "生成答案", async () => {
-          const rows = excel.readTableRows(pickFile).map(excel.importRowToAnswer);
-          return startTask("generate", {
-            // filePath 必须传：生成任务**只在给了 filePath 时才把答案写回表格**
-            //（见 generate.js 的 if (!filePath) return）。少传这一个字段的表现是——
-            // 生成阶段"成功"、答案只存在内存里，紧接着的提交阶段重读表格发现没有回答，
-            // 报「表格里有题目链接但没有回答内容」，看起来像是生成没干活。
-            filePath: pickFile,
-            results: rows,
-            aiApiKey: settings.aiApiKey,
-            aiBaseUrl: settings.aiBaseUrl,
-            aiModel: settings.aiModel,
-            aiConcurrency: settings.aiConcurrency,
-            aiDailyTokenBudget: settings.aiDailyTokenBudget || 0,
-            titleTemplate: settings.titleTemplate,
-            introTemplate: settings.introTemplate,
-          }, (ctx) => runGenerateTask(ctx, deps()));
-        });
-      }
-
-      // 4) 提交（纯文本答案 → 全账号宽松轮询，用于积累通过数/额度）
-      if (enabled.has("submit") && !failure && pickFile) {
-        await runStage("submit", "自动提交", async () => {
-          const rows = excel.readTableRows(pickFile).map(excel.importRowToAnswer);
-          return startTask("submit", {
-            filePath: pickFile,
-            results: rows,
-            bitEnvs,
-            submitLimit: settings.submitLimit,
-            accountDailyLimit: settings.accountDailyLimit,
-            dailyAnswerLimit: settings.dailyAnswerLimit,
-            forceResubmit: false,
-            checkCompletedEnvs: true,
-            accountTopics: settings.accountTopics,
-            linkRouting: settings.linkRouting,
-          }, (ctx) => runSubmitTask(ctx, deps()));
-        });
-      }
-
-      // 网盘链的**账号分工**：转存归转存、上传归上传，两者可以不是同一批号。
-      // 现实里常见「A 的网盘还有空间但没有批量发布权益，B 有权益但网盘已经满了」，
-      // 分开之后 A 把资源转进自己盘并建好永久分享，B 只管把问答表传上工作台
-      //（分享链接是公开的，谁上传都行）。两边都留空就回落到「本次参与的账号」。
-      const roles = resolveNetdiskRoles(bitEnvs, p);
-      const transferEnvs = roles.transferEnvs;
-      const uploadEnvsConfigured = roles.uploadEnvs;
-      // 上传账号在权益门之后会被收窄，但**搜资源**要按用户配的那批来（题材绑定挂在它们身上），
-      // 所以配置值单独留一份。
-      let uploadEnvs = uploadEnvsConfigured;
-
-      // 权益门只针对**上传账号**：批量发布权益管的是"能不能把表传上工作台"，
-      // 跟"资源能不能转进网盘"无关（后者看的是网盘空间）。也只在真要跑上传阶段时才查，
-      // 免得白开一轮浏览器。
-      if (!failure && !autoPipelineAborted && enabled.has("upload")) {
-        const checked = await runStage("checkPermission", "确认批量发布权益", () =>
-          startTask("check-published", { bitEnvs: uploadEnvsConfigured, withReasons: false }, (c) => runCheckPublishedTask(c, deps()))
-        );
-        if (checked && Array.isArray(checked.accounts) && checked.accounts.length) {
-          // hasPermission 为 null 表示"没查到"，按不拦处理——不能因为查不到就误封账号。
-          // 只看 hasPermission，**不看 ok**：ok=false 有三种成因（未登录 / 没取到上传记录 /
-          // 查询抛错），它们在"有没有批量发布权益"这件事上都是**未知**，不是"没有"。
-          // 以前写成 `a.ok && a.hasPermission !== false`，等于把"未知"一律当成"没有"，
-          // 从没上传过的新账号和查询报错的账号全被判「没有权益」，网盘链整段跳过。
-          const allowed = checked.accounts.filter((a) => a.hasPermission !== false).map((a) => a.envLabel);
-          const denied = uploadEnvsConfigured.filter((e) => !allowed.includes(e));
-          if (denied.length) emit("task:log", `⚠️ 这些上传账号没有「批量发布权益」或未登录，上传阶段会跳过：${denied.join("、")}`);
-          uploadEnvs = allowed;
-          if (!allowed.length) emit("task:log", "没有上传账号具备「批量发布权益」，上传阶段跳过（转存仍按转存账号执行）。");
-        }
-      }
-
-      // 5) 网盘转存：脚本套模板生成问答行（qa-template-lib），产出即上传专用表
-      if (enabled.has("transfer") && !failure && transferEnvs.length) {
-        let transferTable = String(p.transferTablePath || "").trim();
-        // 没给资源表 → 按账号绑定的题材自动搜一批（纯协议搜百度知道，不需要浏览器）
-        if (!transferTable || !fs.existsSync(transferTable)) {
-          emit("task:log", "没有指定资源表，改为按账号绑定的题材自动搜资源…");
-          const searched = await runStage("search", "搜资源（按账号题材）", () =>
-            startTask("search-resources", {
-              bitEnvs: uploadEnvsConfigured,
-              pages: Number(p.searchPages) || 0,
-              limit: Number(p.searchRowLimit) || 0,
-            }, (c) => runSearchResourcesTask(c, deps()))
-          );
-          if (searched && searched.outputPath && fs.existsSync(searched.outputPath)) transferTable = searched.outputPath;
-        }
-        if (!transferTable || !fs.existsSync(transferTable)) {
-          emit("task:log", "跳过「网盘转存」：没有可用的资源表。");
-          report.push({ stage: "transfer", label: "网盘转存", ok: false, skipped: true, error: "未指定资源表，自动搜索也没产出" });
-        } else {
-          await runStage("transfer", "网盘转存（套模板生成问答）", async () => {
-            const result = await startTask("batch-transfer", {
-              filePath: transferTable,
-              bitEnvs: transferEnvs,
-              destDir: String(p.transferDestDir || "").trim() || "/来自资源批量转存",
-              outName: String(p.transferOutName || "").trim(),
-              perEnv: Number(p.transferPerEnv) || 50,
-              cc: Number(p.transferCc) || 4,
-              delayMin: Number(p.transferDelayMin) || 1,
-              delayMax: Number(p.transferDelayMax) || 2,
-              makeShare: true,
-            }, (ctx) => runBatchTransferTask(ctx, deps()));
-            // 转存产出的上传专用表直接喂给下一阶段，不用人工再选一次文件
-            if (result && result.outputPath) {
-              uploadTable = result.outputPath;
-              emit("task:log", `转存产出上传专用表：${uploadTable}（${result.count} 条）`);
-            }
-            return result;
-          });
-        }
-      }
-
-      // 6) 按题材分账号上传（用转存产出，或调用方指定的现成表）
-      if (enabled.has("upload") && !failure && uploadEnvs.length) {
-        if (!uploadTable || !fs.existsSync(uploadTable)) {
-          emit("task:log", "跳过「按题材上传」：没有可用的上传专用表（请先跑转存，或指定一张现成的表）。");
-          report.push({ stage: "upload", label: "按题材上传", ok: false, skipped: true, error: "未指定上传专用表" });
-        } else {
-          const uploaded = await runStage("upload", "按题材上传", () =>
-            startTask("upload-by-topic", {
-              filePath: uploadTable,
-              bitEnvs: uploadEnvs,
-              accountTopics: settings.accountTopics,
-              topicRules: settings.topicRules,
-              batchRows: Number(p.batchRows) || 500,
-              maxBatches: Number(p.maxBatches) || 999,
-            }, (ctx) => runTopicUploadTask(ctx, deps()))
-          );
-          // 上传完顺手核对收录。上传接口返回 200 只代表**平台收下了**，
-          // 平台还要异步审核，收录结果要单独查——不查的话"上传成功"是句空话。
-          if (uploaded && !failure && !autoPipelineAborted) {
-            await runStage("checkPublished", "查收录（核对是否被收录）", () =>
-              startTask("check-published", { bitEnvs }, (c) => runCheckPublishedTask(c, deps()))
-            );
-          }
-        }
-      }
-    } finally {
-      autoPipelineAborted = false;
-    }
-
-    const okCount = report.filter((r) => r.ok).length;
-    const tail = autoPipelineAborted ? "（已手动停止）" : failure ? `（在「${report.find((r) => !r.ok && !r.skipped)?.label}」中断）` : "";
-    emit("task:log", `══════ 一键全自动结束：${okCount}/${report.length} 个阶段成功 ${tail} ══════`);
-    return { ok: !failure && !autoPipelineAborted, stopped: autoPipelineAborted, stages: report, pickFile };
+  autoPipeline = createAutoPipeline({
+    config,
+    startTask,
+    taskDeps: deps,
+    pickQuestions,
+    emit,
+    // 进度脉冲：让界面立刻进入「运行中」。暂停/停止按钮只在收到 task:progress 之后才启用，
+    // 而各阶段往往要跑很久才第一次上报（爬题是整页爬完才 report）——不发这一下，
+    // 这段时间界面是死的、暂停点不动，看起来像卡死了。
+    // 阶段失败在**任务启动之前**时（比如抽题报"题库为空"），由编排传 "failed" 收尾，
+    // 否则界面会永久停在运行中。
+    pulse: (status = "running") => sendToRenderer("task:progress", { done: 0, total: 0, status }),
+    dataDir,
+    taskRunners: {
+      crawl: runCrawlTask,
+      generate: runGenerateTask,
+      submit: runSubmitTask,
+      checkPublished: runCheckPublishedTask,
+      searchResources: runSearchResourcesTask,
+      batchTransfer: runBatchTransferTask,
+      topicUpload: runTopicUploadTask,
+    },
+    CATEGORIES,
+    excel,
+    fs,
+    path,
+    resolveNetdiskRoles,
   });
+  ipcMain.handle("task:auto-pipeline", (_event, payload) => autoPipeline.run(payload));
 
   // 记录管理
   ipcMain.handle("answers:list", (_event, query) => {

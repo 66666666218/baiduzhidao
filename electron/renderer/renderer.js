@@ -582,18 +582,32 @@ function updateRunModeHint() {
   const box = $("autoRunModeHint");
   const mode = $("autoRunMode") ? $("autoRunMode").value : "protocol";
   if (!box) return;
+  // 「账号并发」是设置页的项，这里只是把它对**本次全自动**的含义说出来。
+  // 并发 >1 时"账号之间串行、天然有间隔"这句话就不成立了，必须改口 —— 否则
+  // 界面在给用户虚假的安全感（这是审查点名过的一类问题）。
+  const cc = Number($("accountConcurrency") && $("accountConcurrency").value) || 1;
+  const ccNote = cc > 1
+    ? `　⚠️ 「账号并发」当前是 ${cc}：多个账号会同时跑，串行间隔没有了。请确认每个账号配了不同出口 IP；比特模式下要同时开 ${cc} 个窗口。`
+    : "";
   if (mode === "protocol") {
-    box.textContent = "本次全程不开浏览器：爬题/提交/上传/查收录都走协议。账号之间串行处理，天然有间隔。若担心 IP 关联，可在设置页配「账号代理」。";
+    box.textContent = `本次全程不开浏览器：爬题/提交/上传/查收录都走协议。${cc > 1 ? "" : "账号之间串行处理，天然有间隔。"}若担心 IP 关联，可在设置页配「账号代理」。${ccNote}`;
   } else if (mode === "bit") {
-    box.textContent = "本次每个账号都会打开一个比特窗口：隔离最好，但比较慢、吃内存。建议一次只挑 1~2 个账号跑。";
+    box.textContent = `本次每个账号都会打开一个比特窗口：隔离最好，但比较慢、吃内存。建议一次只挑 1~2 个账号跑。${ccNote}`;
   } else {
-    box.textContent = "本次用系统 Edge 无头跑：内存比比特小，但所有账号共用同一份浏览器指纹。";
+    box.textContent = `本次用系统 Edge 无头跑：内存比比特小，但所有账号共用同一份浏览器指纹。${ccNote}`;
   }
 }
 if ($("autoRunMode")) {
   $("autoRunMode").addEventListener("change", () => {
     if ($("browserMode")) $("browserMode").value = $("autoRunMode").value;
     updateRunModeHint();
+  });
+}
+
+// 「账号并发」改了要立刻刷新全自动页那句提示（它引用了并发数）
+if ($("accountConcurrency")) {
+  $("accountConcurrency").addEventListener("input", () => {
+    if ($("autoRunMode")) updateRunModeHint();
   });
 }
 
@@ -619,9 +633,16 @@ $("startAutoPipeline").addEventListener("click", async () => {
     appendLog("「生成答案」需要 AI Key，请先在「生成答案」页填写。");
     return;
   }
+  // 没选资源表**不再拦停**：后端本来就支持"按账号绑定的题材自动搜一批资源"
+  //（见 auto-pipeline.js 的搜资源分支）。以前这里硬性 return，等于把后端已经实现的
+  // 一条路在界面上堵死 —— 代码里留着、用户走不到，是最容易腐烂的那类分支。
   if ($("autoStageTransfer").checked && !$("autoTransferTable").value) {
-    appendLog("勾了「网盘转存」但没有选网盘资源表。");
-    return;
+    appendLog("未选网盘资源表，本次将按账号绑定的题材**自动搜资源**（需要先在设置页填「搜索词」与「账号题材绑定」）。");
+  }
+  // 上传阶段读的是"上传专用表"，不是抽题表。不预先说一声的话，用户会在结果里
+  // 看到一条 ⏭️ 才发现上传没跑 —— 提前一句能省一次整轮。
+  if ($("autoStageUpload").checked && !$("autoStageTransfer").checked && !$("autoUploadTable").value) {
+    appendLog("注意：「按题材上传」需要「上传专用表」，而本次既没勾「网盘转存」也没指定该表 —— 该阶段会被跳过。");
   }
   const destructive = $("autoStageSubmit").checked || $("autoStageTransfer").checked || $("autoStageUpload").checked;
   if (destructive && !confirm("本次会真实提交答案/转存网盘/上传资源到平台，且全程无人值守。确认继续？")) return;
@@ -641,7 +662,14 @@ $("startAutoPipeline").addEventListener("click", async () => {
       transferDestDir: $("autoTransferDest").value,
     });
     renderAutoReport(result);
-    appendLog(`一键全自动结束：${result.ok ? "全部阶段成功" : result.stopped ? "已手动停止" : "有阶段失败（详见上方结果与运行日志）"}。`);
+    // 有阶段被跳过时不能说"全部阶段成功" —— 用户等的可能正是被跳过的那一步
+    //（典型：上传账号都没有批量发布权益 → 上传整段跳过，但前面都成功）。
+    const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+    const outcome = result.stopped ? "已手动停止"
+      : !result.ok ? "有阶段失败（详见上方结果与运行日志）"
+      : skipped.length ? `其余阶段成功，但有 ${skipped.length} 个阶段被跳过：${skipped.map((s) => s.label).join("、")}`
+      : "全部阶段成功";
+    appendLog(`一键全自动结束：${outcome}。`);
   } catch (error) {
     appendLog(`一键全自动失败：${error.message}`);
   }
@@ -768,6 +796,9 @@ async function loadSettings() {
   if ($("autoRunMode")) { $("autoRunMode").value = $("browserMode").value; updateRunModeHint(); }
   $("accountProxies").value = settings.accountProxies || "";
   $("accountConcurrency").value = Number(settings.accountConcurrency) || 1;
+  // 上面那行在两个 if 之后才执行，而 updateRunModeHint 已经先跑过一次了 ——
+  // 提示语里带着并发数，所以设完要再刷一次，否则提示与实际设置不一致。
+  if ($("autoRunMode")) updateRunModeHint();
   $("autoTransferEnvs").value = (settings.transferEnvs || []).map((env) => env.label || env).join("\n");
   $("autoUploadEnvs").value = (settings.uploadEnvs || []).map((env) => env.label || env).join("\n");
   $("accountTopics").value = Object.entries(settings.accountTopics || {}).map(([account, topic]) => `${account}=${topic}`).join("\n");

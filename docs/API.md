@@ -45,12 +45,31 @@
 | `task:batch-upload` | 按账号批量上传 | `bitEnvs`、`filePath` | — |
 | **`task:upload-by-topic`** | **新增**。按分类规则给每行派生题材，**拆成一个题材一张表**，每张表交给绑定了该题材的账号上传 | `filePath`、`bitEnvs`、`accountTopics`、`topicRules`、`batchRows`、`maxBatches` | `uploaded`、`splitDir`、`topicTables[]`：`{ topic, file }`、`accounts[]`：`{ envLabel, topic, planned, uploaded, table, error? }` |
 | `task:crawl-home` | 从答主主页找网盘资源 | `homepages`、`enrichLimit` | `count`、`stats`、`outputPath` |
-| **`task:auto-pipeline`** | **新增**。一键全自动：按阶段串行跑「爬题 → 抽题 → 生成 → 提交 → 转存 → 按题材上传」 | `stages[]`（可选值 `crawl`/`pick`/`generate`/`submit`/`transfer`/`upload`）、`pickCount`、`batchRows`、`uploadTablePath`、`transferTablePath`、`transferDestDir`、`transferOutName`、`transferPerEnv`、`transferCc`、`transferDelayMin`、`transferDelayMax` | `ok`、`stopped`、`pickFile`、`stages[]`：`{ stage, label, ok, skipped?, error? }` |
+| **`task:auto-pipeline`** | **新增**。一键全自动：按阶段串行跑「爬题 → 抽题 → 生成 → 提交 → 转存 → 按题材上传」 | `stages[]`（可选值 `crawl`/`pick`/`generate`/`submit`/`transfer`/`upload`）、`pickCount`、`batchRows`、`uploadTablePath`、`transferTablePath`、`transferDestDir`、`transferOutName`、`transferPerEnv`、`transferCc`、`transferDelayMin`、`transferDelayMax` | `ok`、`stopped`、`pickFile`、`stages[]`：`{ stage, label, ok, skipped?, error? }`、`skipped[]`：`{ stage, label, reason }` |
 
 > `task:auto-pipeline` 与其它任务通道不同：它**不是**单个 TaskManager 任务，
 > 而是在主进程按阶段串行调用 `startTask`（TaskManager 单任务互斥，包成一个大任务会直接冲突）。
 > 因此它没有 `stopped/count/failed/total/results` 信封，返回的是阶段级报告。
 > 任一阶段抛错即停；调用 `task:stop` 会置中止旗标，后续阶段不再启动。
+>
+> **编排本体在 `electron/src/workflows/auto-pipeline.js`**（装配在 `app-context.js` 的
+> `registerIpc` 里，通过 `createAutoPipeline({...})` 注入依赖 —— 这个模块不 import electron，
+> 所以能脱离 Electron 用假依赖整条跑，见 `tests/unit/auto-pipeline.test.js`）。
+>
+> **三种"没跑"必须在语义上分开**，界面文案全靠这个区分：
+>
+> | 情况 | `stages[]` 里的样子 | 顶层字段 |
+> |------|--------------------|----------|
+> | 成功 | `ok: true` | — |
+> | 失败（阶段抛错，链在此中断） | `ok: false, skipped` 缺省 | `ok: false` |
+> | **勾了但没能跑**（没有抽题产物 / 所有上传账号都没权益 / 没有资源表） | `ok: false, skipped: true, error: <原因>` | 进 `skipped[]`，`ok` 仍为 `true` |
+> | 用户手动停止 | `ok: false, skipped: true, error: "已停止"` | `stopped: true`，`ok: false` |
+> | 用户本来就没勾选 | **不出现在报告里** | — |
+>
+> ⚠️ 最后一行是刻意的：没勾选是用户的意思，不算跳过，不该污染结论。
+> 而第三行是**必须**留痕的 —— 历史上这里曾经静默跳过（不进 report、不算失败），
+> 界面于是报"全部阶段成功"，而用户等的恰恰是那一步。
+> **界面判成功不能只看 `ok`，必须同时看 `skipped[]` 是否为空。**
 
 
 ## 3. `task:submit` 请求字段（含本轮变更）

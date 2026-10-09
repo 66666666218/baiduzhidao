@@ -104,15 +104,15 @@ test("契约④：任务的 payload 字段都有来源（renderer 传参或显�
  * 并跳过字符串，避免值里的逗号/花括号把计数带偏。
  */
 /**
- * 把搜索范围限定在「一键全自动」那段代码里。
- * 不限定的话会匹配到 IPC 处理器里的 startTask 调用——那些传的是 `payload` 或
- * `{ ...payload, results }`，抠出来的是别的阶段/别的花括号，比不检查还糟。
+ * 契约⑤的取源：**整份** workflows/auto-pipeline.js。
+ *
+ * 以前是从 app-context.js 里"切出 ipcMain.handle("task:auto-pipeline", ...) 后面那段"。
+ * 编排搬到独立模块之后，那个切法只能切到一行装配代码，`extractStagePayloadKeys` 全部返回 null，
+ * 循环里的 `if (!sent) continue` 就把整条契约变成了**空转通过** —— 比不做检查还糟
+ *（它会让人以为有覆盖）。现在直接读模块文件，并且抠不到阶段就断言失败。
  */
-function autoPipelineSource(source) {
-  const start = source.indexOf('"task:auto-pipeline"');
-  if (start < 0) return "";
-  const next = source.indexOf("ipcMain.handle(", start + 10);
-  return next > start ? source.slice(start, next) : source.slice(start);
+function autoPipelineSource() {
+  return read("electron/src/workflows/auto-pipeline.js");
 }
 
 function extractStagePayloadKeys(source, name) {
@@ -176,8 +176,8 @@ test("契约⑤：一键全自动各阶段传的字段，必须覆盖对应任�
   // 这条是补盲区：E2E 测的是各任务函数本身，**编排器传什么**没人管。
   // 结果就是 generate 阶段漏传 filePath —— 生成"成功"但答案没写回表格，
   // 紧接着提交报「表格里有题目链接但没有回答内容」，看起来像生成没干活。
-  const pipelineSrc = autoPipelineSource(read("electron/app-context.js"));
-  assert.ok(pipelineSrc.length > 0, "没能定位到「一键全自动」那段代码，契约⑤失效了——请检查 marker");
+  const pipelineSrc = autoPipelineSource();
+  assert.ok(pipelineSrc.length > 0, "没能定位到「一键全自动」的编排源码，契约⑤失效了——请检查路径");
   const stageFileOf = {
     crawl: "electron/src/tasks/crawl.js",
     generate: "electron/src/tasks/generate.js",
@@ -188,7 +188,9 @@ test("契约⑤：一键全自动各阶段传的字段，必须覆盖对应任�
   const problems = [];
   for (const [stage, file] of Object.entries(stageFileOf)) {
     const sent = extractStagePayloadKeys(pipelineSrc, stage);
-    if (!sent) continue; // 该阶段没出现在编排里
+    // 抠不到就是"编排里没有这个阶段"。以前这里写 `continue`，于是编排一搬文件，
+    // 整条契约就变成空转通过 —— 必须炸出来，不然它只是看着还在。
+    assert.ok(sent, `编排源码里找不到「${stage}」阶段的 startTask 调用，契约⑤失效了`);
     const src = read(file);
     for (const m of src.matchAll(/payload\.([a-zA-Z]\w*)/g)) {
       if (!sent.has(m[1])) problems.push(`${stage} 阶段没传 payload.${m[1]}（${file} 会读它）`);
@@ -426,3 +428,51 @@ test("契约⑦：网盘协议层的请求都必须走 panFetch（UA/Cookie/代�
   }
   assert.deepEqual(problems, [], problems.join("\n"));
 });
+
+test("契约⑧：一键全自动用到的 taskRunners.<键> 必须在装配处真的提供（且反过来不剩多余的）", () => {
+  // 编排模块只拿到一个 taskRunners 袋子，键名对不上时抛的是
+  // 「taskRunners.xxx is not a function」—— 这条链是软件的主功能，
+  // 而它平时只有用户真正点「开始」才会跑到，靠手工测不现实。
+  const pipelineCode = read("electron/src/workflows/auto-pipeline.js");
+  const wired = read("electron/app-context.js");
+  const marker = "taskRunners: {";
+  const at = wired.indexOf(marker);
+  assert.ok(at >= 0, "app-context.js 里找不到 taskRunners 装配块");
+
+  // 抠出对象字面量（只支持一层，够用；嵌套了就显式报错而不是瞎猜）
+  const braceStart = wired.indexOf("{", at);
+  let depth = 0;
+  let end = braceStart;
+  for (; end < wired.length; end += 1) {
+    if (wired[end] === "{") depth += 1;
+    else if (wired[end] === "}") { depth -= 1; if (depth === 0) break; }
+  }
+  const block = wired.slice(braceStart + 1, end);
+  const provided = new Set(block.split(",").map((kv) => kv.split(":")[0].trim()).filter(Boolean));
+
+  const used = new Set(Array.from(pipelineCode.matchAll(/taskRunners\.([a-zA-Z]\w*)/g)).map((m) => m[1]));
+  const missing = [...used].filter((k) => !provided.has(k));
+  const unused = [...provided].filter((k) => !used.has(k));
+
+  assert.deepEqual(missing, [], `编排里用了但没装配的 runner：${missing.join(", ")}`);
+  assert.deepEqual(unused, [], `装配了但编排里没用的 runner：${unused.join(", ")}（拼错了？）`);
+
+  // 键名对上还不够：值也必须真的存在。写成 `crawl: runCrawlTaskXX` 时
+  // 键名检查是过的，运行期才炸成 "not a function"。
+  const imported = new Set();
+  for (const m of wired.matchAll(/const\s*\{([^}]*)\}\s*=\s*require\([^)]*\)/g)) {
+    for (const part of m[1].split(",")) {
+      const name = part.split(":").pop().split("=")[0].trim();
+      if (name) imported.add(name);
+    }
+  }
+  const declared = new Set(Array.from(wired.matchAll(/(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g)).map((m) => m[1]));
+  const badValues = [];
+  for (const kv of block.split(",")) {
+    const [k, v] = kv.split(":").map((s) => (s || "").trim());
+    if (!k || !v) continue;
+    if (!imported.has(v) && !declared.has(v)) badValues.push(`${k}: ${v}`);
+  }
+  assert.deepEqual(badValues, [], `这些 runner 在 app-context.js 里既不是导入的也不是本文件声明的函数：${badValues.join(", ")}`);
+});
+
