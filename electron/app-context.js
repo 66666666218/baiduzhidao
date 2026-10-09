@@ -100,6 +100,14 @@ function deps() {
     dataDir,   // 与「打开数据目录」/批量转存输出一致的基准目录
     // 让任务能拿到「网盘管理」里存好的凭据：submit 用它走纯协议提交（不开窗口），
     // batch-transfer 用它免去开窗口取网盘凭证。
+    // 该账号配了代理就返回 dispatcher（纯协议请求用它走代理）；没配返回 undefined（直连）
+    proxyOf: (envLabel) => {
+      try {
+        const { dispatcherFor } = require("./src/netdisk/proxy");
+        const proxies = require("./src/netdisk/proxy").parseAccountProxies(settings.accountProxies || "");
+        return dispatcherFor(proxies[envLabel]);
+      } catch { return undefined; }
+    },
     credentialOf: (envLabel) => {
       try { const { credentialOf: pick } = require("./src/netdisk/manager"); return pick(dataDir, envLabel); }
       catch { return null; }

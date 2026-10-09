@@ -24,11 +24,12 @@ const UA_PROTO = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
  * 取 X-ik-token。**上传和提交都要它** —— 缺了只会得到含糊的「参数错误」，
  * 很容易误判成字段名写错（我就这么绕了很久）。它来自 /api/loginInfo 的 stoken 字段。
  */
-async function fetchIkToken(cookie, { fetchImpl = fetch, timeoutMs = 12000 } = {}) {
+async function fetchIkToken(cookie, { fetchImpl = fetch, timeoutMs = 12000, dispatcher } = {}) {
   try {
     const res = await fetchImpl(`${WB_HOST}/api/loginInfo?t=${Date.now()}`, {
       headers: { Cookie: cookie, "User-Agent": UA_PROTO, Referer: WB_HOST },
       signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
+      dispatcher,
     });
     const json = JSON.parse(await res.text());
     if (Number(json.isLogin) !== 1) return { ok: false, token: "", reason: "Cookie 无效或已过期（isLogin≠1）——请到「网盘管理」重新粘贴" };
@@ -44,7 +45,7 @@ async function fetchIkToken(cookie, { fetchImpl = fetch, timeoutMs = 12000 } = {
  * 纯协议上传一张表。字段名与页面完全一致：`file` + `taskName`
  *（实测方式：在页面里 hook FormData.prototype.append 拿到）。
  */
-async function uploadByProtocol({ filePath, taskName, cookie, token, fetchImpl = fetch, timeoutMs = 60000 }) {
+async function uploadByProtocol({ filePath, taskName, cookie, token, fetchImpl = fetch, timeoutMs = 60000, dispatcher }) {
   try {
     const buf = fs.readFileSync(filePath);
     const fd = new FormData();
@@ -56,6 +57,7 @@ async function uploadByProtocol({ filePath, taskName, cookie, token, fetchImpl =
         "X-Requested-With": "XMLHttpRequest", "X-ik-token": token },
       body: fd,
       signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
+      dispatcher,
     });
     const text = await res.text();
     let json;
@@ -153,7 +155,8 @@ async function runBatchUploadTask(ctx, deps) {
   const cred = typeof deps.credentialOf === "function" ? deps.credentialOf(bitEnv) : null;
   if (cred && cred.bduss) {
     const cookie = `BDUSS=${cred.bduss}${cred.stoken ? "; STOKEN=" + cred.stoken : ""}`;
-    const tk = await fetchIkToken(cookie);
+    const dispatcher = typeof deps.proxyOf === "function" ? deps.proxyOf(bitEnv) : undefined;
+    const tk = await fetchIkToken(cookie, { dispatcher });
     if (tk.ok) {
       // 这个分支自给自足：窗口分支的 totalBatches / quotaNum 定义在后面，引用会 ReferenceError。
       const pBatches = Math.min(maxBatches, Math.ceil(filled.length / batchRows));
@@ -169,7 +172,7 @@ async function runBatchUploadTask(ctx, deps) {
         const wbPart = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wbPart, ws, sheetName);
         XLSX.writeFile(wbPart, partFile);
-        const r = await uploadByProtocol({ filePath: partFile, taskName: `${bitEnv}-${b + 1}/${pBatches}-${chunk.length}条`, cookie, token: tk.token });
+        const r = await uploadByProtocol({ filePath: partFile, taskName: `${bitEnv}-${b + 1}/${pBatches}-${chunk.length}条`, cookie, token: tk.token, dispatcher });
         fs.rmSync(partFile, { force: true });
         log(`批次 ${b + 1}/${pBatches}: ${chunk.length} 行 → ${r.ok ? `成功 taskId=${r.taskId}` : `失败(${r.reason})`}`);
         ctx.emitItem({ title: `批次 ${b + 1}/${pBatches}`, status: r.ok ? `上传成功 ${chunk.length} 行` : `上传失败：${r.reason}` });

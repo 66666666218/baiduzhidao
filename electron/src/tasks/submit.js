@@ -172,7 +172,8 @@ async function runSubmitTask(ctx, deps) {
       if (cred && cred.bduss) {
         // 注意：只需 zhidao 域那一份。把全量跨域 Cookie 拼一起会因同名冲突冲掉登录态。
         const cookie = `BDUSS=${cred.bduss}${cred.stoken ? "; STOKEN=" + cred.stoken : ""}`;
-        const tk = await protocolSubmit.fetchSubmitToken(cookie);
+        const dispatcher = typeof deps.proxyOf === "function" ? deps.proxyOf(envLabel) : undefined;
+        const tk = await protocolSubmit.fetchSubmitToken(cookie, { dispatcher });
         if (tk.ok) {
           log(`【纯协议】${envLabel}（${tk.userName || "?"}）—— 不走窗口`);
           for (const item of slot.rows) {
@@ -181,7 +182,7 @@ async function runSubmitTask(ctx, deps) {
             processed += 1;
             ctx.report({ done: successCount + failCount, total: totalPlanned, status: "running" });
             const qid = protocolSubmit.qidOf(item.questionUrl) || String(item.qid || "");
-            const r = await protocolSubmit.submitAnswer({ qid, content: item.answer, cookie, token: tk.token });
+            const r = await protocolSubmit.submitAnswer({ qid, content: item.answer, cookie, token: tk.token, dispatcher });
             if (r.ok) {
               successCount += 1;
               const submitted = { ...item, bitEnv: envLabel, status: "已提交", confirmed: true, aid: r.aid, submittedAt: nowText() };

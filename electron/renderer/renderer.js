@@ -708,6 +708,7 @@ async function saveSettingsQuiet() {
   patch.accountTopics = $("accountTopics").value; // 文本形式「账号=题材」，由后端归一化
   patch.linkRouting = $("linkRouting").value;
   patch.topicRules = $("topicRules").value; // 上传侧分类规则，由后端解析
+  patch.accountProxies = $("accountProxies").value; // 纯协议模式：每账号出口代理
   patch.searchKeywords = $("searchKeywords").value; // 搜资源：按题材的搜索词
   patch.searchPages = Number($("searchPages").value) || 1;
   patch.category = $("category").value;
@@ -741,6 +742,7 @@ async function loadSettings() {
   $("activityUrl").value = settings.activityUrl || "";
   $("bitEnvs").value = (settings.bitEnvs || []).map((env) => env.label || env).join("\n");
   $("browserMode").value = settings.browserMode === "headless" ? "headless" : "bit";
+  $("accountProxies").value = settings.accountProxies || "";
   $("autoTransferEnvs").value = (settings.transferEnvs || []).map((env) => env.label || env).join("\n");
   $("autoUploadEnvs").value = (settings.uploadEnvs || []).map((env) => env.label || env).join("\n");
   $("accountTopics").value = Object.entries(settings.accountTopics || {}).map(([account, topic]) => `${account}=${topic}`).join("\n");

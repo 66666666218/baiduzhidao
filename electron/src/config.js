@@ -18,6 +18,10 @@ const DEFAULTS = {
   // "headless" 用系统 Edge 跑无头，内存小得多，但**所有账号共用同一份设备指纹**，
   // 隔离性下降 —— 只有用户明确选择时才用，绝不默认切过去。
   browserMode: "bit",
+  // 每个账号的出口代理（文本，形如「账号=代理地址」一行一个）。
+  // 纯协议模式下所有账号共享本机 IP —— 配了代理才是真正的 IP 隔离。
+  // 留空全直连，行为与本功能引入前完全一致。
+  accountProxies: "",
   // 网盘链的账号分工：转存与上传可以不是同一批号。
   // 现实里常见「A 的网盘还有空间但没有批量发布权益，B 有权益但网盘已经满了」——
   // 分开之后 A 负责把资源转进自己盘并建好永久分享，B 只管把问答表传上工作台
@@ -125,6 +129,7 @@ function normalizeSettings(payload) {
   const next = { ...DEFAULTS, ...(payload || {}) };
   next.bitEnvs = normalizeBitEnvs(next.bitEnvs);
   next.browserMode = String(next.browserMode || "").toLowerCase() === "headless" ? "headless" : "bit";
+  next.accountProxies = String(next.accountProxies || "");
   next.transferEnvs = normalizeBitEnvs(next.transferEnvs);
   next.uploadEnvs = normalizeBitEnvs(next.uploadEnvs);
   next.timeoutMs = clampInt(next.timeoutMs, 5000, 120000, DEFAULTS.timeoutMs);

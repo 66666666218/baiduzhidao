@@ -12,11 +12,12 @@ const PROGRESS_API = "/qa/api/activity/anniversary21/answer-progress";
  * 接口是活动页自己在用的那个，实测关掉浏览器后 fetch 依然 200 ——
  * 也就是说这个数字**本来就不需要开窗口**。
  */
-async function fetchProgressByProtocol(cookie, { fetchImpl = fetch, timeoutMs = 12000 } = {}) {
+async function fetchProgressByProtocol(cookie, { fetchImpl = fetch, timeoutMs = 12000, dispatcher } = {}) {
   try {
     const res = await fetchImpl(WB + PROGRESS_API, {
       headers: { Cookie: cookie, "User-Agent": "Mozilla/5.0", Referer: `${WB}/b/batch/batch-upload`, "X-Requested-With": "XMLHttpRequest" },
       signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
+      dispatcher,
     });
     const text = await res.text();
     const json = JSON.parse(text);
@@ -53,7 +54,8 @@ async function runPassedCountTask(ctx, deps) {
       const cred = typeof deps.credentialOf === "function" ? deps.credentialOf(envLabel) : null;
       if (cred && cred.bduss) {
         const cookie = `BDUSS=${cred.bduss}${cred.stoken ? "; STOKEN=" + cred.stoken : ""}`;
-        const got = await fetchProgressByProtocol(cookie);
+        const dispatcher = typeof deps.proxyOf === "function" ? deps.proxyOf(envLabel) : undefined;
+        const got = await fetchProgressByProtocol(cookie, { dispatcher });
         if (got) {
           const account = {
             bitEnv: envLabel,

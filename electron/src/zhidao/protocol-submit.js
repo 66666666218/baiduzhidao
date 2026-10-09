@@ -29,12 +29,13 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
  * 取提交用的 token（顺便确认登录态）。
  * @returns {Promise<{ok:boolean, token:string, userName:string, reason:string}>}
  */
-async function fetchSubmitToken(cookie, { fetchImpl = fetch, timeoutMs = 15000 } = {}) {
+async function fetchSubmitToken(cookie, { fetchImpl = fetch, timeoutMs = 15000, dispatcher } = {}) {
   const url = `${WB}/api/loginInfo?t=${Date.now()}`;
   try {
     const res = await fetchImpl(url, {
       headers: { Cookie: cookie, "User-Agent": UA, Referer: WB },
       signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
+      dispatcher,
     });
     const text = await res.text();
     let json;
@@ -54,7 +55,7 @@ async function fetchSubmitToken(cookie, { fetchImpl = fetch, timeoutMs = 15000 }
  * 提交一条回答。
  * @returns {Promise<{ok:boolean, aid:string, reason:string}>}
  */
-async function submitAnswer({ qid, content, cookie, token, fetchImpl = fetch, timeoutMs = 20000 }) {
+async function submitAnswer({ qid, content, cookie, token, fetchImpl = fetch, timeoutMs = 20000, dispatcher }) {
   if (!qid) return { ok: false, aid: "", reason: "缺少 qid" };
   if (!String(content || "").trim()) return { ok: false, aid: "", reason: "回答内容为空" };
   if (!token) return { ok: false, aid: "", reason: "缺少 X-ik-token" };
@@ -74,6 +75,7 @@ async function submitAnswer({ qid, content, cookie, token, fetchImpl = fetch, ti
       },
       body,
       signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
+      dispatcher,
     });
     const text = await res.text();
     let json;
