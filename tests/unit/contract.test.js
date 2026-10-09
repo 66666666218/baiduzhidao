@@ -405,3 +405,24 @@ test("契约⑥：主进程与脚本里调用的标识符都有来源（防 Refe
   }
   assert.deepEqual(problems, [], "这些文件里被当作函数调用、但既没定义也没导入：\n" + problems.join("\n"));
 });
+
+test("契约⑦：网盘协议层的请求都必须走 panFetch（UA/Cookie/代理/超时只有一处定义）", () => {
+  // 为什么值得一条静态守卫：这三件事**漏一个都不会立刻报错**。
+  //   · 漏 UA / Cookie → 表现为"未登录"或风控，但代码看着完全正常；
+  //   · 漏 dispatcher → 这一条请求走直连，于是"同一批操作从两个 IP 发出"，
+  //     比全程直连更可疑（实测时就漏了两处，其中一处是建分享）；
+  //   · 漏超时 → 网络卡住时整条链永久吊住，日志里连一条错都没有。
+  // 这类问题靠人眼复查 7 个调用点，迟早会再漏。
+  const targets = ["electron/src/netdisk/protocol.js", "electron/src/netdisk/share.js"];
+  const problems = [];
+  for (const file of targets) {
+    const code = stripStringsAndComments(read(file));
+    // 匹配 fetch( 且前面不是 . 或字母 —— `panFetch(` 里是大写 F，不会被误匹配
+    const hits = code.match(/(^|[^.\w])fetch\s*\(/g) || [];
+    if (hits.length !== 1) {
+      problems.push(`${file}：直接调用 fetch 共 ${hits.length} 处（应当只有 panFetch 内部那 1 处）`);
+    }
+    if (!/function panFetch\(/.test(code)) problems.push(`${file}：找不到 panFetch 定义`);
+  }
+  assert.deepEqual(problems, [], problems.join("\n"));
+});

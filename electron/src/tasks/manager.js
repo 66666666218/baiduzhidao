@@ -121,9 +121,13 @@ class TaskManager {
       return result;
     } catch (error) {
       if (!machine.isTerminal) {
-        // 任务在暂停中失败时 PAUSED→FAILED 是非法迁移，直接 fail 会在 catch 里再抛一次，盖掉真正的错误
+        // 任务在暂停中失败时 PAUSED→FAILED 是非法迁移，直接 fail 会在 catch 里再抛一次，盖掉真正的错误。
+        // 走 cancel 兜底，但**必须把真实错误带上**：以前只写 `failed_while_paused`，
+        // 读状态机记录的人只看到"它在暂停时失败了"，完全不知道失败原因是什么。
         if (machine.can(STATES.FAILED)) machine.fail(error.message);
-        else machine.cancel(`failed_while_${machine.state.toLowerCase()}`);
+        else machine.cancel(`failed_while_${machine.state.toLowerCase()}（${error.message}）`);
+        // 状态机记录里也给一份，免得消费方只看 failReason 时又是空的
+        machine.failReason = error.message;
         this.emitEvent("task.failed", { taskId: machine.taskId, error: error.message });
       }
       this.archive();

@@ -4,11 +4,43 @@
  * 百度网盘转存协议客户端（纯 HTTP · 无浏览器）。
  * Jar = 每条资源独立 Cookie 会话；processOne = 单条完整链（verify→mset→建目录→转存）。
  * 参考 qingchuangjy/wangpan + 2026-09-23 实测（38条/分钟）。
+ *
+ * 所有请求都走 `panFetch`（UA/Cookie/代理/超时/set-cookie 回写只有这一处定义）。
+ * 别在这份文件里直接写 `fetch(` —— 漏掉代理就会出现"同一批操作从两个 IP 发出"，
+ * 漏掉超时就会让整条链在网络上永久吊住。有静态守卫盯着这件事。
  */
 
 const PAN = "https://pan.baidu.com";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 网盘单次 API 调用的超时。以前这里**一个超时都没有** —— 网络卡住时整条链就永久吊在那儿，
+// 外层只能看到"任务不动了"，日志里连一条错都没有，排查时完全找不到方向。
+const TIMEOUT_MS = 20000;
+
+/**
+ * 网盘侧统一的 fetch。三件事以前散在 7 个调用点，漏一个就出问题：
+ *   1) **UA / Cookie**：漏了会被当成未登录或机器人；
+ *   2) **dispatcher（代理）**：漏了这一条请求就走直连 —— 同一批操作从两个 IP 发出，
+ *      比全程直连更可疑（实测时就漏了两处）；
+ *   3) **超时**：见上。
+ * 顺带统一了 set-cookie 回写：以前每个调用点都要自己 `jar.apply(...)`，漏了 Cookie 就丢了。
+ */
+async function panFetch(jar, url, { referer, ...init } = {}) {
+  const resp = await fetch(url, {
+    redirect: "follow",
+    ...init,
+    headers: {
+      "User-Agent": UA,
+      Cookie: jar.str(),
+      ...(referer ? { Referer: referer } : {}),
+      ...(init.headers || {}),
+    },
+    dispatcher: jar.dispatcher,
+    signal: init.signal || (AbortSignal.timeout ? AbortSignal.timeout(TIMEOUT_MS) : undefined),
+  });
+  jar.apply(resp.headers.getSetCookie ? resp.headers.getSetCookie() : []);
+  return resp;
+}
 
 class Jar {
   /**
@@ -32,38 +64,31 @@ class Jar {
 
 function makeClient(jar) {
   return async (pathAndQuery, opts = {}) => {
-    const resp = await fetch(`${PAN}${pathAndQuery}`, {
+    const resp = await panFetch(jar, `${PAN}${pathAndQuery}`, {
       method: opts.method || "GET",
-      headers: {
-        "User-Agent": UA,
-        "Cookie": jar.str(),
-        "Referer": opts.referer || `${PAN}/disk/main`,
-        ...(opts.headers || {}),
-      },
+      referer: opts.referer || `${PAN}/disk/main`,
+      headers: opts.headers,
       body: opts.body,
-      redirect: "follow",
-      dispatcher: jar.dispatcher,
     });
-    jar.apply(resp.headers.getSetCookie ? resp.headers.getSetCookie() : []);
     return resp.json().catch(() => ({}));
   };
 }
 
 // ---------- 单条完整链（纯协议） ----------
 async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken, makeShare }) {
-  const m = link.match(/\/s\/(1[\w-]+)/);
+  const m = String(link || "").match(/\/s\/(1[\w-]+)/);
+  if (!m) throw new Error(`不认识的分享链接，已跳过：${link}`);
   const fullCode = m[1];
   const surl = fullCode.startsWith("1") ? fullCode.slice(1) : fullCode;
   const rawUrl = `${PAN}/s/${fullCode}?pwd=${pwd}`;
 
   // 1) verify
-  const vResp = await fetch(`${PAN}/share/verify?surl=${encodeURIComponent(surl)}&t=${Date.now()}&channel=chunlei&web=1&bdstoken=null&clienttype=0`, {
+  const vResp = await panFetch(jar, `${PAN}/share/verify?surl=${encodeURIComponent(surl)}&t=${Date.now()}&channel=chunlei&web=1&bdstoken=null&clienttype=0`, {
     method: "POST",
-    headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": `${PAN}/share/init?surl=${encodeURIComponent(surl)}`, "Content-Type": "application/x-www-form-urlencoded" },
-    dispatcher: jar.dispatcher,
+    referer: `${PAN}/share/init?surl=${encodeURIComponent(surl)}`,
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: `pwd=${pwd}&vcode=&vcode_str=`,
   });
-  jar.apply(vResp.headers.getSetCookie ? vResp.headers.getSetCookie() : []);
   const vBody = await vResp.json().catch(() => ({}));
   if (vBody.errno === -65 || vBody.errno === -62 || vBody.errno === -70) throw Object.assign(new Error(`verify风控 errno=${vBody.errno}`), { risk: true });
   if (vBody.errno !== 0 || !vBody.randsk) throw new Error(`verify errno=${vBody.errno}`);
@@ -75,8 +100,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   let html = "";
   let data = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const pResp = await fetch(`${PAN}/s/${fullCode}`, { headers: { "User-Agent": UA, "Cookie": jar.str() }, redirect: "follow", dispatcher: jar.dispatcher });
-    jar.apply(pResp.headers.getSetCookie ? pResp.headers.getSetCookie() : []);
+    const pResp = await panFetch(jar, `${PAN}/s/${fullCode}`);
     html = await pResp.text();
     const mm = html.match(SHARE_DATA_RE);
     if (mm) {
@@ -110,7 +134,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   const listDir = async (dir) => {
     const qs = new URLSearchParams({ web: "5", app_id: "250528", desc: "1", showempty: "0", page: "1", num: "100", order: "time", view_mode: "1", channel: "chunlei", clienttype: "0", shorturl: surl, dir });
     if (bdstoken) qs.set("bdstoken", bdstoken);
-    const j = await fetch(`${PAN}/share/list?${qs}`, { headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": rawUrl } }).then((r) => r.json()).catch(() => ({}));
+    const j = await panFetch(jar, `${PAN}/share/list?${qs}`, { referer: rawUrl }).then((r) => r.json()).catch(() => ({}));
     return j;
   };
   // BFS 递归展开全部子目录（上限 100 个目录，超限告警防异常分享）
@@ -133,7 +157,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   };
   await walkDirs(dirPaths);
   if (!fsIds.length) {
-    const root = await fetch(`${PAN}/share/list?web=5&app_id=250528&desc=1&showempty=0&page=1&num=100&order=time&view_mode=1&channel=chunlei&clienttype=0${bdstoken ? "&bdstoken=" + bdstoken : ""}&shorturl=${encodeURIComponent(surl)}&root=1`, { headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": rawUrl } }).then((r) => r.json()).catch(() => ({}));
+    const root = await panFetch(jar, `${PAN}/share/list?web=5&app_id=250528&desc=1&showempty=0&page=1&num=100&order=time&view_mode=1&channel=chunlei&clienttype=0${bdstoken ? "&bdstoken=" + bdstoken : ""}&shorturl=${encodeURIComponent(surl)}&root=1`, { referer: rawUrl }).then((r) => r.json()).catch(() => ({}));
     if (root.errno === 0 && Array.isArray(root.list)) {
       dirPaths = [];
       collect(root.list);
@@ -162,10 +186,9 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   let acc = "";
   for (const seg of segments) {
     acc += `/${seg}`;
-    const cResp = await fetch(`${PAN}/api/create?a=commit&bdstoken=${encodeURIComponent(bdstoken)}&web=1&channel=chunlei&clienttype=0`, {
+    const cResp = await panFetch(jar, `${PAN}/api/create?a=commit&bdstoken=${encodeURIComponent(bdstoken)}&web=1&channel=chunlei&clienttype=0`, {
       method: "POST",
-      headers: { "User-Agent": UA, "Cookie": jar.str(), "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
-      dispatcher: jar.dispatcher,
+      headers: { "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
       body: `path=${encodeURIComponent(acc)}&isdir=1`,
     });
     const cBody = await cResp.json().catch(() => ({}));
@@ -175,10 +198,10 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   }
 
   const transferTo = async (target) => {
-    const resp = await fetch(`${PAN}/share/transfer?shareid=${shareid}&from=${uk}&bdstoken=${encodeURIComponent(bdstoken)}&channel=chunlei&clienttype=0&web=1`, {
+    const resp = await panFetch(jar, `${PAN}/share/transfer?shareid=${shareid}&from=${uk}&bdstoken=${encodeURIComponent(bdstoken)}&channel=chunlei&clienttype=0&web=1`, {
       method: "POST",
-      headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": rawUrl, "Origin": PAN, "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
-      dispatcher: jar.dispatcher,
+      referer: rawUrl,
+      headers: { Origin: PAN, "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
       body: `fsidlist=${encodeURIComponent(JSON.stringify(fsIds))}&path=${encodeURIComponent(target)}`,
     });
     return resp.json().catch(() => ({}));
@@ -221,4 +244,4 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   return { toPaths, fsIds, usedDir, fellBack };
 }
 
-module.exports = { PAN, UA, Jar, processOne };
+module.exports = { PAN, UA, TIMEOUT_MS, Jar, panFetch, processOne };

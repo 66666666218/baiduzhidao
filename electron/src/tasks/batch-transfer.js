@@ -220,7 +220,9 @@ async function runBatchTransferTask(ctx, deps) {
         let ownLink = "", ownPwd = "";
         if (makeShare) {
           const ownPwdR = randomPwd();
-          const share = await createShare({ bduss: cred.bduss, stoken: cred.stoken, paths: toPaths, password: ownPwdR });
+          // 创建分享也带上同一条代理：以前这里漏了，于是"转存走代理、建分享走直连"，
+          // 同一批操作从两个 IP 发出 —— 正好是上面那句注释想避免的情况。
+          const share = await createShare({ bduss: cred.bduss, stoken: cred.stoken, paths: toPaths, password: ownPwdR, dispatcher });
           if (!share.link) throw new Error("创建分享失败");
           ownLink = `${share.link}?pwd=${share.password}`;
           ownPwd = share.password;
