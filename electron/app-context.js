@@ -631,11 +631,18 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     if (!env) throw new Error("请填写比特窗口名");
     const h = await browserPool.acquire(env);
     const b = await chromium.connectOverCDP(h.cdpUrl);
-    const cs = await b.contexts()[0].cookies("https://pan.baidu.com");
+    const context = b.contexts()[0];
+    // 先读网盘域；没有就退回知道域——**BDUSS 是百度全域 Cookie**，
+    // 两个域哪个有都能用（查收录走的是知道域，账号可能只登录了知道没登网盘）。
+    let cs = await context.cookies("https://pan.baidu.com");
+    let bd = (cs.find((c) => c.name === "BDUSS") || {}).value || "";
+    if (!bd) {
+      cs = await context.cookies("https://zhidao.baidu.com");
+      bd = (cs.find((c) => c.name === "BDUSS") || {}).value || "";
+    }
     await browserPool.release(env, { close: false });
     await b.close().catch(() => {});
-    const bd = (cs.find((c) => c.name === "BDUSS") || {}).value || "";
-    if (!bd) throw new Error(`窗口 ${env} 无百度网盘登录态`);
+    if (!bd) throw new Error(`窗口 ${env} 没有百度登录态（网盘和知道都没登录）`);
     return { bduss: bd, stoken: (cs.find((c) => c.name === "STOKEN") || {}).value || "" };
   });
   ipcMain.handle("netdisk:accounts:remove", (_e, p) => {

@@ -1,5 +1,7 @@
 # CHANGELOG
 
+- [2026-10-09 12:12] FIX: 「从比特窗口提取」只读网盘域 Cookie——用户澄清一个窗口一个独立账号后，这条要能用得起来。顺带发现：**UI 早就支持"账号名留空 = 用窗口名"**（`name || win`），所以"给每个窗口各存一条同名 Cookie"不用手工打字；但提取只读 `pan.baidu.com`，**账号只登录了知道没登网盘时提取会失败**——而查收录走的正是知道域。改为先读网盘域、没有再退回知道域（BDUSS 是百度全域 Cookie，两个域哪个有都能用），错误信息也从「无百度网盘登录态」改成「没有百度登录态（网盘和知道都没登录）」。 [285 单测全绿；冒烟 clicked=73、rendererErrors:[]] (Files: electron/app-context.js, CHANGELOG.md, docs/自审日志.md)
+
 - [2026-10-09 12:05] FEAT: 查收录/权益检查优先用存好的 Cookie（能不开窗口）——用户指出「说是纯协议还是开窗口了」。实测：**只带 BDUSS 就能调通工作台接口**（BDUSS 是百度全域 Cookie，裸 curl 返回 200 + 真实账号数据），所以「网盘管理」里存过的账号不必为每次查收录再开一次浏览器。新增 `storedCookieOf(envLabel)`：按**比特环境名**去「网盘账号.json」匹配，命中就用存的 Cookie，没命中才回落到开窗口取（与「账号题材绑定」同一条规矩：名字必须一字不差）。顺带实测发现用户存的 `账号10081452` 与知道答主账号**不是同一个号**（那条 `hasPermission:false`、`quota:0`，而测试组1 里的是 `俊哦情0I`、额度 10000、有权益）——正好验证了权益门会把它挡下。 [285 单测全绿；冒烟 clicked=73、rendererErrors:[]] (Files: electron/app-context.js, CHANGELOG.md, docs/自审日志.md)
 
 - [2026-10-09 12:00] FIX: `describeError is not defined` —— 我在 `runCheckPublishedTask` 里用了 `describeError`，**但 app-context 从来没导入过它**，导致「查收录」和「确认批量发布权益」一跑就 ReferenceError。这是主进程里漏出去的第 **3** 个同类错误（前两个是 `settings`、`log_uploadTable`），渲染端有冒烟点按钮兜着，**主进程一直没有任何运行时守卫**。新增**契约⑥**：静态扫描 app-context.js 里被当作函数调用的标识符，逐个核对"已定义 or 已导入 or 语言内置"，缺谁报谁。对照实验：去掉 `describeError` 的导入 → 精确报出该名字；还原 → 全绿。（写这个 guard 时修了三处误报：解构参数、匿名的 `function (resolve)`、以及嵌套括号 `((resolve) =>` 导致捕获组带半个左括号。） [285 单测全绿；冒烟未跑——软件运行中] (Files: electron/app-context.js, tests/unit/contract.test.js, CHANGELOG.md, docs/自审日志.md)
