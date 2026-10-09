@@ -365,7 +365,7 @@ function undefinedCallees(rawSrc) {
     // 脚本环境（scripts/*.js）还会用到这些全局
     "process", "console", "module", "exports", "__dirname", "__filename", "setImmediate",
     "queueMicrotask", "structuredClone", "TextEncoder", "TextDecoder", "AbortController",
-    "AbortSignal", "globalThis", "URLSearchParams",
+    "AbortSignal", "globalThis", "URLSearchParams", "FormData", "Blob", "File",
     // 脚本在 page.evaluate(() => ...) 回调里跑的是**浏览器**上下文，document/window 是那里的全局
     "document", "window", "localStorage", "location", "navigator",
     "Event", "InputEvent", "CustomEvent", "MouseEvent", "KeyboardEvent",

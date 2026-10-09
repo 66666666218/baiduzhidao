@@ -16,6 +16,58 @@ const { parseTopicRules, classifyByRules, DEFAULT_TOPIC_RULES } = require("../do
 const { buildTopicAllocation, topicKey } = require("../domain/account-topic");
 const excel = require("../storage/excel");
 
+const WB_HOST = "https://zhidao.baidu.com";
+const UPLOAD_API = "/qa/api/bulkqa/upload";
+const UA_PROTO = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+
+/**
+ * 取 X-ik-token。**上传和提交都要它** —— 缺了只会得到含糊的「参数错误」，
+ * 很容易误判成字段名写错（我就这么绕了很久）。它来自 /api/loginInfo 的 stoken 字段。
+ */
+async function fetchIkToken(cookie, { fetchImpl = fetch, timeoutMs = 12000 } = {}) {
+  try {
+    const res = await fetchImpl(`${WB_HOST}/api/loginInfo?t=${Date.now()}`, {
+      headers: { Cookie: cookie, "User-Agent": UA_PROTO, Referer: WB_HOST },
+      signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
+    });
+    const json = JSON.parse(await res.text());
+    if (Number(json.isLogin) !== 1) return { ok: false, token: "", reason: "Cookie 无效或已过期（isLogin≠1）——请到「网盘管理」重新粘贴" };
+    const token = String(json.stoken || "").trim();
+    if (!token) return { ok: false, token: "", reason: "loginInfo 里没有 stoken 字段（接口可能改版）" };
+    return { ok: true, token, reason: "" };
+  } catch (error) {
+    return { ok: false, token: "", reason: `取 token 失败：${error.message}` };
+  }
+}
+
+/**
+ * 纯协议上传一张表。字段名与页面完全一致：`file` + `taskName`
+ *（实测方式：在页面里 hook FormData.prototype.append 拿到）。
+ */
+async function uploadByProtocol({ filePath, taskName, cookie, token, fetchImpl = fetch, timeoutMs = 60000 }) {
+  try {
+    const buf = fs.readFileSync(filePath);
+    const fd = new FormData();
+    fd.append("file", new Blob([buf]), path.basename(filePath));
+    fd.append("taskName", String(taskName));
+    const res = await fetchImpl(`${WB_HOST}${UPLOAD_API}`, {
+      method: "POST",
+      headers: { Cookie: cookie, "User-Agent": UA_PROTO, Referer: `${WB_HOST}/b/batch/batch-upload`, Origin: WB_HOST,
+        "X-Requested-With": "XMLHttpRequest", "X-ik-token": token },
+      body: fd,
+      signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
+    });
+    const text = await res.text();
+    let json;
+    try { json = JSON.parse(text); } catch { return { ok: false, taskId: "", reason: `响应非 JSON（HTTP ${res.status}）：${text.slice(0, 120)}` }; }
+    if (Number(json.code) === 200) return { ok: true, taskId: String((json.data && json.data.taskId) || ""), reason: "" };
+    const hint = Number(json.code) === 103001 ? "（该账号没有「批量发布权益」）" : "";
+    return { ok: false, taskId: "", reason: `code=${json.code} ${json.msg || ""}${hint}` };
+  } catch (error) {
+    return { ok: false, taskId: "", reason: `上传请求失败：${error.message}` };
+  }
+}
+
 /** 从表头里找「问题标题」类列（不同上游产出的列名不完全一致） */
 function pickTitleKey(keys) {
   return keys.find((k) => /问题标题|资源名|标题/.test(String(k))) || keys[0] || "";
@@ -97,6 +149,45 @@ async function runBatchUploadTask(ctx, deps) {
   }
   log(`已填回答 ${filled.length} 行（随机排序防查重）`);
 
+  // ★ 纯协议优先：存过 Cookie 的账号直接 HTTP 上传，**不开窗口**。
+  const cred = typeof deps.credentialOf === "function" ? deps.credentialOf(bitEnv) : null;
+  if (cred && cred.bduss) {
+    const cookie = `BDUSS=${cred.bduss}${cred.stoken ? "; STOKEN=" + cred.stoken : ""}`;
+    const tk = await fetchIkToken(cookie);
+    if (tk.ok) {
+      // 这个分支自给自足：窗口分支的 totalBatches / quotaNum 定义在后面，引用会 ReferenceError。
+      const pBatches = Math.min(maxBatches, Math.ceil(filled.length / batchRows));
+      log(`【纯协议】${bitEnv} 上传 ${filled.length} 行（分 ${pBatches} 批，不走窗口）`);
+      ctx.report({ done: 0, total: pBatches, status: "running" });
+      let okRows = 0;
+      for (let b = 0; b < pBatches; b += 1) {
+        if (ctx.shouldStop()) { log("收到停止信号，已上传部分保留。"); break; }
+        const chunk = filled.slice(b * batchRows, (b + 1) * batchRows);
+        if (!chunk.length) break;
+        const partFile = path.join(tmpDir, `proto-${Date.now()}-${b}.xlsx`);
+        const ws = XLSX.utils.json_to_sheet(chunk, { header: keys });
+        const wbPart = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wbPart, ws, sheetName);
+        XLSX.writeFile(wbPart, partFile);
+        const r = await uploadByProtocol({ filePath: partFile, taskName: `${bitEnv}-${b + 1}/${pBatches}-${chunk.length}条`, cookie, token: tk.token });
+        fs.rmSync(partFile, { force: true });
+        log(`批次 ${b + 1}/${pBatches}: ${chunk.length} 行 → ${r.ok ? `成功 taskId=${r.taskId}` : `失败(${r.reason})`}`);
+        ctx.emitItem({ title: `批次 ${b + 1}/${pBatches}`, status: r.ok ? `上传成功 ${chunk.length} 行` : `上传失败：${r.reason}` });
+        if (!r.ok) { log("本批失败，停止（可稍后重跑续传）。"); break; }
+        for (const row of chunk) {
+          const link = linkOf(row);
+          if (link) fs.appendFileSync(ledgerFile, JSON.stringify({ link, at: new Date().toISOString() }) + "\n");
+        }
+        okRows += chunk.length;
+        ctx.report({ done: b + 1, total: pBatches, status: "running" });
+        if (b < pBatches - 1) await new Promise((res) => setTimeout(res, 3000));
+      }
+      ctx.report({ done: pBatches, total: pBatches, status: ctx.shouldStop() ? "stopped" : "done" });
+      log(`=== 纯协议上传完成：共 ${okRows} 行 ===`);
+      return { uploaded: okRows, batches: pBatches, quota: null };
+    }
+    log(`纯协议不可用（${tk.reason}），回落到窗口`);
+  }
   // 打开比特窗口
   const handle = await browserPool.acquire(bitEnv);
   // 报出**实际打开**的窗口名：比特的 /browser/list 是模糊匹配，配置名差一个字就可能
@@ -373,4 +464,4 @@ async function runTopicUploadTask(ctx, deps) {
   };
 }
 
-module.exports = { runBatchUploadTask, runTopicUploadTask, pickTitleKey, safeFileToken, collectTopicRows };
+module.exports = { runBatchUploadTask, runTopicUploadTask, pickTitleKey, safeFileToken, collectTopicRows, fetchIkToken, uploadByProtocol };
