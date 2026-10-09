@@ -120,6 +120,21 @@
     } catch (e) { appendLog("提取失败：" + e.message); }
   });
 
+  // 软件内登录提取：弹一个登录窗口，登进去自动关闭并填好 —— 不用 F12、不用比特。
+  document.getElementById("nmLoginExtract").addEventListener("click", async function () {
+    var url = document.getElementById("nmLoginUrl").value.trim();
+    appendLog("已打开登录窗口：在里面登录百度，登进去会自动关闭并入库。");
+    try {
+      var creds = await rpc.invoke("auth:login-and-extract", { url: url });
+      if (!creds || !creds.ok) { appendLog("登录提取失败：" + ((creds && creds.reason) || "未知原因")); return; }
+      var name = document.getElementById("nmAccountName").value.trim();
+      if (!name) { appendLog("登录成功，但「账号备注名」空着 —— 请填一个（要跟比特环境名一致），再点一次添加。"); return; }
+      var info = await rpc.invoke("netdisk:accounts:add", { name: name, bduss: creds.bduss, stoken: creds.stoken });
+      appendLog("✅ " + name + " 已入库（账号 " + ((info && info.userName) || "?") + "）" + (info && info.netdiskOk ? "，网盘已连接" : "，网盘未连接（只影响转存，答题链可用）"));
+      loadAccounts();
+    } catch (e) { appendLog("登录提取失败：" + e.message); }
+  });
+
   document.getElementById("nmRefreshAccounts").addEventListener("click", loadAccounts);
   document.getElementById("nmAccountsBody").addEventListener("click", function (e) {
     var btn = e.target.closest(".nm-del");

@@ -452,7 +452,8 @@
         <div class="card">
           <h3>网盘账号</h3>
           <div class="field-grid">
-            <div class="field"><label>从比特窗口提取</label><div class="pair"><input type="text" id="nmWindowName" placeholder="窗口名" /><button class="btn soft" id="nmExtract">提取</button></div></div>
+            <div class="field"><label>① 在软件里登录（推荐，不用 F12、不用比特）</label><div class="pair"><input type="text" id="nmLoginUrl" placeholder="留空=百度网盘登录页" /><button class="btn primary" id="nmLoginExtract">登录并提取</button></div><p class="hint">点开后在弹出的窗口里登录百度，<b>登进去就会自动关闭并填好</b>，不用再点任何按钮。</p></div>
+            <div class="field"><label>② 从比特窗口提取（已用比特登录过时）</label><div class="pair"><input type="text" id="nmWindowName" placeholder="窗口名" /><button class="btn soft" id="nmExtract">提取</button></div></div>
             <div class="field"><label>账号备注名</label><input type="text" id="nmAccountName" placeholder="如：测试组1" /></div>
             <div class="field" style="grid-column: 1 / -1;"><label>Cookie 粘贴（推荐，无需比特浏览器）</label><textarea id="nmCookie" rows="4" placeholder="【怎么取】用你自己的浏览器登录 zhidao.baidu.com 或 pan.baidu.com&#10;→ 按 F12 打开开发者工具 → 切到「网络 / Network」&#10;→ 刷新页面，点列表里任意一条请求 → 在「请求头」里找到 Cookie 那一行&#10;→ 整行复制，粘贴到这里（含 BDUSS 就够，STOKEN 有更好）"></textarea>
             <p class="hint"><b>只需粘一份</b>：<code>BDUSS</code> 是百度<b>全域</b> Cookie，网盘和知道通用 —— 不用分别给网盘的和知道的。

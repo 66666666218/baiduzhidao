@@ -33,6 +33,7 @@ const invokeChannels = new Set([
   "netdisk:accounts:list",
   "netdisk:accounts:add",
   "netdisk:accounts:extract-from-window",
+"auth:login-and-extract",
   "netdisk:accounts:remove",
   "netdisk:accounts:check",
   "netdisk:list",

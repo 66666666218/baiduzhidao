@@ -691,6 +691,61 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     manager.saveAccounts(dataDir, accounts);
     return { valid: true, userName: String(login.userName || ""), totalGB: quota ? quota.totalGB : null, freeGB: quota ? quota.freeGB : null, netdiskOk: Boolean(quota && quota.valid) };
   });
+  /**
+   * 软件内登录窗口：用户在这里登录百度，软件自己把 Cookie 读出来。
+   *
+   * 为什么比"让用户 F12 复制"好：不用教用户开开发者工具、不用开比特、也不会
+   * 把多个域的 Cookie 拼错（这是最常见的失败原因）。登录窗口和主窗口共享同一个
+   * session，所以登录完直接读 session 就行。
+   *
+   * 登录成功的判定：轮询 session 里的 BDUSS。一旦出现就说明登进去了，
+   * 立刻读全量、关窗、返回 —— 不需要用户再点任何按钮。
+   */
+  ipcMain.handle("auth:login-and-extract", async (_e, p) => {
+    const { BrowserWindow, session } = require("electron");
+    const loginUrl = String((p && p.url) || "").trim() || "https://pan.baidu.com/";
+    const partition = "persist:baidu-login";   // 独立分区，不和主窗口的 session 混
+    const ses = session.fromPartition(partition);
+    // UA 必须伪装成普通 Chrome：Electron 默认 UA 里带 `Electron/33.x`，
+    // 百度一眼就能认出"这不是普通浏览器"。改掉之后，登录窗口在站点看来
+    // 和一份普通 Chrome 无异（指纹仍是同一份 —— 但登录是低危动作，
+    // 真正敏感的提交/上传全走纯协议，不带任何浏览器指纹）。
+    const LOGIN_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+    try { ses.setUserAgent(LOGIN_UA); } catch { /* 忽略 */ }
+    const win = new BrowserWindow({
+      width: 1100, height: 800, autoHideMenuBar: true, title: "登录百度（登录完成后本窗口自动关闭）",
+      webPreferences: { partition, contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    try { win.webContents.setUserAgent(LOGIN_UA); } catch { /* 忽略 */ }
+    // 每次开都从干净状态开始：上一次残留的登录态会让人误以为"已经登过了"
+    try { await ses.clearStorageData({ storages: ["cookies"] }); } catch { /* 忽略 */ }
+    await win.loadURL(loginUrl).catch(() => {});
+
+    const readBduss = async () => {
+      const list = await ses.cookies.get({ domain: ".baidu.com" }).catch(() => []);
+      return list.find((c) => c.name === "BDUSS" && c.value) || null;
+    };
+    const deadline = Date.now() + 5 * 60 * 1000;   // 给足 5 分钟，别催用户
+    let hit = null;
+    while (Date.now() < deadline) {
+      if (win.isDestroyed()) break;
+      hit = await readBduss();
+      if (hit) break;
+      // 也扫一遍 zhidao 域（百度知道登录后 BDUSS 会落在 .baidu.com，这里只是兜底）
+      const zd = await ses.cookies.get({ domain: "zhidao.baidu.com" }).catch(() => []);
+      hit = zd.find((c) => c.name === "BDUSS" && c.value) || null;
+      if (hit) break;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    const all = await ses.cookies.get({}).catch(() => []);
+    const pick = (n) => (all.find((c) => c.name === n && c.value) || {}).value || "";
+    const bduss = pick("BDUSS");
+    const stoken = pick("STOKEN");
+    if (!win.isDestroyed()) win.destroy();
+    if (!bduss) return { ok: false, reason: "没有检测到登录（窗口已关闭或超时）。请重新点「登录并提取」，在窗口里完成登录。" };
+    return { ok: true, bduss, stoken };
+  });
+
   ipcMain.handle("netdisk:accounts:extract-from-window", async (_e, p) => {
     const env = String(p && p.bitEnv || "").trim();
     if (!env) throw new Error("请填写比特窗口名");
