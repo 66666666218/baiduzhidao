@@ -216,10 +216,13 @@ async function crawlSearchResources({
         if (limit && rows.length >= limit) break;
         const { usable, truncated } = splitByShareCode(extractPanLinks(`${item.title}\n${item.snippet}`));
         stats.truncated += truncated;
-        for (const { link, pwd } of usable) {
+        for (const { link, pwd, pwdMissing } of usable) {
           if (seenLinks.has(link)) continue;
           seenLinks.add(link);
-          rows.push({ name: item.title, link, pwd, questionUrl: item.questionUrl, source: `搜索:${keyword}` });
+          // 把"提到了码但没解析出来"这件事一路带下去：只在本行失败时留个记号，
+          // 结果是"搜完就报一次总数"，用户能提前回表补码，而不是转存时才一条条撞。
+          if (pwdMissing) stats.pwdMissing = (stats.pwdMissing || 0) + 1;
+          rows.push({ name: item.title, link, pwd, pwdMissing: Boolean(pwdMissing), questionUrl: item.questionUrl, source: `搜索:${keyword}` });
           stats.linked += 1;
         }
       }

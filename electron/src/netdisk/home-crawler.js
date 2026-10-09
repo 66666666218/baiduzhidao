@@ -34,10 +34,28 @@ function extractPanLinks(text) {
     const url = `https://pan.baidu.com/s/${m[1]}`;
     if (seen.has(url)) continue;
     seen.add(url);
-    // 在链接附近 120 字符窗口内找提取码（pwd=xxxx / 提取码：xxxx / 密码 xxxx）
-    const around = s.slice(Math.max(0, m.index - 60), m.index + m[0].length + 120);
-    const pwd = (around.match(/pwd[=:：\s]*([0-9a-zA-Z]{4})/i) || around.match(/(?:提取码|密码|访问码)[:：\s]*([0-9a-zA-Z]{4})/i) || [])[1] || "";
-    links.push({ link: url, pwd });
+    // 在链接附近找提取码（pwd=xxxx / 提取码：xxxx / 密码 xxxx）。
+    //
+    // 窗口原来只有「前 60 / 后 120」，而答主常把码写在链接**后面隔一段**的地方
+    //（或先写一段说明再给码），于是解析不出来。真机现场：搜到的 10 条里有 1 条提取码为空，
+    // 而那是一条**确实需要提取码**的分享 —— 这一行注定在转存时失败，且当时完全没提示。
+    // 现在把窗口放宽到 前 80 / 后 300，并把关键词扩到「提取码/提取密码/访问码/访问密码/密码/pwd」。
+    // 放宽的代价只是**可能多抓到一个错的码**，而错的码和没有码一样都会在 verify 阶段被拒
+    //（不会静默转错东西），所以这个方向是安全的。
+    const around = s.slice(Math.max(0, m.index - 80), m.index + m[0].length + 300);
+    const pwdRe = [
+      /pwd[=:：\s]*([0-9a-zA-Z]{4})/i,
+      /(?:提取码|提取密码|访问码|访问密码|密码|口令)[:：\s]*([0-9a-zA-Z]{4})/i,
+    ];
+    let pwd = "";
+    for (const re2 of pwdRe) {
+      const hit = around.match(re2);
+      if (hit) { pwd = hit[1]; break; }
+    }
+    // 提到了"码"却没抓到：说明多半有码、是我们没解析出来。
+    // **必须标出来**——否则这一行会一路走到转存才失败，而失败原因看不出是缺码。
+    const mentionsPwd = /(?:提取码|提取密码|访问码|访问密码|密码|口令|pwd)/i.test(around);
+    links.push({ link: url, pwd, pwdMissing: !pwd && mentionsPwd });
   }
   return links;
 }

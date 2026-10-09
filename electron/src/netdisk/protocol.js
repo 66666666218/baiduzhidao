@@ -91,6 +91,12 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   });
   const vBody = await vResp.json().catch(() => ({}));
   if (vBody.errno === -65 || vBody.errno === -62 || vBody.errno === -70) throw Object.assign(new Error(`verify风控 errno=${vBody.errno}`), { risk: true });
+  // 提取码为空 + verify 被拒 → 几乎一定是"这条分享需要码而我们没有"。
+  // 光报 `verify errno=xxx` 用户看不出该干什么；直接告诉他去哪补。
+  if (vBody.errno !== 0 && !String(pwd || "").trim()) {
+    throw new Error(`verify errno=${vBody.errno} —— 这条的「提取码」是空的，而分享需要提取码。`
+      + "请回资源表把该行的提取码补上（或删掉这一行）再跑；已转存的不会重复。");
+  }
   if (vBody.errno !== 0 || !vBody.randsk) throw new Error(`verify errno=${vBody.errno}`);
 
   // 2) 分享页 → mset

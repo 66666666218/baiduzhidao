@@ -344,3 +344,42 @@ test("兜底有效时不误报告警", async () => {
   assert.ok(r.rows.length > 0, "兜底取到了链接");
   assert.doesNotMatch(logs.join("\n"), /一条链接都没取到/, "正常工作不能误报告警");
 });
+
+// ---------- 提取码解析：窗口太窄会**静默丢码**（2026-10-10 真机现场） ----------
+
+test("提取码：写在链接后面较远处也要能抓到", () => {
+  // 真机现场：搜到的 10 条里有 1 条提取码为空，而那是一条**确实需要提取码**的分享
+  //（抓页面确认过标题就是"请输入提取码"）—— 这一行注定转存失败，且当时毫无提示。
+  // 原因是解析窗口只有「链接后 120 字符」，答主把码写在 150 字符后就丢了。
+  const far = `链接：https://pan.baidu.com/s/1abcdefghij${" ".repeat(150)}提取码：ab12`;
+  const r = extractPanLinks(far);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].pwd, "ab12", "150 字符外的码也该抓到");
+  assert.equal(r[0].pwdMissing, false, "抓到了就不该标成缺码");
+});
+
+test("提取码：常见写法都要认（提取码/提取密码/访问码/访问密码/密码/口令/pwd）", () => {
+  const link = "https://pan.baidu.com/s/1abcdefghij";
+  for (const [text, want] of [
+    [`${link} 提取码：ab12`, "ab12"],
+    [`${link} 提取密码 cd34`, "cd34"],
+    [`${link} 访问码:ef56`, "ef56"],
+    [`${link} 访问密码 gh78`, "gh78"],
+    [`${link} 密码 ij90`, "ij90"],
+    [`${link} 口令 kl12`, "kl12"],
+    [`${link}?pwd=mn34`, "mn34"],
+  ]) {
+    assert.equal(extractPanLinks(text)[0].pwd, want, `「${text.slice(-14)}」应解析出 ${want}`);
+  }
+});
+
+test("提取码：提到了码却没抓到 → 必须标 pwdMissing（否则会一路走到转存才失败）", () => {
+  const link = "https://pan.baidu.com/s/1abcdefghij";
+  assert.equal(extractPanLinks(`${link} 提取码请私信我`)[0].pwdMissing, true, "提了没抓到要标记");
+  assert.equal(extractPanLinks(`${link} 资源很清晰`)[0].pwdMissing, false, "压根没提码就不该标");
+});
+
+test("提取码：抓不到时也不能编一个出来（宁可空着，等 verify 去拒）", () => {
+  const r = extractPanLinks("https://pan.baidu.com/s/1abcdefghij 提取码：请私信");
+  assert.equal(r[0].pwd, "", "解析不出就必须留空，不能瞎猜");
+});

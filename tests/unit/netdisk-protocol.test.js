@@ -97,3 +97,25 @@ test("processOne：verify 返回风控码时标记 risk（供上层全局暂停�
     );
   });
 });
+
+test("processOne：提取码为空且 verify 被拒 → 报错要指向「去补提取码」，而不是只丢一个 errno", async () => {
+  // 真机现场：搜到的一条资源提取码为空，而那条分享确实需要码 —— 转存时只报
+  // `verify errno=-9`，用户完全不知道该干什么。现在直接告诉他去哪儿补。
+  const jar = new protocol.Jar("B", "");
+  await withFetch(async () => fakeResponse({ errno: -9 }), async () => {
+    await assert.rejects(
+      () => protocol.processOne(jar, { link: "https://pan.baidu.com/s/1abcdefghij", pwd: "", destDir: "/x" }),
+      (err) => /提取码/.test(err.message) && /补上|删掉/.test(err.message)
+    );
+  });
+});
+
+test("processOne：有提取码时 verify 被拒仍走原来的错误（不要把所有失败都说成缺码）", async () => {
+  const jar = new protocol.Jar("B", "");
+  await withFetch(async () => fakeResponse({ errno: -9 }), async () => {
+    await assert.rejects(
+      () => protocol.processOne(jar, { link: "https://pan.baidu.com/s/1abcdefghij", pwd: "ab12", destDir: "/x" }),
+      (err) => /verify errno=-9/.test(err.message) && !/提取码」是空的/.test(err.message)
+    );
+  });
+});
