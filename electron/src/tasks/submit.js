@@ -135,6 +135,24 @@ async function runSubmitTask(ctx, deps) {
   log(`提交逻辑：每账号提交 ${accountDailyLimit > 0 ? accountDailyLimit : "不限"} 条后轮换；打开题目链接、填入回答、点击提交。`);
 
   await browserPool.adapter.checkConnection();
+
+  // 被动探针：记录"提交回答"真实发出的写请求，为提交纯协议化提供依据。
+  // 过滤掉打点/统计类噪声，只留 zhidao 域的 POST/PUT，并把 postData 开头一并留下
+  //（里面能看到接口路径和必填字段名）。零额外成本 —— 每次提交顺手留证据。
+  const sniffSubmit = (page) => {
+    page.on("request", (req) => {
+      const url = req.url();
+      if (!/zhidao[.]baidu[.]com/.test(url)) return;
+      if (req.method() !== "POST" && req.method() !== "PUT") return;
+      if (/[\/](log|report|abdr|track|stats|monitor)/i.test(url)) return;
+      log(`【提交请求形态】${req.method()} ${url.split("?")[0]}`);
+      const h = req.headers() || {};
+      const keep = ["content-type", "referer", "origin", "x-requested-with", "tbs", "token"];
+      log(`  headers: ${keep.map((k) => k + "=" + String(h[k] || "-").slice(0, 110)).join(" | ")}`);
+      log(`  cookieLen: ${String(h.cookie || "").length}（只记长度）`);
+      log(`  postData: ${String(req.postData() || "").slice(0, 500).replace(/[\r\n]+/g, " ")}`);
+    });
+  };
   let successCount = 0;
   let failCount = 0;
   let processed = 0;
@@ -151,6 +169,7 @@ async function runSubmitTask(ctx, deps) {
       browser = await chromium.connectOverCDP(handle.cdpUrl);
       const context = browser.contexts()[0] || (await browser.newContext());
       const page = await getWorkPage(context);
+      sniffSubmit(page);
       page.setDefaultTimeout(config.timeoutMs);
       page.setDefaultNavigationTimeout(config.timeoutMs);
 
