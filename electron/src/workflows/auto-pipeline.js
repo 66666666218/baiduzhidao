@@ -54,8 +54,11 @@ function summarizeStage(name, result) {
       return `提交成功 ${num(r.count)} 条${num(r.failed) ? `，失败 ${num(r.failed)} 条` : ""}`;
     case "checkPermission": {
       const accounts = Array.isArray(r.accounts) ? r.accounts : [];
-      const allowed = accounts.filter((a) => a && a.hasPermission !== false).length;
-      return accounts.length ? `可用上传账号 ${allowed}/${accounts.length} 个` : "";
+      if (!accounts.length) return "";
+      // 与权益门同一口径：无权益、或**额度为 0**的都不算可用（额度 0 上去必然失败）
+      const usable = accounts.filter((a) => a && a.hasPermission !== false && a.remainingQuota !== 0).length;
+      const noQuota = accounts.filter((a) => a && a.remainingQuota === 0).length;
+      return `可用上传账号 ${usable}/${accounts.length} 个${noQuota ? `（其中 ${noQuota} 个剩余额度为 0）` : ""}`;
     }
     case "search":
       return `搜到 ${num(r.count)} 条资源`;
@@ -303,8 +306,22 @@ function createAutoPipeline(deps) {
           // 查询抛错），它们在"有没有批量发布权益"这件事上都是**未知**，不是"没有"。
           // 以前写成 `a.ok && a.hasPermission !== false`，等于把"未知"一律当成"没有"，
           // 从没上传过的新账号和查询报错的账号全被判「没有权益」，网盘链整段跳过。
-          const allowed = checked.accounts.filter((a) => a.hasPermission !== false).map((a) => a.envLabel);
-          const denied = uploadEnvsConfigured.filter((e) => !allowed.includes(e));
+          //
+          // 但**额度为 0 必须拦**：上传要扣额度，额度 0 的号上去必然失败。
+          // 2026-10-10 真机实测：测试组2 剩余额度就是 0，而权益门只看 hasPermission（它是 null，
+          // 从没上传过）→ 照样放行。那一次是我人工先看了额度、手动把它排除才没出事。
+          // 注意只拦"明确查到是 0"，`null`（没查到）仍然放行 —— 与上面同一条原则。
+          const noQuota = checked.accounts
+            .filter((a) => a && a.remainingQuota === 0)
+            .map((a) => a.envLabel);
+          if (noQuota.length) {
+            emit("task:log", `⚠️ 这些上传账号**剩余额度为 0**，上传会直接失败，已从上传账号里去掉：${noQuota.join("、")}`
+              + `（额度来自答主工作台；若刚上传过、额度是扣完的状态，明天再来或换号）`);
+          }
+          const allowed = checked.accounts
+            .filter((a) => a.hasPermission !== false && a.remainingQuota !== 0)
+            .map((a) => a.envLabel);
+          const denied = uploadEnvsConfigured.filter((e) => !allowed.includes(e) && !noQuota.includes(e));
           if (denied.length) emit("task:log", `⚠️ 这些上传账号没有「批量发布权益」或未登录，上传阶段会跳过：${denied.join("、")}`);
           uploadEnvs = allowed;
         }

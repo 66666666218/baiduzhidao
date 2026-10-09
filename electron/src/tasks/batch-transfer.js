@@ -105,7 +105,7 @@ async function runBatchTransferTask(ctx, deps) {
   // 取各账号的网盘凭证。**优先用「账号凭证」里存好的 Cookie —— 存过就完全不开窗口**。
   // 转存之后的全程本来就不碰浏览器（纯 HTTP 协议），所以只要凭据能拿到，
   // 整条网盘链可以做到零窗口 —— 内存紧张的机器尤其需要这一点。
-  const { credentialOf } = require("../netdisk/manager");
+  const { credentialOf, quota: netdiskQuota } = require("../netdisk/manager");
   const creds = []; // {env, bduss, stoken}
   for (const env of envList) {
     let bd = "", st = "";
@@ -131,6 +131,27 @@ async function runBatchTransferTask(ctx, deps) {
   const bduss = creds[0].bduss;   // 兼容旧引用（分享创建用首个窗口凭证）
   const stoken = creds[0].stoken;
   log(`多账号就绪：${creds.length} 个窗口 —— 全程纯协议批量轮换`);
+
+  // 转存前先把各账号的网盘剩余空间打出来。**只提示、不拦**：
+  // 盘满时下面本来就有"容量不足 → 停止本轮"的 fatal 分支，硬拦反而会误杀
+  // "只剩几 GB 但还能传几条小文件"的情况。
+  // 2026-10-10 真机实测：两个号一个是 505GB 全满、一个是 5.2TB 空着 ——
+  // 那次是靠人工先看了 quota 才把满盘那个排除在转存账号之外的。
+  // 提前把数字说出来，用户就能在跑之前判断"这次大概能传几条"，而不是跑一半才发现。
+  for (const c of creds) {
+    try {
+      const q = await netdiskQuota(c);
+      if (q && q.valid) {
+        log(`网盘空间：${c.env} 剩余 ${q.freeGB}GB / 总 ${q.totalGB}GB`);
+        if (q.freeGB <= 5) {
+          log(`⚠️ ${c.env} 的网盘快满了（剩余 ${q.freeGB}GB）—— 影视类资源常见 2GB/条，`
+            + `可能传不了几条就会触发「容量不足」并停止本轮（已转存的不会丢，可换号或清理空间后续传）。`);
+        }
+      }
+    } catch (e) {
+      log(`（查 ${c.env} 的网盘空间失败，不影响转存：${e.message}）`);
+    }
+  }
 
   // 断点状态
   const baseName = path.basename(filePath).replace(/\.(xlsx|txt)$/i, "").slice(0, 40);

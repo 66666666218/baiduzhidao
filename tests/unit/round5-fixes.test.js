@@ -216,3 +216,55 @@ test("分享页重试的退避必须够长（1s/2s 会全都撞在限流窗口�
   assert.ok(delays[0] >= 2000, `第一次退避 ${delays[0]}ms 太短（真机实测 1s 不足以躲开限流）`);
   assert.ok(delays[delays.length - 1] >= 10000, `最后一次退避 ${delays[delays.length - 1]}ms 太短`);
 });
+
+test("权益门：剩余额度为 0 的号必须被剔除（真机实测：额度 0 的号照样放行，上去必然失败）", async () => {
+  const { createAutoPipeline } = require("../../electron/src/workflows/auto-pipeline");
+  const { resolveNetdiskRoles } = require("../../electron/src/domain/account-topic");
+  const logs = [];
+  const calls = [];
+  const payloads = {};
+  const settings = { bitEnvs: ["A", "B"], accountTopics: {}, topicRules: "", searchKeywords: "影视=电影 网盘" };
+  const pipeline = createAutoPipeline({
+    config: { load: () => settings },
+    startTask: async (name, payload) => {
+      calls.push(name); payloads[name] = payload;
+      if (name === "check-published") {
+        return { accounts: [
+          { envLabel: "A", ok: true, hasPermission: true, remainingQuota: 0 },      // 权益有、额度 0
+          { envLabel: "B", ok: true, hasPermission: true, remainingQuota: 500 },
+          { envLabel: "C", ok: false, hasPermission: null, remainingQuota: null },  // 查不到 → 按放行
+        ] };
+      }
+      return {};
+    },
+    taskDeps: () => ({}),
+    pickQuestions: async () => ({ canceled: false, filePath: "/tmp/x.xlsx" }),
+    emit: (_c, m) => logs.push(String(m)),
+    pulse: () => {},
+    dataDir: "/tmp",
+    taskRunners: new Proxy({}, { get: () => async () => ({}) }),
+    CATEGORIES: ["情感类"],
+    excel: { readTableRows: () => [], importRowToAnswer: (r) => r, answerToRow: (r) => r, ANSWER_HEADERS: [] },
+    fs: { existsSync: () => true },
+    path,
+    resolveNetdiskRoles,
+  });
+  settings.bitEnvs = ["A", "B", "C"];
+  await pipeline.run({ stages: ["upload"], uploadTablePath: "/tmp/表.xlsx" });
+
+  const used = payloads["upload-by-topic"].bitEnvs;
+  assert.ok(!used.includes("A"), `额度为 0 的 A 不该被派去上传，实际：${JSON.stringify(used)}`);
+  assert.deepEqual(used.sort(), ["B", "C"], "有额度的 B、以及「查不到额度」的 C 都应保留");
+  assert.match(logs.join("\n"), /剩余额度为 0/, "要说清为什么剔掉它");
+});
+
+test("权益门摘要：可用账号数要与判定口径一致（额度 0 的不算可用）", () => {
+  const { summarizeStage } = require("../../electron/src/workflows/auto-pipeline");
+  const text = summarizeStage("checkPermission", { accounts: [
+    { envLabel: "A", hasPermission: true, remainingQuota: 0 },
+    { envLabel: "B", hasPermission: true, remainingQuota: 9 },
+    { envLabel: "C", hasPermission: null, remainingQuota: null },
+  ] });
+  assert.match(text, /可用上传账号 2\/3 个/, `口径应与权益门一致，实际：${text}`);
+  assert.match(text, /1 个剩余额度为 0/);
+});
