@@ -145,7 +145,10 @@ function normalizeSettings(payload) {
   next.verifyWaitSeconds = clampInt(next.verifyWaitSeconds, 0, 120, DEFAULTS.verifyWaitSeconds);
   next.delayMin = clampInt(next.delayMin, 0, 600, DEFAULTS.delayMin);
   next.delayMax = clampInt(next.delayMax, next.delayMin, 3600, Math.max(next.delayMin, DEFAULTS.delayMax));
-  next.maxQuestions = clampInt(next.maxQuestions, 1, 100000, DEFAULTS.maxQuestions);
+  // 下限必须是 0：「0 = 不限」是界面上写着的、也是 crawl.js 判定的口径（`maxQuestions > 0` 才算上限）。
+  // 以前卡在 1，用户在「任务总量上限」里填 0 想要不限，实际变成"每个分类只爬 1 道题" ——
+  // 而且**不报错、看不出来**，只有对着日志里那句"已达任务总量上限 1 道题"才发现。
+  next.maxQuestions = clampInt(next.maxQuestions, 0, 100000, DEFAULTS.maxQuestions);
   next.startPage = clampInt(next.startPage, 1, 100000, DEFAULTS.startPage);
   next.crawlStartPage = clampInt(next.crawlStartPage, 1, 100000, DEFAULTS.crawlStartPage);
   next.randomCount = clampInt(next.randomCount, 1, 100000, DEFAULTS.randomCount);

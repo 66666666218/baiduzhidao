@@ -59,6 +59,11 @@ echo "→ 单元测试"
 npm test || { echo "❌ 单元测试未通过，终止发版"; exit 1; }
 echo "→ 冒烟自检（渲染端加载 + 点遍所有按钮）"
 npm run smoke || { echo "❌ 冒烟自检未通过，终止发版"; exit 1; }
+# 端到端（mock 站 + 无头 Edge）：单测与冒烟都覆盖不到"模块之间接得上吗"——
+# 典型是编排器拼出来的 payload 任务吃不吃得下（generate 漏传 filePath 就是这么漏的）。
+# 代价是几分钟，但发出去的是要无人值守跑一整晚的东西，这个时间值得花。
+echo "→ 端到端（mock 站，约 5~6 分钟）"
+npm run test:e2e || { echo "❌ 端到端未通过，终止发版"; exit 1; }
 
 # 2) 打包（electron-builder 依 package.json version 产出 exe + latest.yml）
 npm run dist
