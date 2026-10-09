@@ -231,6 +231,37 @@ async function runTopicUploadTask(ctx, deps) {
   if (!rows.length) throw new Error("表格为空");
   const keys = Object.keys(rows[0]);
   const titleKey = pickTitleKey(keys);
+  const answerKey = keys.find((k) => /回答内容|答案/.test(String(k))) || "";
+  let preflightStats = null;
+
+  // 提交前体检：审核是异步的（提交后要等平台几小时到一天），等发现被拒额度和账号已经搭进去了。
+  // 这里把已摸清的确定性规则前置——标题残渣/超长/空 img/裸链接当场修，救不了的拦下来。
+  const { inspectRows } = require("../quality/preflight");
+  if (titleKey && answerKey) {
+    const work = rows.map((row) => ({
+      源行: row,
+      title: String(row[titleKey] || ""),
+      answer: String(row[answerKey] || ""),
+      link: (String(row[answerKey] || "").match(/https?:\/\/pan\.baidu\.com\/s\/[\w-]+/i) || [])[0] || "",
+    }));
+    const verdict = inspectRows(work);
+    preflightStats = verdict.stats;
+    for (const item of verdict.kept) {
+      item.源行[titleKey] = item.title;
+      item.源行[answerKey] = item.answer;
+    }
+    if (verdict.stats.total) {
+      log(`提交前体检：${verdict.stats.total} 行 → 放行 ${verdict.stats.kept} 行`
+        + `（自动修好 ${verdict.fixed} 行，建议重生成 ${verdict.retry} 行，拦下 ${verdict.stats.dropped} 行）`);
+      for (const item of verdict.stats.reasons) log(`  · 拦下原因：${item.reason} —— ${item.count} 行`);
+      if (!verdict.kept.length) {
+        log("⚠️ 体检后没有一行能提交，本次结束（先修模板/数据再跑）。");
+        return { uploaded: 0, batches: 0, accounts: [], preflight: verdict.stats };
+      }
+      rows.length = 0;
+      rows.push(...verdict.kept.map((item) => item.源行));
+    }
+  }
 
   const rules = parseTopicRules(payload.topicRules || DEFAULT_TOPIC_RULES);
   if (!rules.length) throw new Error("分类规则为空，无法按题材拆分上传表（请到设置页填写）。");
@@ -315,6 +346,7 @@ async function runTopicUploadTask(ctx, deps) {
     uploaded,
     batches: 0,
     accounts: results,
+    preflight: preflightStats,
     splitDir,
     topicTables: Array.from(topicFileOf.entries()).map(([topic, file]) => ({ topic, file })),
   };
