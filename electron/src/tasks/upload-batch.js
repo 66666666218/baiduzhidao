@@ -13,7 +13,7 @@ const path = require("path");
 const fs = require("fs");
 const { chromium } = require("playwright-core");
 const { parseTopicRules, classifyByRules, DEFAULT_TOPIC_RULES } = require("../domain/topic-rules");
-const { buildTopicAllocation, topicKey } = require("../domain/account-topic");
+const { buildTopicAllocation, topicKey, runWithConcurrency, accountConcurrencyOf } = require("../domain/account-topic");
 const excel = require("../storage/excel");
 
 const http = require("../zhidao/http");
@@ -424,12 +424,17 @@ async function runTopicUploadTask(ctx, deps) {
   const results = [];
   let uploaded = 0;
 
-  for (const slot of slots) {
+  const concurrency = accountConcurrencyOf(deps.config);
+  if (concurrency > 1) {
+    log(`⚠️ 账号并发已开启：同时上传 ${concurrency} 个账号。请确保各账号出口 IP 不同 —— 同一 IP 并发提交多份表更容易被判批量。`);
+    log("   另外每个账号用的都是自己的题材分表（不共享文件），这一层是安全的。");
+  }
+  await runWithConcurrency(slots, concurrency, async (slot) => {
     if (ctx.shouldStop()) {
       log("收到停止信号，未开始的账号不再上传。");
-      break;
+      return;
     }
-    if (!slot.rows.length) continue;
+    if (!slot.rows.length) return;
     // 一个题材只对应一个账号时，直接把题材分表传上去；同题材多账号才再切一次
     const topicFile = topicFileOf.get(slot.topic);
     const sameTopicAccounts = slots.filter((s) => s.rows.length && topicKey(s.topic) === topicKey(slot.topic));
@@ -453,7 +458,7 @@ async function runTopicUploadTask(ctx, deps) {
       // 题材分表是产物要留着；只有临时切片才清
       if (isTemp) fs.rmSync(partFile, { force: true });
     }
-  }
+  });
 
   ctx.report({ done: 1, total: 1, status: ctx.shouldStop() ? "stopped" : "done" });
   log(`=== 题材路由上传完成：共 ${uploaded} 行，涉及 ${results.length} 个账号 ===`);

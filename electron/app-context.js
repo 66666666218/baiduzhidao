@@ -72,9 +72,9 @@ const llm = new LlmClient({
 // 浏览器引擎由设置决定：默认 "bit"（指纹浏览器，一环境一指纹）。
 // 选 "headless" 才用系统 Edge —— 省内存，但**所有账号共用同一份指纹**，
 // 隔离性下降，多账号运营需自行权衡（设置页有明确说明）。
-const browserMode = String(config.load().browserMode || "bit") === "headless" ? "headless" : "bit";
+// 传函数而不是取值：用户在设置页改了「运行模式」应立即生效，不该要求重启软件。
 const browserPool = new BrowserPool(createAdapter({ apiUrl: config.load().apiUrl }), {
-  mode: browserMode,
+  mode: () => (String(config.load().browserMode || "bit") === "headless" ? "headless" : "bit"),
   credentialOf: (envLabel) => {
     try {
       const { credentialOf: pick } = require("./src/netdisk/manager");

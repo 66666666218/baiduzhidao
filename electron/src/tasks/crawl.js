@@ -50,6 +50,9 @@ async function runCrawlTask(ctx, deps) {
   // 以前这句无条件执行，于是"纯协议模式"仍然隐含"比特客户端必须开着"——
   // 用户按界面说的把比特关掉，第一步就失败，而错误只说"请先打开比特浏览器"。
 
+  // **爬题故意不加账号并发**（其他任务都有）：题目列表接口返回的是"这个分类下的题"，
+  // 与用哪个账号问无关 —— N 个账号并发爬只会拿到 N 份一样的列表，全部撞去重，
+  // 反而徒增请求量。多账号在这里的正确用法是**兜底**：第一个账号拿不到就换下一个。
   for (const envLabel of bitEnvs) {
     if (ctx.shouldStop()) break;
     let browser = null;
@@ -175,6 +178,11 @@ async function runCrawlTask(ctx, deps) {
           }
           const opened = await zhidao.openNextQuestion(page, seenKeys, { onLog: log });
           if (!opened) break;
+          // 打开的同时立刻占位，中间不夹任何 await：openNextQuestion 靠 seenKeys 挑卡，
+          // 而它内部有 await；若等到读完标题才 add，另一个 worker 会在这段时间里重复点开同一张卡。
+          // 这里先用列表标题占位（确定值），拿到真实标题后再补一份（题目页标题与列表标题
+          // 未必逐字相同，两个都记才拦得住同一题被两条路径各抓一次）。
+          if (opened.listTitle) seenKeys.add(zhidao.listKey(opened.listTitle));
           const questionPage = opened.questionPage;
           questionPage.setDefaultTimeout(config.timeoutMs);
           questionPage.setDefaultNavigationTimeout(config.timeoutMs);

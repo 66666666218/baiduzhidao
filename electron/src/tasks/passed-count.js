@@ -3,6 +3,7 @@
 const { chromium } = require("playwright-core");
 const zhidao = require("../pages/zhidao");
 const { getWorkPage } = require("./crawl");
+const { runWithConcurrency, accountConcurrencyOf } = require("../domain/account-topic");
 
 const http = require("../zhidao/http");
 const PROGRESS_API = "/qa/api/activity/anniversary21/answer-progress";
@@ -30,7 +31,8 @@ async function fetchProgressByProtocol(cookie, { fetchImpl, timeoutMs = 12000, d
 
 /**
  * 读取每个账号在活动页的“当天答题通过数”。
- * 逐个打开环境，滚动到账号进度区并解析 "x/y" 文本。
+ * 存过 Cookie 的直接问接口；否则逐个打开环境，滚动到账号进度区并解析 "x/y" 文本。
+ * 账号之间按「账号并发」设置并行（纯协议取数基本不占资源）。
  */
 async function runPassedCountTask(ctx, deps) {
   ctx.report({ done: 0, total: 1, status: "running" });
@@ -40,11 +42,15 @@ async function runPassedCountTask(ctx, deps) {
   if (!bitEnvs.length) throw new Error("请先填写至少一个比特浏览器环境名称。");
 
   // 只在真要开窗口时才检查比特（真正的检查在下面的窗口分支里）
-  const accounts = [];
-  let browser = null;
+  // 读进度大多是纯 HTTP GET（不开窗口），并发成本很低；仍按统一的「账号并发」设置走。
+  // 结果按**下标回填**而不是 push：并发下完成顺序是乱的，直接 push 会让界面里的账号顺序每次都变。
+  const collected = new Array(bitEnvs.length).fill(null);
+  const concurrency = accountConcurrencyOf(config);
 
-  for (const envLabel of bitEnvs) {
-    if (ctx.shouldStop()) break;
+  await runWithConcurrency(bitEnvs.map((label, index) => ({ label, index })), concurrency, async ({ label: envLabel, index }) => {
+    if (ctx.shouldStop()) return;
+    // browser 必须是**每个账号各自一个**：并发时共享同一个变量会互相覆盖、重复关闭别人的连接
+    let browser = null;
     try {
       log(`读取 ${envLabel} 的当天通过数...`);
       // ★ 纯协议优先：存过 Cookie 就直接问接口，不开窗口。
@@ -66,9 +72,9 @@ async function runPassedCountTask(ctx, deps) {
             source: "protocol",
             raw: [],
           };
-          accounts.push(account);
+          collected[index] = account;
           log(`【纯协议】${envLabel}：${got.total > 0 ? `${got.done}/${got.total}` : `已通过 ${got.done} 条`}`);
-          continue;
+          return;
         }
         log(`${envLabel} 纯协议取数失败（${got.reason}），回落到窗口`);
       }
@@ -97,18 +103,19 @@ async function runPassedCountTask(ctx, deps) {
         format: best ? "quota" : answeredOnly ? "answered-only" : "none",
         raw: rows.slice(0, 5),
       };
-      accounts.push(account);
+      collected[index] = account;
       log(`${envLabel}：${account.status === "completed" ? "已全部解锁" : best ? `${best.done}/${best.total}` : "未识别到进度文本"}`);
     } catch (error) {
-      accounts.push({ bitEnv: envLabel, status: "error", error: error.message });
+      collected[index] = { bitEnv: envLabel, status: "error", error: error.message };
       log(`读取 ${envLabel} 失败：${error.message}`);
     } finally {
       await browser?.close?.().catch(() => {});
       browser = null;
       await browserPool.release(envLabel, { close: config.closeAfter });
     }
-  }
+  });
 
+  const accounts = collected.filter(Boolean);
   ctx.report({ done: 1, total: 1, status: "done" });
   return { stopped: ctx.shouldStop(), accounts };
 }

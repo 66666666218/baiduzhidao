@@ -731,6 +731,7 @@ async function saveSettingsQuiet() {
   patch.linkRouting = $("linkRouting").value;
   patch.topicRules = $("topicRules").value; // 上传侧分类规则，由后端解析
   patch.accountProxies = $("accountProxies").value; // 纯协议模式：每账号出口代理
+  patch.accountConcurrency = Number($("accountConcurrency").value) || 1; // 账号并发（1=顺序）
   patch.searchKeywords = $("searchKeywords").value; // 搜资源：按题材的搜索词
   patch.searchPages = Number($("searchPages").value) || 1;
   patch.category = $("category").value;
@@ -766,6 +767,7 @@ async function loadSettings() {
   $("browserMode").value = ["protocol", "bit", "headless"].includes(settings.browserMode) ? settings.browserMode : "protocol";
   if ($("autoRunMode")) { $("autoRunMode").value = $("browserMode").value; updateRunModeHint(); }
   $("accountProxies").value = settings.accountProxies || "";
+  $("accountConcurrency").value = Number(settings.accountConcurrency) || 1;
   $("autoTransferEnvs").value = (settings.transferEnvs || []).map((env) => env.label || env).join("\n");
   $("autoUploadEnvs").value = (settings.uploadEnvs || []).map((env) => env.label || env).join("\n");
   $("accountTopics").value = Object.entries(settings.accountTopics || {}).map(([account, topic]) => `${account}=${topic}`).join("\n");

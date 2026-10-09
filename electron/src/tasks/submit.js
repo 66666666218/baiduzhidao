@@ -5,7 +5,7 @@ const protocolSubmit = require("../zhidao/protocol-submit");
 const zhidao = require("../pages/zhidao");
 const { nowText } = require("../config");
 const { getWorkPage } = require("./crawl");
-const { buildAllocation } = require("../domain/account-topic");
+const { buildAllocation, runWithConcurrency, accountConcurrencyOf } = require("../domain/account-topic");
 const { describeError } = require("../errors");
 const excel = require("../storage/excel");
 
@@ -20,6 +20,10 @@ async function runSubmitTask(ctx, deps) {
   const filePath = String(ctx.payload.filePath || "").trim().replace(/^"|"$/g, "");
   let lastWriteAt = 0;
   const pendingWriteBack = new Map(); // url -> {submittedAt, confirmed}
+  // 写回表格 = "读整个 xlsx → 改状态列 → 写回去"。开了账号并发后，两个 worker 可能
+  // **同时**通过那个 5 秒节流（判断与写入之间夹着 await），一起改同一个文件 → 表格损坏。
+  // 用一条 Promise 链把落盘串起来：同一时刻只有一个写回在跑。
+  let writeBackChain = Promise.resolve();
   const forceResubmit = Boolean(ctx.payload.forceResubmit);
   const allRows = (Array.isArray(ctx.payload.results) ? ctx.payload.results : [])
     .filter((row) => row && row.questionUrl && String(row.answer || "").trim());
@@ -175,8 +179,18 @@ async function runSubmitTask(ctx, deps) {
   const failStreakByEnv = {};   // envLabel -> 连续失败次数
   const FAIL_STREAK_LIMIT = 3;  // 连续失败到这个数就标记账号需人工检查
 
-  for (const slot of allocation) {
-    if (ctx.shouldStop() || !slot.rows.length) continue;
+  // ★ 账号并发：多个账号同时跑。默认 1（顺序执行），用户可在设置页调高。
+  // 开并发前的两个前提已经在本文件里收拢了：写回表格加锁（writeBackStatus 队列）、
+  // 各计数都是单线程内同步自增 —— 否则并发会直接把表格写坏。
+  const concurrency = accountConcurrencyOf(config);
+  if (concurrency > 1) {
+    log(`⚠️ 账号并发已开启：同时跑 ${concurrency} 个账号。`);
+    log("   请确认：① 每个账号有不同的出口 IP（在「账号凭证」页填「账号代理」）；同一个 IP 并发多个号，风控概率显著上升。");
+    log("   ② 若用比特模式，需要把这些账号的比特窗口都留着并保证内存够；纯协议模式不占窗口。");
+    log("   ③ 稳妥做法是先跑 2 个账号看一天，没问题再加。");
+  }
+  await runWithConcurrency(allocation, concurrency, async (slot) => {
+    if (ctx.shouldStop() || !slot.rows.length) return;
     const envLabel = slot.envLabel;
     let browser = null;
     try {
@@ -222,7 +236,7 @@ async function runSubmitTask(ctx, deps) {
             }
             await new Promise((res) => setTimeout(res, 800 + Math.random() * 700));
           }
-          continue;
+          return;
         }
         log(`纯协议不可用（${tk.reason}），本账号回落到窗口`);
       }
@@ -313,9 +327,9 @@ async function runSubmitTask(ctx, deps) {
     if (ctx.shouldStop() === false) {
       await ctx.delay(config.delayMin, config.delayMax, "账号切换间隔");
     }
-  }
+  });
 
-  writeBackStatus(null, true);
+  await writeBackStatus(null, true);   // 等队列排空，确保最后一次落盘真的写完
 
   const stopped = ctx.shouldStop();
   ctx.report({ done: successCount + failCount, total: totalPlanned, status: stopped ? "stopped" : "done" });
@@ -324,11 +338,18 @@ async function runSubmitTask(ctx, deps) {
 
   /** 把提交状态写回来源表格（累积所有已提交行 + 节流 + 结束强制），保证"跳过已提交"读到最新状态 */
   function writeBackStatus(submitted, force = false) {
-    if (!filePath) return;
+    if (!filePath) return writeBackChain;
+    // 先同步登记这一条（登记不涉及 IO，天然并发安全），再排队真正落盘
     if (submitted) {
       const url = String(submitted.questionUrl || "").toLowerCase();
       if (url) pendingWriteBack.set(url, { submittedAt: submitted.submittedAt || "", confirmed: Boolean(submitted.confirmed) });
     }
+    writeBackChain = writeBackChain.then(() => writeBackStatusNow(force)).catch(() => {});
+    return writeBackChain;
+  }
+
+  /** 真正落盘的那一半（5 秒节流 + 读写 xlsx）。只应由 writeBackStatus 排队串行调用。 */
+  function writeBackStatusNow(force = false) {
     const now = Date.now();
     if (!force && now - lastWriteAt < 5000) return;
     if (!pendingWriteBack.size) return;

@@ -255,6 +255,17 @@ async function runWithConcurrency(items, limit, worker, shouldStop) {
   await Promise.all(runners);
 }
 
+/**
+ * 读「账号并发」设置，统一夹在 1~10。
+ * 三个任务（提交 / 读通过数 / 题材上传）都要这个上限，写三遍必然有一天只改了两处。
+ * 上限与 config.js 的校验保持一致，改一处记得改另一处。
+ */
+const MAX_ACCOUNT_CONCURRENCY = 10;
+function accountConcurrencyOf(config) {
+  const raw = config && typeof config.load === "function" ? config.load().accountConcurrency : 0;
+  return Math.max(1, Math.min(Math.floor(Number(raw) || 1) || 1, MAX_ACCOUNT_CONCURRENCY));
+}
+
 function envLabelsOf(list) {
   return (Array.isArray(list) ? list : [])
     .map((x) => (x && typeof x === "object" ? x.label ?? x.name : x))
@@ -282,6 +293,8 @@ function resolveNetdiskRoles(bitEnvs, { transferEnvs, uploadEnvs } = {}) {
 module.exports = {
   envLabelsOf,
   runWithConcurrency,
+  accountConcurrencyOf,
+  MAX_ACCOUNT_CONCURRENCY,
   resolveNetdiskRoles,
   topicKey,
   normalizeAccountTopics,

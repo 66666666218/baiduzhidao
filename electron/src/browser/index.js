@@ -32,7 +32,10 @@ class BrowserPool {
     // "bit"（默认）永远走指纹浏览器；"headless" 才用系统 Edge 省内存。
     // **默认必须是 bit**：headless 各环境虽有自己的 user-data-dir，但设备指纹是同一份，
     // 等于把多账号隔离拆掉 —— 那种事只能由用户明确选择，不能悄悄发生。
-    this.mode = mode === "headless" ? "headless" : "bit";
+    //
+    // mode 可以是字符串，也可以是**函数**：用户在设置页改了「运行模式」不该要求重启软件，
+    // 所以允许传 `() => config.load().browserMode`，每次 acquire 时现读。
+    this.modeOf = typeof mode === "function" ? mode : () => (mode === "headless" ? "headless" : "bit");
     this.active = new Map(); // envLabel -> { id, cdpUrl, refCount, headless? }
   }
 
@@ -45,7 +48,7 @@ class BrowserPool {
     // 存过凭据 → 走 headless Edge，**完全不开比特窗口**。
     // 失败则回落到比特（比如机器上没装 Edge），不让用户卡死。
     const cred = this.credentialOf(envLabel);
-    if (this.mode === "headless" && cred && cred.bduss) {
+    if (this.modeOf() === "headless" && cred && cred.bduss) {
       try {
         const hl = await openHeadless({ envLabel });
         const handle = { id: hl.id, cdpUrl: hl.cdpUrl, name: envLabel, refCount: 1,

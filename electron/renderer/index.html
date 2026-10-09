@@ -83,6 +83,17 @@
             <label>账号代理（每行一条「账号=代理地址」；留空=全部直连）</label>
             <textarea id="accountProxies" rows="3" placeholder="测试组1=http://user:pass@1.2.3.4:8080&#10;测试组2=socks5://1.2.3.5:1080"></textarea>
             <p class="hint">纯协议模式下所有账号<b>共用本机 IP</b>。想让每个账号走不同出口 IP 就在这里配（支持 http/https/socks5）。<b>IP 隔离比指纹隔离更实在</b>；不填就是直连，与以前完全一样。左边账号名要与「比特环境」里的名字一字不差。</p>
+          </div>
+          <div class="field">
+            <label>账号并发（同时处理几个账号；1 = 一个跑完再下一个）</label>
+            <input type="number" id="accountConcurrency" min="1" max="10" step="1" value="1" style="max-width:120px" />
+            <p class="hint"><b>⚠️ 只有在你已经给每个账号配了不同出口 IP（上面的「账号代理」）时才建议调高。</b>
+            同一个 IP 上并发操作多个账号，是平台风控最敏感的一类特征；调高并发等于主动把自己摆到那个特征上。<br/>
+            • <b>纯协议模式</b>：不开窗口，内存几乎不涨，但所有账号共用本机 IP —— 没配代理就别调高。<br/>
+            • <b>比特窗口模式</b>：会同时开这么多个比特窗口，请把这些账号的窗口都留着、并确认内存够用（每个窗口几百 MB）。<br/>
+            建议从 2 开始，观察一两天再加；软件上限为 10。设成 1 时行为与以前完全一样（顺序执行）。</p>
+          </div>
+          <div class="field">
             <label>搜索词（每行一条「题材=搜索词1|搜索词2」；没给资源表时按账号绑定的题材自动搜）</label>
             <textarea id="searchKeywords" rows="8" placeholder="影视=电影 网盘|电视剧 网盘&#10;游戏=游戏 网盘|手游 网盘"></textarea>
             <p class="hint">写什么就搜什么（不会自动拼「网盘」）。题材名要与「账号题材绑定」里的一致；没配搜索词的题材本次不搜。纯协议采集，不需要浏览器和登录态。</p>
