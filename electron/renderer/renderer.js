@@ -177,6 +177,13 @@ function renderAccountOverview(accounts, topicMap = {}) {
   }
 }
 
+// 「每账号每日限额」在「自动提交」页与「一键全自动」页各有一个输入框。
+// saveSettingsQuiet 只从「自动提交」页那个读（单一真源），这里把值同步过去，
+// 否则用户在一键全自动页改完，一保存会被另一个框的旧值覆盖回去。
+$("autoAccountDailyLimit").addEventListener("input", () => {
+  $("accountDailyLimit").value = $("autoAccountDailyLimit").value;
+});
+
 $("refreshAccountOverview").addEventListener("click", async () => {
   $("accountOverviewHint").textContent = "查询中…";
   try {
@@ -752,6 +759,9 @@ async function loadSettings() {
   $("aiDailyTokenBudget").value = settings.aiDailyTokenBudget || 0;
   $("submitLimit").value = settings.submitLimit || 0;
   $("accountDailyLimit").value = settings.accountDailyLimit || 10;
+  // 同一个设置的第二个入口（「一键全自动」页）。保存时只从上面那一个读，
+  // 所以下面挂了 input 监听把它同步过去——两个输入框各自保存会互相覆盖。
+  $("autoAccountDailyLimit").value = settings.accountDailyLimit || 10;
   // 流水线减摩擦：生成/提交视图默认使用最近一次抽题表格
   const lastPick = settings.lastPickFilePath || "";
   if (!$("generateExcelPath").value && lastPick) $("generateExcelPath").value = lastPick;

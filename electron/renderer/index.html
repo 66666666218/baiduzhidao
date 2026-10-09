@@ -127,6 +127,9 @@
           <div class="field-grid">
             <div class="field"><label>抽题条数</label><input type="number" id="autoPickCount" min="1" value="20" /></div>
             <div class="field"><label>每批上传行数</label><input type="number" id="autoBatchRows" min="1" value="500" /></div>
+            <div class="field"><label>每账号每日限额（0=不限）</label><input type="number" id="autoAccountDailyLimit" min="0" />
+              <p class="hint">只管<b>逐题提交</b>那条链（自己设的风控护栏，与平台额度无关）。网盘上传不受它约束。</p>
+            </div>
           </div>
           <div class="field"><label>网盘资源表（<b>留空 = 软件自己按账号题材搜资源，不用你提供</b>；也可以选一张现成的表直接用）</label>
             <div class="pair">
