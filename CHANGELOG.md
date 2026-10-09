@@ -1,5 +1,7 @@
 # CHANGELOG
 
+- [2026-10-09 21:13] CHORE: 版本 2.0.13 → 2.0.14 本地重新打包交付。本版含**软件内登录提取**（弹登录窗口、登进去自动读 Cookie 入库，不用 F12、不用比特）+ **登录窗口 UA 伪装**（去掉 `Electron/33.x` 标识）。门禁：321 单测全绿 + 冒烟 `clicked=74`。产物放桌面：`百度知道答题助手v2-安装包-2.0.14.exe` + `百度知道答题助手-完整包-2.0.14.zip`，2.0.13 两个文件已删。**未发布 GitHub**（gh 未登录）。 (Files: package.json, CHANGELOG.md)
+
 - [2026-10-09 21:20] FEAT: **软件内登录提取 —— 不用 F12、不用比特**。用户问「你能否自己提取呢，用户登入之后」。做法：新增 `auth:login-and-extract`，在软件里弹一个 `BrowserWindow`（独立 `persist:baidu-login` 分区），用户在里面登录百度，**轮询 session 里的 BDUSS，一出现就自动关窗并入库**，不用再点任何按钮。比"教用户 F12 复制"可靠得多：不会漏字段、不会把多个域的 Cookie 拼在一起（那是最常见的失败原因）。**顺带处理了一个用户当场指出的问题**：他问「内嵌多个账号指纹是否共享」——**是的，共享**（共享的是 Electron 自带的 Chromium），而且默认 UA 里带 `Electron/33.x`，站点一眼就能认出"不是普通浏览器"；已把登录窗口的 UA 伪装成普通 Chrome（`ses.setUserAgent` + `webContents.setUserAgent`）。**但要说清风险边界**：那个窗口的指纹**只在"登录那一下"暴露**，而登录是低危动作（正常用户也常在同一个浏览器登录多个百度账号）；**真正敏感的提交/上传/爬题全走纯协议，请求从 node 发出，不带任何浏览器指纹**。会话清空也做了：每次打开登录窗口先清 cookies，避免上一次残留的登录态让人误以为"已经登过了"。界面把两个入口分清了：**①在软件里登录（推荐）** / ②从比特窗口提取（已用比特登录过时）。 [321 单测全绿；冒烟 clicked=74] (Files: electron/app-context.js, electron/src/ipc-channels.js, electron/preload.js, electron/renderer/index.html, electron/renderer/netdisk-manager-view.js, CHANGELOG.md)
 
 - [2026-10-09 21:06] CHORE: 版本 2.0.12 → 2.0.13 本地重新打包交付。本版含**凭证录入引导 + 校验盲点修复**（详见上一条）。门禁：321 单测全绿 + 冒烟 `clicked=73` / `rendererErrors:[]`。产物放桌面：`百度知道答题助手v2-安装包-2.0.13.exe` + `百度知道答题助手-完整包-2.0.13.zip`，2.0.12 两个文件已删。**未发布 GitHub**（gh 未登录）。 (Files: package.json, CHANGELOG.md)
