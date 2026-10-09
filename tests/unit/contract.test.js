@@ -206,3 +206,62 @@ test("契约⑤-b：extractStagePayloadKeys 能正确抠出（含嵌套）顶层
   assert.deepEqual([...keys].sort(), ["filePath", "nested", "results"], "嵌套对象只取顶层键名");
   assert.equal(extractStagePayloadKeys(sample, "不存在的阶段"), null);
 });
+
+/**
+ * 契约⑥：主进程 app-context.js 里调用的函数，必须已定义或已导入。
+ *
+ * 为什么需要：主进程的代码**没有任何运行时守卫**——渲染端有冒烟点按钮，
+ * 而 app-context 的函数要真的跑起来才会暴露。这个文件里已经漏出去过三次
+ * ReferenceError（`settings`、`log_uploadTable`、`describeError`），
+ * 每次都是用户先发现的。这里做一次静态检查兜住。
+ */
+test("契约⑥：app-context.js 调用的标识符都有来源（防 ReferenceError）", () => {
+  const src = read("electron/app-context.js");
+
+  const defined = new Set();
+  // require 解构：const { a, b: c } = require(...)
+  for (const m of src.matchAll(/const\s*\{([^}]+)\}\s*=\s*require\(/g)) {
+    for (const part of m[1].split(",")) {
+      const name = part.split(":")[0].trim();
+      if (name) defined.add(name);
+    }
+  }
+  // 解构赋值（不管右边是什么）：const { log } = deps()
+  for (const m of src.matchAll(/const\s*\{([^}]+)\}\s*=/g)) {
+    for (const part of m[1].split(",")) {
+      const name = part.split(":")[0].trim().replace(/^\.\.\./, "");
+      if (name) defined.add(name);
+    }
+  }
+  // 直接赋值 / 函数 / 类
+  for (const m of src.matchAll(/(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) defined.add(m[1]);
+  for (const m of src.matchAll(/const\s*\[([^\]]+)\]/g)) for (const n of m[1].split(",")) defined.add(n.trim());
+  // 函数参数：具名与匿名都要（匿名形如 function (resolve)）
+  for (const m of src.matchAll(/function\s*[A-Za-z_$]?[\w$]*\s*\(([^)]*)\)/g)) {
+    for (const p of m[1].split(",")) defined.add(p.split("=")[0].trim());
+  }
+  // 箭头函数的参数：单个无括号的 (x) => 和 (a, b) =>
+  for (const m of src.matchAll(/(?:^|[^\w$.])([A-Za-z_$][\w$]*)\s*=>/g)) defined.add(m[1]);
+  for (const m of src.matchAll(/\(([^)]*)\)\s*=>/g)) {
+    // 嵌套括号（new Promise((resolve) => …)）会让捕获组带上半个左括号，所以圆括号也要剥
+    for (const p of m[1].split(",")) defined.add(p.split("=")[0].trim().replace(/[{}[\]()]/g, ""));
+  }
+
+  // 被当作函数调用的标识符（排除 obj.fn() / new X() / 关键字）
+  const called = new Set();
+  for (const m of src.matchAll(/(?<![.\w$'"])([A-Za-z_$][\w$]*)\s*\(/g)) called.add(m[1]);
+
+  // 语言内置 / 全局 / 关键字
+  const KNOWN = new Set([
+    "require", "String", "Number", "Boolean", "Array", "Object", "JSON", "Math", "Date", "Error", "URL",
+    "Promise", "Set", "Map", "WeakMap", "parseInt", "parseFloat", "isNaN", "isFinite", "fetch",
+    "encodeURIComponent", "decodeURIComponent", "setTimeout", "clearTimeout", "setInterval",
+    "clearInterval", "Buffer", "RegExp", "Symbol", "Proxy", "Reflect",
+    "if", "for", "while", "switch", "catch", "return", "typeof", "function", "new", "await",
+    "super", "import", "delete", "void", "in", "of", "do", "else", "try", "throw", "yield",
+    "async", "await", "case", "default", "break", "continue", "instanceof", "undefined", "null", "true", "false",
+  ]);
+
+  const missing = [...called].filter((name) => !defined.has(name) && !KNOWN.has(name));
+  assert.deepEqual(missing, [], `app-context.js 里这些被当作函数调用，但既没定义也没导入：${missing.join(", ")}`);
+});

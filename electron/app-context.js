@@ -22,7 +22,7 @@ const { randomPickQuestions } = require("./src/tasks/random-pick");
 const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
 const { INVOKE_CHANNELS } = require("./src/ipc-channels");
-const { describeUpdateError } = require("./src/errors");
+const { describeUpdateError, describeError } = require("./src/errors");
 
 let mainWindow = null;
 let clipboardApi = null; // registerIpc 时注入（供任务内剪贴板兜底）
