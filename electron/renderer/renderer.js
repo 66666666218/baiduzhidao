@@ -609,6 +609,9 @@ $("startAutoPipeline").addEventListener("click", async () => {
     const result = await rpc.invoke("task:auto-pipeline", {
       stages,
       bitEnvs: pickedEnvs, // 空数组 = 流水线回落到设置页的全部账号
+      // 网盘链账号分工：留空 = 用上面的账号（回落在后端做）
+      transferEnvs: $("autoTransferEnvs").value.split(/\r?\n|[,，]/).map((s) => s.trim()).filter(Boolean),
+      uploadEnvs: $("autoUploadEnvs").value.split(/\r?\n|[,，]/).map((s) => s.trim()).filter(Boolean),
       pickCount: Number($("autoPickCount").value) || 20,
       batchRows: Number($("autoBatchRows").value) || 500,
       uploadTablePath: $("autoUploadTable").value,
@@ -699,6 +702,8 @@ async function saveSettingsQuiet() {
   patch.apiUrl = $("apiUrl").value;
   patch.activityUrl = $("activityUrl").value.trim();
   patch.bitEnvs = $("bitEnvs").value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  patch.transferEnvs = $("autoTransferEnvs").value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  patch.uploadEnvs = $("autoUploadEnvs").value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   patch.accountTopics = $("accountTopics").value; // 文本形式「账号=题材」，由后端归一化
   patch.linkRouting = $("linkRouting").value;
   patch.topicRules = $("topicRules").value; // 上传侧分类规则，由后端解析
@@ -734,6 +739,8 @@ async function loadSettings() {
   $("apiUrl").value = settings.apiUrl || "";
   $("activityUrl").value = settings.activityUrl || "";
   $("bitEnvs").value = (settings.bitEnvs || []).map((env) => env.label || env).join("\n");
+  $("autoTransferEnvs").value = (settings.transferEnvs || []).map((env) => env.label || env).join("\n");
+  $("autoUploadEnvs").value = (settings.uploadEnvs || []).map((env) => env.label || env).join("\n");
   $("accountTopics").value = Object.entries(settings.accountTopics || {}).map(([account, topic]) => `${account}=${topic}`).join("\n");
   $("linkRouting").value = settings.linkRouting || "strict";
   $("topicRules").value = settings.topicRules || "";

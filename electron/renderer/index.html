@@ -124,6 +124,16 @@
             <textarea id="autoBitEnvs" rows="3" placeholder="留空即全部&#10;也可以只填想跑的那几个"></textarea>
             <p class="hint">只想让一部分账号参与时在这里填。搜资源也会只按这些账号绑定的题材去搜。</p>
           </div>
+          <div class="field">
+            <label>网盘链 · 转存账号（每行一个；<b>留空 = 用上面的账号</b>）</label>
+            <textarea id="autoTransferEnvs" rows="2" placeholder="留空即用上面的账号&#10;填网盘还有空间的号"></textarea>
+            <p class="hint">负责把资源<b>转存进自己网盘</b>并建好分享链接 —— 所以这些号需要有<b>网盘空间</b>（<b>不需要</b>批量发布权益）。</p>
+          </div>
+          <div class="field">
+            <label>网盘链 · 上传账号（每行一个；<b>留空 = 用上面的账号</b>）</label>
+            <textarea id="autoUploadEnvs" rows="2" placeholder="留空即用上面的账号&#10;填有批量发布权益的号"></textarea>
+            <p class="hint">负责把问答表<b>传到百度知道工作台</b> —— 所以这些号需要有<b>批量发布权益</b>（<b>不占</b>它的网盘）。两边填不同的号，就能「A 转存、B 上传」：链接是公开的，谁上传都行。</p>
+          </div>
           <div class="field-grid">
             <div class="field"><label>抽题条数</label><input type="number" id="autoPickCount" min="1" value="20" /></div>
             <div class="field"><label>每批上传行数</label><input type="number" id="autoBatchRows" min="1" value="500" /></div>

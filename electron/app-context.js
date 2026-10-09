@@ -23,6 +23,7 @@ const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
 const { INVOKE_CHANNELS } = require("./src/ipc-channels");
 const { describeUpdateError, describeError } = require("./src/errors");
+const { resolveNetdiskRoles } = require("./src/domain/account-topic");
 // 查收录 / 权益检查要开窗口取 Cookie（runCheckPublishedTask），这里必须导入。
 // 之前漏了它，直接把「查收录」「账号总览」打成一跑就 ReferenceError: chromium is not defined，
 // 而日志只显示「查收录失败」，完全看不出是少了一行 import。
@@ -834,39 +835,47 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
         });
       }
 
-      // 网盘链前置：确认哪些账号有「批量发布权益」。没权益的账号上传会被拒，
-      // 先查清楚再转存，免得白白把资源转进一个传不出去的号。
-      // 只在网盘链真的有勾选时才查，避免多开一轮浏览器。
-      let netdiskEnvs = bitEnvs;
-      if (!failure && !autoPipelineAborted && (enabled.has("transfer") || enabled.has("upload"))) {
+      // 网盘链的**账号分工**：转存归转存、上传归上传，两者可以不是同一批号。
+      // 现实里常见「A 的网盘还有空间但没有批量发布权益，B 有权益但网盘已经满了」，
+      // 分开之后 A 把资源转进自己盘并建好永久分享，B 只管把问答表传上工作台
+      //（分享链接是公开的，谁上传都行）。两边都留空就回落到「本次参与的账号」。
+      const roles = resolveNetdiskRoles(bitEnvs, p);
+      const transferEnvs = roles.transferEnvs;
+      const uploadEnvsConfigured = roles.uploadEnvs;
+      // 上传账号在权益门之后会被收窄，但**搜资源**要按用户配的那批来（题材绑定挂在它们身上），
+      // 所以配置值单独留一份。
+      let uploadEnvs = uploadEnvsConfigured;
+
+      // 权益门只针对**上传账号**：批量发布权益管的是"能不能把表传上工作台"，
+      // 跟"资源能不能转进网盘"无关（后者看的是网盘空间）。也只在真要跑上传阶段时才查，
+      // 免得白开一轮浏览器。
+      if (!failure && !autoPipelineAborted && enabled.has("upload")) {
         const checked = await runStage("checkPermission", "确认批量发布权益", () =>
-          startTask("check-published", { bitEnvs, withReasons: false }, (c) => runCheckPublishedTask(c, deps()))
+          startTask("check-published", { bitEnvs: uploadEnvsConfigured, withReasons: false }, (c) => runCheckPublishedTask(c, deps()))
         );
         if (checked && Array.isArray(checked.accounts) && checked.accounts.length) {
-          // hasPermission 为 null 表示"没查到"，按不拦处理——不能因为查不到就误封账号
+          // hasPermission 为 null 表示"没查到"，按不拦处理——不能因为查不到就误封账号。
           // 只看 hasPermission，**不看 ok**：ok=false 有三种成因（未登录 / 没取到上传记录 /
           // 查询抛错），它们在"有没有批量发布权益"这件事上都是**未知**，不是"没有"。
-          // 以前写成 `a.ok && a.hasPermission !== false`，等于把"未知"一律当成"没有"——
-          // 上面注释明明白白写着"不能因为查不到就误封账号"，实际却恰好反过来：
-          // 从没上传过的新账号（没记录 → ok=false）和查询报错的账号全被判「没有权益」，
-          // 网盘链整段跳过。用户在新电脑上看到的就是这句。
+          // 以前写成 `a.ok && a.hasPermission !== false`，等于把"未知"一律当成"没有"，
+          // 从没上传过的新账号和查询报错的账号全被判「没有权益」，网盘链整段跳过。
           const allowed = checked.accounts.filter((a) => a.hasPermission !== false).map((a) => a.envLabel);
-          const denied = bitEnvs.filter((e) => !allowed.includes(e));
-          if (denied.length) emit("task:log", `⚠️ 这些账号没有「批量发布权益」或未登录，网盘链本次跳过：${denied.join("、")}`);
-          netdiskEnvs = allowed;
-          if (!allowed.length) emit("task:log", "没有账号具备「批量发布权益」，网盘链整段跳过（答题链不受影响）。");
+          const denied = uploadEnvsConfigured.filter((e) => !allowed.includes(e));
+          if (denied.length) emit("task:log", `⚠️ 这些上传账号没有「批量发布权益」或未登录，上传阶段会跳过：${denied.join("、")}`);
+          uploadEnvs = allowed;
+          if (!allowed.length) emit("task:log", "没有上传账号具备「批量发布权益」，上传阶段跳过（转存仍按转存账号执行）。");
         }
       }
 
       // 5) 网盘转存：脚本套模板生成问答行（qa-template-lib），产出即上传专用表
-      if (enabled.has("transfer") && !failure && netdiskEnvs.length) {
+      if (enabled.has("transfer") && !failure && transferEnvs.length) {
         let transferTable = String(p.transferTablePath || "").trim();
         // 没给资源表 → 按账号绑定的题材自动搜一批（纯协议搜百度知道，不需要浏览器）
         if (!transferTable || !fs.existsSync(transferTable)) {
           emit("task:log", "没有指定资源表，改为按账号绑定的题材自动搜资源…");
           const searched = await runStage("search", "搜资源（按账号题材）", () =>
             startTask("search-resources", {
-              bitEnvs: netdiskEnvs,
+              bitEnvs: uploadEnvsConfigured,
               pages: Number(p.searchPages) || 0,
               limit: Number(p.searchRowLimit) || 0,
             }, (c) => runSearchResourcesTask(c, deps()))
@@ -880,7 +889,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
           await runStage("transfer", "网盘转存（套模板生成问答）", async () => {
             const result = await startTask("batch-transfer", {
               filePath: transferTable,
-              bitEnvs: netdiskEnvs,
+              bitEnvs: transferEnvs,
               destDir: String(p.transferDestDir || "").trim() || "/来自资源批量转存",
               outName: String(p.transferOutName || "").trim(),
               perEnv: Number(p.transferPerEnv) || 50,
@@ -900,7 +909,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       }
 
       // 6) 按题材分账号上传（用转存产出，或调用方指定的现成表）
-      if (enabled.has("upload") && !failure && netdiskEnvs.length) {
+      if (enabled.has("upload") && !failure && uploadEnvs.length) {
         if (!uploadTable || !fs.existsSync(uploadTable)) {
           emit("task:log", "跳过「按题材上传」：没有可用的上传专用表（请先跑转存，或指定一张现成的表）。");
           report.push({ stage: "upload", label: "按题材上传", ok: false, skipped: true, error: "未指定上传专用表" });
@@ -908,7 +917,7 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
           const uploaded = await runStage("upload", "按题材上传", () =>
             startTask("upload-by-topic", {
               filePath: uploadTable,
-              bitEnvs: netdiskEnvs,
+              bitEnvs: uploadEnvs,
               accountTopics: settings.accountTopics,
               topicRules: settings.topicRules,
               batchRows: Number(p.batchRows) || 500,

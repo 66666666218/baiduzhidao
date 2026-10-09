@@ -230,7 +230,39 @@ function buildTopicAllocation(rows, envLabels, topicMap, { classify } = {}) {
   };
 }
 
+/**
+ * 把「比特环境」列表统一成环境名数组。
+ * 列表里可能是 { label } / { name } 对象（设置里存的形式），也可能是裸字符串
+ *（任务 payload 里手填的形式），两种都得认。
+ * 这段逻辑原先在 app-context 和 upload-batch 里各抄了一份，做账号分工时才收拢。
+ */
+function envLabelsOf(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((x) => (x && typeof x === "object" ? x.label ?? x.name : x))
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+}
+
+/**
+ * 网盘链的账号分工：解析出「谁负责转存」和「谁负责上传」。
+ *
+ * 为什么要分开：转存要的是**网盘空间**，上传要的是**批量发布权益**，
+ * 而现实里常常是「A 的盘还有空间但没权益，B 有权益但盘满了」——
+ * 一个变量管两头时，这种账号组合就用不了。两边留空即回落到 bitEnvs。
+ */
+function resolveNetdiskRoles(bitEnvs, { transferEnvs, uploadEnvs } = {}) {
+  const base = envLabelsOf(bitEnvs);
+  const transfer = envLabelsOf(transferEnvs);
+  const upload = envLabelsOf(uploadEnvs);
+  return {
+    transferEnvs: transfer.length ? transfer : base,
+    uploadEnvs: upload.length ? upload : base,
+  };
+}
+
 module.exports = {
+  envLabelsOf,
+  resolveNetdiskRoles,
   topicKey,
   normalizeAccountTopics,
   topicOf,

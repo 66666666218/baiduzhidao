@@ -10,6 +10,8 @@ const {
   accountsForTopic,
   unboundAccounts,
   buildAllocation,
+  envLabelsOf,
+  resolveNetdiskRoles,
 } = require("../../electron/src/domain/account-topic");
 const { classifyAnswerKind, splitRowsByKind, extractUrls } = require("../../electron/src/domain/answer-kind");
 const { normalizeAccountTopicsSetting, normalizeSettings } = require("../../electron/src/config");
@@ -225,4 +227,27 @@ test("buildTopicAllocation：没有分类器时全部归入未分类，不会静
   const res = buildTopicAllocation(rows, ["环境A"], { 环境A: "游戏" });
   assert.equal(res.unclassified.length, 1);
   assert.equal(res.stats.planned, 0);
+});
+
+test("envLabelsOf：对象/字符串/混合都能归一化成环境名（账号分工的入口）", () => {
+  // 设置里存的是 [{ label }]，任务 payload 里手填的是裸字符串，两种都得认 ——
+  // 「转存账号 / 上传账号」这两个新字段就是靠它统一成环境名数组的。
+  assert.deepEqual(envLabelsOf([{ label: "A" }, { name: "B" }, "C"]), ["A", "B", "C"]);
+  assert.deepEqual(envLabelsOf([{ label: " A " }, "", null, undefined]), ["A"], "去空白、剔空值");
+  assert.deepEqual(envLabelsOf([]), []);
+  assert.deepEqual(envLabelsOf(undefined), [], "没传就返回空数组，调用方据此回落到默认账号");
+  assert.deepEqual(envLabelsOf("A"), [], "传字符串而不是数组时返回空数组，不炸");
+});
+
+test("resolveNetdiskRoles：转存/上传留空各自回落到「本次参与的账号」", () => {
+  const base = ["甲", "乙"];
+  assert.deepEqual(resolveNetdiskRoles(base, {}), { transferEnvs: ["甲", "乙"], uploadEnvs: ["甲", "乙"] }, "都不填 = 两件事用同一批号");
+  assert.deepEqual(
+    resolveNetdiskRoles(base, { transferEnvs: ["丙"], uploadEnvs: ["丁"] }),
+    { transferEnvs: ["丙"], uploadEnvs: ["丁"] },
+    "A 转存、B 上传：互不影响"
+  );
+  assert.deepEqual(resolveNetdiskRoles(base, { transferEnvs: ["丙"] }).uploadEnvs, ["甲", "乙"], "只配了转存，上传仍回落到 base");
+  assert.deepEqual(resolveNetdiskRoles(base, { transferEnvs: [{ label: "丙" }] }).transferEnvs, ["丙"], "对象形式也要认");
+  assert.deepEqual(resolveNetdiskRoles([], { transferEnvs: "丙" }).transferEnvs, [], "base 为空 + 传了非法值 → 空数组，不炸");
 });

@@ -14,6 +14,12 @@ const LINK_ROUTING_MODES = ["strict", "off"];
 const DEFAULTS = {
   apiUrl: "http://127.0.0.1:54345",
   bitEnvs: [],
+  // 网盘链的账号分工：转存与上传可以不是同一批号。
+  // 现实里常见「A 的网盘还有空间但没有批量发布权益，B 有权益但网盘已经满了」——
+  // 分开之后 A 负责把资源转进自己盘并建好永久分享，B 只管把问答表传上工作台
+  //（分享链接是公开的，谁上传都行）。两边留空就回落到 bitEnvs。
+  transferEnvs: [],
+  uploadEnvs: [],
   activityUrl: "",
   timeoutMs: 30000,
   verifyWaitSeconds: 10,
@@ -114,6 +120,8 @@ function normalizeBitEnvs(value) {
 function normalizeSettings(payload) {
   const next = { ...DEFAULTS, ...(payload || {}) };
   next.bitEnvs = normalizeBitEnvs(next.bitEnvs);
+  next.transferEnvs = normalizeBitEnvs(next.transferEnvs);
+  next.uploadEnvs = normalizeBitEnvs(next.uploadEnvs);
   next.timeoutMs = clampInt(next.timeoutMs, 5000, 120000, DEFAULTS.timeoutMs);
   next.verifyWaitSeconds = clampInt(next.verifyWaitSeconds, 0, 120, DEFAULTS.verifyWaitSeconds);
   next.delayMin = clampInt(next.delayMin, 0, 600, DEFAULTS.delayMin);

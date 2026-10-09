@@ -73,7 +73,36 @@ class BitBrowserAdapter {
     return this.post("/browser/close", { id: String(id) });
   }
 
+  /**
+   * 发一个本地 API 调用。对「浏览器正在关闭中」这类**暂时性**失败做退避重试。
+   *
+   * 上一个窗口还没关利索时，比特会对**任何** API 都回 `success:false /
+   * 浏览器正在关闭中，请稍后操作` —— `/browser/list` 和 `/browser/open` 都算，
+   * 所以重试必须放在这一层，只包 open 是兜不住的（实测就是这么漏的）。
+   * 不重试的话任务会在第一步直接 FATAL，日志看起来还像"账号有问题"。
+   */
   async post(apiPath, payload) {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.postOnce(apiPath, payload);
+      } catch (error) {
+        const busy = /正在关闭|closing|请稍后/i.test(String((error && error.message) || ""));
+        if (!busy || attempt >= 4) {
+          // 重试用尽还是"正在关闭中"，说明那个窗口**卡住了**（比特自己既不肯开也不肯关，
+          // 实测 close 返回成功但状态不变）。原始报文里只有一句 success:false，
+          // 用户看到的是"比特浏览器 API 返回失败"，根本不知道该干什么。
+          if (busy) {
+            throw new Error(`比特环境窗口卡在「正在关闭中」（重试 ${attempt - 1} 次仍失败，接口 ${apiPath}）。`
+              + `请到比特浏览器里手动关掉那个窗口，或重启比特浏览器客户端，然后重试。`);
+          }
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+      }
+    }
+  }
+
+  async postOnce(apiPath, payload) {
     // 没有超时的话：客户端端口在但卡住不响应，这个 await 永远不返回，
     // 任务停在 RUNNING，此后 assertIdle() 拒掉一切任务，只能靠重启进程解开。
     const controller = new AbortController();
