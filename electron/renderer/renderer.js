@@ -131,13 +131,13 @@ $("exportBank").addEventListener("click", async () => {
 // ---------- 账号总览 ----------
 // 复用「查收录」那个任务：它已经按账号返回了 账号名/剩余额度/上传条数/收录/被拒，
 // 没必要再写一个任务去拿同样的数据。
-function renderAccountOverview(accounts) {
+function renderAccountOverview(accounts, topicMap = {}) {
   const tbody = $("accountOverviewBody");
   tbody.innerHTML = "";
   if (!accounts.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 8;
+    td.colSpan = 9;
     td.className = "empty-hint";
     td.textContent = "没有可显示的账号：请先在设置页填写「比特环境名称」。";
     tr.appendChild(td);
@@ -146,9 +146,14 @@ function renderAccountOverview(accounts) {
   }
   for (const account of accounts) {
     const tr = document.createElement("tr");
+    // 绑定题材：设置页里「账号题材绑定」是按**比特环境名**做 key 的，差一个字就匹配不上，
+    // 而那种错只有跑到任务深处才报错。这里直接摊开，一眼能看出谁没绑。
+    const topic = topicMap[account.envLabel];
+    const topicText = topic ? topic : "⚠️ 未绑定";
     const cells = account.ok
       ? [
           account.envLabel,
+          topicText,
           account.name || "(未取到)",
           account.remainingQuota == null ? "未知" : String(account.remainingQuota),
           String(account.taskTotal || 0),
@@ -157,7 +162,7 @@ function renderAccountOverview(accounts) {
           String(account.summary.failedRows),
           account.summary.hasFailure ? "⚠️ 有被拒" : "✅ 正常",
         ]
-      : [account.envLabel, "-", "-", "-", "-", "-", "-", `❌ ${account.error}`];
+      : [account.envLabel, topicText, "-", "-", "-", "-", "-", "-", `❌ ${account.error}`];
     for (const text of cells) {
       const td = document.createElement("td");
       td.textContent = text; // textContent 而不是 innerHTML：错误信息里可能带用户数据
@@ -173,12 +178,19 @@ $("refreshAccountOverview").addEventListener("click", async () => {
     const settings = await rpc.invoke("settings:get");
     const bitEnvs = settings.bitEnvs || [];
     if (!bitEnvs.length) { $("accountOverviewHint").textContent = "请先在设置页填写比特环境账号"; return; }
+    const topicMap = settings.accountTopics || {};
+    const unbound = bitEnvs.map((e) => e.label || e).filter((name) => !topicMap[name]);
     // withReasons=false：总览只要汇总，不必为每批被拒去拉结果文件（那会很慢）
     const result = await rpc.invoke("task:check-published", { bitEnvs, withReasons: false });
-    renderAccountOverview(result.accounts || []);
+    renderAccountOverview(result.accounts || [], topicMap);
     const okCount = (result.accounts || []).filter((a) => a.ok).length;
-    $("accountOverviewHint").textContent = `已刷新 ${okCount}/${bitEnvs.length} 个账号`;
+    $("accountOverviewHint").textContent = `已刷新 ${okCount}/${bitEnvs.length} 个账号`
+      + (unbound.length ? `　⚠️ ${unbound.length} 个账号没绑定题材（搜资源和按题材上传都用不了）` : "");
     appendLog(`账号总览已刷新：${okCount}/${bitEnvs.length} 个账号可用`);
+    if (unbound.length) {
+      appendLog(`⚠️ 这些账号在「账号题材绑定」里没有对应条目：${unbound.join("、")}。`
+        + `绑定表的冒号左边必须和上面的环境名一字不差，否则搜资源会直接报「没有账号绑定题材」。`);
+    }
   } catch (error) {
     $("accountOverviewHint").textContent = `刷新失败：${error.message}`;
     appendLog(`账号总览刷新失败：${error.message}`);
@@ -343,7 +355,6 @@ $("startSubmit").addEventListener("click", async () => {
       checkCompletedEnvs: $("checkCompletedEnvs").checked,
       accountTopics: settings.accountTopics,   // 带链接答案的账号↔题材严格路由依据
       linkRouting: settings.linkRouting,
-      maxQuestionsPerEnv: settings.maxQuestionsPerEnv,
     });
     appendLog(`提交结束：成功 ${result.count} 条，失败 ${result.failed} 条。`);
   } catch (error) {
@@ -687,8 +698,8 @@ async function saveSettingsQuiet() {
   patch.delayMin = Number($("delayMin").value) || 0;
   patch.delayMax = Number($("delayMax").value) || 0;
   patch.maxQuestions = Number($("maxQuestions").value) || undefined;
-  patch.maxQuestionsPerEnv = Number($("maxQuestionsPerEnv").value) || undefined;
   patch.closeAfter = $("closeAfter").value === "true";
+  patch.autoSubmit = $("autoSubmit").value === "true";
   patch.crawlStartPage = Number($("crawlStartPage").value) || 1;
   patch.pageDelayMs = Number($("pageDelayMs").value);
   if (!Number.isFinite(patch.pageDelayMs)) patch.pageDelayMs = 800;
@@ -722,8 +733,8 @@ async function loadSettings() {
   $("delayMin").value = settings.delayMin;
   $("delayMax").value = settings.delayMax;
   $("maxQuestions").value = settings.maxQuestions;
-  $("maxQuestionsPerEnv").value = settings.maxQuestionsPerEnv;
   $("closeAfter").value = String(settings.closeAfter);
+  $("autoSubmit").value = String(Boolean(settings.autoSubmit));
   $("crawlStartPage").value = settings.crawlStartPage || 1;
   $("pageDelayMs").value = settings.pageDelayMs != null ? settings.pageDelayMs : 800;
   $("crawlOutputDir").value = settings.crawlOutputDir || "";

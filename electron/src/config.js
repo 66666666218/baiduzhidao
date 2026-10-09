@@ -21,7 +21,6 @@ const DEFAULTS = {
   delayMax: 20,
   closeAfter: true,
   maxQuestions: 20,
-  maxQuestionsPerEnv: 5,
   startPage: 1,
   crawlStartPage: 1,
   crawlOutputDir: "",
@@ -120,7 +119,6 @@ function normalizeSettings(payload) {
   next.delayMin = clampInt(next.delayMin, 0, 600, DEFAULTS.delayMin);
   next.delayMax = clampInt(next.delayMax, next.delayMin, 3600, Math.max(next.delayMin, DEFAULTS.delayMax));
   next.maxQuestions = clampInt(next.maxQuestions, 1, 100000, DEFAULTS.maxQuestions);
-  next.maxQuestionsPerEnv = clampInt(next.maxQuestionsPerEnv, 1, 10000, DEFAULTS.maxQuestionsPerEnv);
   next.startPage = clampInt(next.startPage, 1, 100000, DEFAULTS.startPage);
   next.crawlStartPage = clampInt(next.crawlStartPage, 1, 100000, DEFAULTS.crawlStartPage);
   next.randomCount = clampInt(next.randomCount, 1, 100000, DEFAULTS.randomCount);
