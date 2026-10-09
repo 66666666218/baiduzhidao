@@ -1,5 +1,7 @@
 # CHANGELOG
 
+- [2026-10-09 12:05] FEAT: 查收录/权益检查优先用存好的 Cookie（能不开窗口）——用户指出「说是纯协议还是开窗口了」。实测：**只带 BDUSS 就能调通工作台接口**（BDUSS 是百度全域 Cookie，裸 curl 返回 200 + 真实账号数据），所以「网盘管理」里存过的账号不必为每次查收录再开一次浏览器。新增 `storedCookieOf(envLabel)`：按**比特环境名**去「网盘账号.json」匹配，命中就用存的 Cookie，没命中才回落到开窗口取（与「账号题材绑定」同一条规矩：名字必须一字不差）。顺带实测发现用户存的 `账号10081452` 与知道答主账号**不是同一个号**（那条 `hasPermission:false`、`quota:0`，而测试组1 里的是 `俊哦情0I`、额度 10000、有权益）——正好验证了权益门会把它挡下。 [285 单测全绿；冒烟 clicked=73、rendererErrors:[]] (Files: electron/app-context.js, CHANGELOG.md, docs/自审日志.md)
+
 - [2026-10-09 12:00] FIX: `describeError is not defined` —— 我在 `runCheckPublishedTask` 里用了 `describeError`，**但 app-context 从来没导入过它**，导致「查收录」和「确认批量发布权益」一跑就 ReferenceError。这是主进程里漏出去的第 **3** 个同类错误（前两个是 `settings`、`log_uploadTable`），渲染端有冒烟点按钮兜着，**主进程一直没有任何运行时守卫**。新增**契约⑥**：静态扫描 app-context.js 里被当作函数调用的标识符，逐个核对"已定义 or 已导入 or 语言内置"，缺谁报谁。对照实验：去掉 `describeError` 的导入 → 精确报出该名字；还原 → 全绿。（写这个 guard 时修了三处误报：解构参数、匿名的 `function (resolve)`、以及嵌套括号 `((resolve) =>` 导致捕获组带半个左括号。） [285 单测全绿；冒烟未跑——软件运行中] (Files: electron/app-context.js, tests/unit/contract.test.js, CHANGELOG.md, docs/自审日志.md)
 
 - [2026-10-09 11:26] FEAT: 「每账号每日限额」补到「一键全自动」页——该参数原先只在「自动提交」页，而一键全自动只是**读**它，用户找不到在哪调。现在两页各有一个入口，并**处理了双入口互相覆盖的坑**：保存时只从「自动提交」页那个读（单一真源），「一键全自动」页的框挂了 input 监听把值同步过去，否则在一个页面改完、保存时会被另一个框的旧值覆盖回去。界面上写明它**只管逐题提交那条链**（自己设的风控护栏），**与平台额度无关、网盘上传不受它约束**——这两个数字容易被混为一谈：平台额度 10,000 是"能传多少"，这个 10 是"传多少不容易封号"。[284 单测全绿；冒烟 clicked=73、rendererErrors:[]] (Files: electron/renderer/index.html, electron/renderer/renderer.js, CHANGELOG.md, docs/自审日志.md)

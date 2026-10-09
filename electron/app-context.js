@@ -206,6 +206,33 @@ async function runSearchResourcesTask(ctx, deps) {
  *
  * 做法和转存一致：从浏览器取一次 Cookie，之后全程纯协议（不再操作页面）。
  */
+/**
+ * 从「网盘管理」存的账号里取 Cookie（按比特环境名匹配）。
+ *
+ * 为什么按名字匹配：账号是用户在「网盘管理 → 添加账号」里自己命名加进去的，
+ * 想让它在查收录/权益检查里生效，名字必须和比特环境名一致——
+ * 跟「账号题材绑定」是同一条规矩（差一个字就不生效）。
+ *
+ * 实测：只带 BDUSS 就能调通工作台接口（BDUSS 是百度全域 Cookie），
+ * 所以存过的账号不必为每次查收录再开一次浏览器。
+ *
+ * 返回 "" 表示没存 → 调用方回落到开窗口取。
+ */
+function storedCookieOf(envLabel, log) {
+  try {
+    const manager = require("./src/netdisk/manager");
+    const hit = manager.loadAccounts(dataDir).find((a) => String(a.name || "").trim() === envLabel);
+    if (!hit || !String(hit.bduss || "").trim()) return "";
+    const parts = [`BDUSS=${String(hit.bduss).trim()}`];
+    if (String(hit.stoken || "").trim()) parts.push(`STOKEN=${String(hit.stoken).trim()}`);
+    log(`查收录：${envLabel} 用已保存的 Cookie（不开窗口）`);
+    return parts.join("; ");
+  } catch (e) {
+    log(`（读取已保存的 Cookie 失败，回落到开窗口：${e.message}）`);
+    return "";
+  }
+}
+
 async function runCheckPublishedTask(ctx, deps) {
   const { browserPool, log } = deps;
   const settings = config.load();
@@ -226,18 +253,24 @@ async function runCheckPublishedTask(ctx, deps) {
     if (ctx.shouldStop()) break;
     let browser = null;
     try {
-      log(`查收录：打开比特环境 ${envLabel}（只为取登录态）`);
-      const handle = await browserPool.acquire(envLabel);
-      browser = await chromium.connectOverCDP(handle.cdpUrl);
-      const context = browser.contexts()[0] || (await browser.newContext());
-      const cookies = await context.cookies(workbench.WB_HOST);
-      const bduss = (cookies.find((c) => c.name === "BDUSS") || {}).value || "";
-      if (!bduss) {
-        log(`⚠️ ${envLabel} 未登录百度账号，跳过（查收录需要登录态）。`);
-        accounts.push({ envLabel, ok: false, error: "未登录百度账号" });
-        continue;
+      // 取登录态：**优先用「网盘管理」里存好的 Cookie，没存才开窗口**。
+      // 实测：只带 BDUSS 就能调通工作台接口（BDUSS 是百度全域 Cookie），
+      // 所以存过的账号不必为每次查收录/权益检查再开一次浏览器。
+      let cookieStr = storedCookieOf(envLabel, log);
+      if (!cookieStr) {
+        log(`查收录：打开比特环境 ${envLabel}（未存 Cookie，开窗口取登录态）`);
+        const handle = await browserPool.acquire(envLabel);
+        browser = await chromium.connectOverCDP(handle.cdpUrl);
+        const context = browser.contexts()[0] || (await browser.newContext());
+        const cookies = await context.cookies(workbench.WB_HOST);
+        const bduss = (cookies.find((c) => c.name === "BDUSS") || {}).value || "";
+        if (!bduss) {
+          log(`⚠️ ${envLabel} 未登录百度账号，跳过（查收录需要登录态）。`);
+          accounts.push({ envLabel, ok: false, error: "未登录百度账号" });
+          continue;
+        }
+        cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
       }
-      const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
 
       let info = { name: "", remainingQuota: NaN, banned: false, banDays: -1 };
       try {
