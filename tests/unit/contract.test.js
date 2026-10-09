@@ -440,6 +440,40 @@ test("契约⑦：网盘协议层的请求都必须走 panFetch（UA/Cookie/代�
   assert.deepEqual(problems, [], problems.join("\n"));
 });
 
+test("契约⑨：electron/ 下所有相对 require 都必须指向真实存在的文件", () => {
+  // 起因：把 `runCheckPublishedTask` 从 app-context.js 搬到 src/tasks/ 时，
+  // 里面那句 `require("./src/netdisk/manager")` 忘了改 —— 从新位置解析成
+  // `src/tasks/src/netdisk/manager`，不存在。而它被 try/catch 包着，
+  // 于是**静默**回落到"开窗口取登录态"，把"存过 Cookie 就不开窗口"整条路径废掉了。
+  // 契约⑥ 只看"标识符有没有定义"，看不到相对路径对不对；node --check 更看不到（语法没错）。
+  // 这类搬运事故只有"真的去解析一遍路径"才拦得住。
+  const walk = (dir) => {
+    const out = [];
+    for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+      if (entry.name === "node_modules") continue;
+      const rel = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) out.push(...walk(rel));
+      else if (entry.name.endsWith(".js")) out.push(rel);
+    }
+    return out;
+  };
+  const exists = (p) => fs.existsSync(p) || fs.existsSync(`${p}.js`)
+    || fs.existsSync(path.join(p, "index.js")) || fs.existsSync(`${p}.json`);
+
+  const problems = [];
+  for (const file of walk("electron")) {
+    // ⚠️ 必须用**原始源码**：第一版这里沿用 stripStringsAndComments（它会把字符串内容一起抹掉），
+    // 于是 `require("./x")` 里的路径没了、正则一条都匹配不到 —— 守卫**空转通过**。
+    // 我拿"故意写坏路径"验过一次才发现：它当时是绿的。凡是守卫，都得先证明它会红。
+    const code = read(file);
+    for (const m of code.matchAll(/require\(\s*["'](\.[^"']*)["']\s*\)/g)) {
+      const target = path.resolve(path.dirname(path.join(root, file)), m[1]);
+      if (!exists(target)) problems.push(`${file} → require("${m[1]}") 解析到不存在的 ${path.relative(root, target)}`);
+    }
+  }
+  assert.deepEqual(problems, [], "这些相对 require 指不到真实文件：\n" + problems.join("\n"));
+});
+
 test("契约⑧：一键全自动用到的 taskRunners.<键> 必须在装配处真的提供（且反过来不剩多余的）", () => {
   // 编排模块只拿到一个 taskRunners 袋子，键名对不上时抛的是
   // 「taskRunners.xxx is not a function」—— 这条链是软件的主功能，

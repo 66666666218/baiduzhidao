@@ -11,13 +11,13 @@ const { createAdapter, BrowserPool } = require("./src/browser");
 const { LlmClient } = require("./src/llm/client");
 const { TaskManager } = require("./src/tasks/manager");
 const { runCrawlTask } = require("./src/tasks/crawl");
+const { runSearchResourcesTask } = require("./src/tasks/search-resources");
+const { runCheckPublishedTask } = require("./src/tasks/check-published");
 const { runGenerateTask } = require("./src/tasks/generate");
 const { runSubmitTask } = require("./src/tasks/submit");
 const { runPassedCountTask } = require("./src/tasks/passed-count");
 const { runBatchTransferTask } = require("./src/tasks/batch-transfer");
 const { runBatchUploadTask, runTopicUploadTask } = require("./src/tasks/upload-batch");
-const searchCrawler = require("./src/netdisk/search-crawler");
-const workbench = require("./src/netdisk/workbench");
 const { randomPickQuestions } = require("./src/tasks/random-pick");
 const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
@@ -26,7 +26,9 @@ const { describeUpdateError, describeError } = require("./src/errors");
 const { resolveNetdiskRoles } = require("./src/domain/account-topic");
 const { createAutoPipeline } = require("./src/workflows/auto-pipeline");
 const { AccountManager } = require("./src/browser/account-manager");
-// 查收录 / 权益检查要开窗口取 Cookie（runCheckPublishedTask），这里必须导入。
+// 「从比特窗口提取 Cookie」这条通道要连 CDP 取 Cookie，所以主进程仍然需要 chromium。
+// （2026-10-10：查收录/权益检查已搬到 src/tasks/check-published.js，且**优先用「账号凭证」里存的
+//   Cookie、不开窗口**；这里保留只是因为还有上面这条通道和登录窗口。）
 // 之前漏了它，直接把「查收录」「账号总览」打成一跑就 ReferenceError: chromium is not defined，
 // 而日志只显示「查收录失败」，完全看不出是少了一行 import。
 const { chromium } = require("playwright-core");
@@ -198,90 +200,7 @@ async function startTask(name, payload, runner) {
 
 // ---------- 任务实现 ----------
 
-/**
- * 搜资源：纯协议搜百度知道（无浏览器、无需 Cookie）→ 产出资源表，直接喂批量转存。
- *
- * 抽成具名函数是为了让「一键全自动」编排也能调同一个实现，而不是抄第二遍。
- */
-async function runSearchResourcesTask(ctx, deps) {
-  const { log } = deps;
-  const settings = config.load();
-  const explicit = (Array.isArray(ctx.payload.keywords) ? ctx.payload.keywords : [])
-    .map((x) => String(x || "").trim()).filter(Boolean);
 
-  let terms;
-  if (explicit.length) {
-    terms = explicit.map((term) => ({ topic: "", term }));
-  } else {
-    // 用「账号绑定的题材」决定搜什么：哪个账号负责哪类资源，就搜哪类。
-    // 传了 bitEnvs 就只看这些账号绑的题材（一键全自动可以只挑几个号跑），
-    // 否则用设置页里全部账号的题材。
-    const topicMap = settings.accountTopics || {};
-    const picked = (Array.isArray(ctx.payload.bitEnvs) ? ctx.payload.bitEnvs : [])
-      .map((e) => (e && typeof e === "object" ? e.label ?? e.name : e))
-      .map((x) => String(x || "").trim())
-      .filter(Boolean);
-    const topics = picked.length
-      ? picked.map((name) => topicMap[name]).filter(Boolean)
-      : Object.values(topicMap);
-    if (!topics.length) {
-      throw new Error(picked.length
-        ? "选中的账号都还没绑定题材：请到设置页「账号题材绑定」给它们配上，或直接指定搜索关键词。"
-        : "没有账号绑定题材：请到设置页「账号题材绑定」配置，或直接指定搜索关键词。");
-    }
-    const built = searchCrawler.buildTopicSearchTerms(topics, settings.searchKeywords);
-    if (built.uncovered.length) log(`⚠️ 这些题材没配搜索词，本次不搜：${built.uncovered.join("、")}`);
-    if (!built.terms.length) throw new Error("这些题材都没有配搜索词，请到设置页「搜索词」里给它们配上。");
-    terms = built.terms;
-  }
-
-  log(`按题材搜索（${terms.length} 个词）：${terms.map((t) => (t.topic ? `${t.topic}→${t.term}` : t.term)).join("、")}`);
-  const result = await searchCrawler.crawlSearchResources({
-    keywords: terms.map((t) => t.term),
-    pages: Number(ctx.payload.pages) || settings.searchPages,
-    limit: Number(ctx.payload.limit) || 0,
-    onLog: log,
-    onProgress: (p) => ctx.report({ done: p.done, total: p.total, status: "running" }),
-    shouldStop: () => ctx.shouldStop(),
-  });
-
-  // 列顺序有讲究：batch-transfer 靠列名猜「名称列/链接列/提取码列」，
-  // 名称列必须在最前面，否则它可能把别的列当成资源名。
-  const rows = result.rows.map((r) => ({
-    资源名: r.name,
-    链接: r.link,
-    提取码: r.pwd,
-    问题链接: r.questionUrl,
-    来源关键词: r.source,
-  }));
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
-  const outputPath = path.join(dataDir, "搜资源", `搜资源_${stamp}.xlsx`);
-  const savedPath = excel.writeWorkbookSafe(outputPath, rows, "搜资源", ["资源名", "链接", "提取码", "问题链接", "来源关键词"], log);
-  log(`搜资源产出 ${rows.length} 条：${savedPath}`);
-  return { count: rows.length, stats: result.stats, outputPath: savedPath };
-}
-
-/**
- * 查收录：核对上传到答主工作台的问答**是否真的被收录**。
- *
- * 为什么需要单独一步：上传接口返回 200 只代表**平台收下了**，之后平台还要异步审核，
- * 审核结果只体现在工作台的「上传记录」里（`qa/api/bulkqa/tasks`）。
- * 三件事是三回事：接口 200 → 审核通过 → 真的出现在回答里。
- *
- * 做法和转存一致：从浏览器取一次 Cookie，之后全程纯协议（不再操作页面）。
- */
-/**
- * 从「账号凭证」存的账号里取 Cookie（按比特环境名匹配）。
- *
- * 为什么按名字匹配：账号是用户在「网盘管理 → 添加账号」里自己命名加进去的，
- * 想让它在查收录/权益检查里生效，名字必须和比特环境名一致——
- * 跟「账号题材绑定」是同一条规矩（差一个字就不生效）。
- *
- * 实测：只带 BDUSS 就能调通工作台接口（BDUSS 是百度全域 Cookie），
- * 所以存过的账号不必为每次查收录再开一次浏览器。
- *
- * 返回 "" 表示没存 → 调用方回落到开窗口取。
- */
 /**
  * 用「知道侧」接口验证这份 Cookie 的登录态 —— 这是整条链的通行证。
  * 只带这两条就够：BDUSS 是百度全域 Cookie，网盘和知道通用；STOKEN 给网盘侧用。
@@ -293,195 +212,6 @@ async function fetchZhidaoLogin(account) {
     signal: AbortSignal.timeout ? AbortSignal.timeout(12000) : undefined,
   });
   return JSON.parse(await res.text());
-}
-
-function storedCookieOf(envLabel, log) {
-  try {
-    const { credentialOf } = require("./src/netdisk/manager");
-    const cred = credentialOf(dataDir, envLabel);
-    if (!cred) return "";
-    const parts = [`BDUSS=${cred.bduss}`];
-    if (cred.stoken) parts.push(`STOKEN=${cred.stoken}`);
-    log(`查收录：${envLabel} 用已保存的 Cookie（不开窗口）`);
-    return parts.join("; ");
-  } catch (e) {
-    log(`（读取已保存的 Cookie 失败，回落到开窗口：${e.message}）`);
-    return "";
-  }
-}
-
-async function runCheckPublishedTask(ctx, deps) {
-  const { browserPool, log } = deps;
-  const settings = config.load();
-  const requested = (Array.isArray(ctx.payload.bitEnvs) ? ctx.payload.bitEnvs : [])
-    .map((e) => (e && typeof e === "object" ? e.label ?? e.name : e))
-    .map((x) => String(x || "").trim()).filter(Boolean);
-  const bitEnvs = requested.length ? requested : (settings.bitEnvs || []).map((e) => e.label || e).filter(Boolean);
-  if (!bitEnvs.length) throw new Error("请先填写比特浏览器环境名称。");
-  const pageSize = Math.min(100, Math.max(1, Number(ctx.payload.pageSize) || 20));
-  // 逐条被拒原因默认开：只看「失败 N 条」等于只能猜原因，结果文件里原因是明写的
-  const withReasons = ctx.payload.withReasons !== false;
-  const reasonTaskLimit = Math.min(50, Math.max(1, Number(ctx.payload.reasonTaskLimit) || 5));
-
-  const accounts = [];
-  const rows = [];
-  const failedRows = [];
-  for (const envLabel of bitEnvs) {
-    if (ctx.shouldStop()) break;
-    let browser = null;
-    try {
-      // 取登录态：**优先用「账号凭证」里存好的 Cookie，没存才开窗口**。
-      // 实测：只带 BDUSS 就能调通工作台接口（BDUSS 是百度全域 Cookie），
-      // 所以存过的账号不必为每次查收录/权益检查再开一次浏览器。
-      let cookieStr = storedCookieOf(envLabel, log);
-      if (!cookieStr) {
-        log(`查收录：打开比特环境 ${envLabel}（未存 Cookie，开窗口取登录态）`);
-        const handle = await browserPool.acquire(envLabel);
-        browser = await chromium.connectOverCDP(handle.cdpUrl);
-        const context = browser.contexts()[0] || (await browser.newContext());
-        const cookies = await context.cookies(workbench.WB_HOST);
-        const bduss = (cookies.find((c) => c.name === "BDUSS") || {}).value || "";
-        if (!bduss) {
-          log(`⚠️ ${envLabel} 未登录百度账号，跳过（查收录需要登录态）。`);
-          accounts.push({ envLabel, ok: false, hasPermission: null, error: "未登录百度账号" });
-          continue;
-        }
-        cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-      }
-
-      let info = { name: "", remainingQuota: NaN, banned: false, banDays: -1 };
-      try {
-        info = workbench.pickUserInfo(await workbench.fetchWorkbenchJson("/qa/api/bulkqa/userinfo", cookieStr));
-      } catch (e) {
-        log(`（账号信息查询失败，不影响查收录：${e.message}）`);
-      }
-      const quotaText = Number.isFinite(info.remainingQuota) ? info.remainingQuota : "未知";
-      log(`【${envLabel}】账号 ${info.name || "(未取到)"}｜剩余额度 ${quotaText}`);
-      if (info.banned) {
-        // 工作台自己会报封禁状态——这是判断"这个号还能不能用"最直接的依据
-        log(`🚫 该账号被封禁${info.banDays > 0 ? ` ${info.banDays} 天` : ""}，本账号后续上传/转存都会失败，建议先换号。`);
-      }
-
-      const resp = await workbench.fetchWorkbenchJson(`/qa/api/bulkqa/tasks?page=1&pageSize=${pageSize}`, cookieStr);
-      const tasks = workbench.pickTaskList(resp);
-      if (!tasks.length) {
-        log(`⚠️ ${envLabel} 没取到上传记录——接口结构可能变了，或该账号还没上传过。`);
-        accounts.push({ envLabel, ok: false, hasPermission: null, error: "没有取到上传记录" });
-        continue;
-      }
-      const summary = workbench.summarizeTasks(tasks);
-      log(`最近 ${summary.taskCount} 个上传任务（${summary.lastAt || "?"} 起）：共 ${summary.totalRows} 条 → `
-        + `收录 ${summary.successRows} 条，被拒 ${summary.failedRows} 条，扣额度 ${summary.usedQuota}`);
-      for (const task of tasks.slice(0, 8)) {
-        log(`  · ${workbench.formatTask(task)}`);
-        rows.push({
-          环境: envLabel,
-          账号: info.name || "",
-          任务名: task.taskName || "",
-          创建时间: workbench.formatTime(task.createdAt),
-          总数: Number(task.totalCount) || 0,
-          已收录: Number(task.successCount) || 0,
-          被拒: Number(task.failCount) || 0,
-          扣额度: Number(task.usedTotal) || 0,
-        });
-      }
-      accounts.push({
-        envLabel,
-        ok: true,
-        name: info.name,
-        // 「批量发布权益」：工作台 userinfo 里的 hasPermission（实测 true/false）。
-        // 没这个权益的账号上传会被拒，所以网盘链要据此跳号。
-        // 查询失败时给 null（未知），调用方按"不拦"处理——不能因为查不到就误封账号。
-        hasPermission: info.hasPermission === undefined ? null : info.hasPermission,
-        remainingQuota: Number.isFinite(info.remainingQuota) ? info.remainingQuota : null,
-        taskTotal: workbench.pickTaskTotal(resp),
-        summary,
-      });
-      ctx.emitItem({ title: `${envLabel} 查收录`, status: `收录 ${summary.successRows} / 被拒 ${summary.failedRows}`, bitEnv: envLabel });
-
-      // 逐条被拒原因：只对「有失败」的任务拉结果文件（每个文件可能几百行，不能全量拉）
-      if (withReasons && summary.failedRows > 0) {
-        const suspects = tasks.filter((t) => Number(t.failCount) > 0).slice(0, reasonTaskLimit);
-        for (const task of suspects) {
-          if (ctx.shouldStop()) break;
-          try {
-            const buf = await workbench.fetchTaskResult(task.id, cookieStr);
-            const tmp = path.join(dataDir, "查收录", `.result_${task.id}.xlsx`);
-            fs.mkdirSync(path.dirname(tmp), { recursive: true });
-            fs.writeFileSync(tmp, buf);
-            let rows = [];
-            try {
-              rows = excel.readTableRows(tmp);
-            } finally {
-              fs.rmSync(tmp, { force: true });
-            }
-            const failed = workbench.pickFailedRows(rows);
-            for (const row of failed) {
-              failedRows.push({
-                环境: envLabel,
-                任务名: task.taskName || "",
-                任务时间: workbench.formatTime(task.createdAt),
-                qid: row.qid,
-                问题: row.title,
-                失败原因: row.reason,
-                答案带链接: row.hasLink ? "是" : "否",
-                问题链接: row.questionUrl,
-              });
-            }
-          } catch (e) {
-            log(`（任务 ${task.id} 的结果文件取不到：${e.message}）`);
-          }
-        }
-      }
-    } catch (error) {
-      log(`⚠️ ${envLabel} 查收录失败：${describeError(error)}`);
-      accounts.push({ envLabel, ok: false, hasPermission: null, error: error.message });
-    } finally {
-      await browser?.close?.().catch(() => {});
-      await browserPool.release(envLabel, { close: settings.closeAfter }).catch(() => {});
-    }
-    ctx.report({ done: accounts.length, total: bitEnvs.length, status: "running" });
-  }
-
-  const okAccounts = accounts.filter((a) => a.ok);
-  const failedRowsTotal = okAccounts.reduce((sum, a) => sum + a.summary.failedRows, 0);
-  if (failedRowsTotal > 0) {
-    log(`⚠️ 合计有 ${failedRowsTotal} 条被平台拒收。`);
-    if (failedRows.length) {
-      // 原因是从结果文件里读出来的，不是猜的——这正是加这个功能的理由
-      const reasons = workbench.countReasons(failedRows);
-      log(`被拒原因分布：${reasons.map((r) => `${r.reason} ${r.count} 条`).join("、")}`);
-      for (const row of failedRows.slice(0, 8)) {
-        log(`  · [${row.失败原因}] ${String(row.问题).slice(0, 42)}`);
-      }
-      if (failedRows.length > 8) log(`  …还有 ${failedRows.length - 8} 条，见导出的「被拒明细」表。`);
-    } else if (withReasons) {
-      log("（结果文件没取到，本轮只有条数。可在界面「上传记录」里点该任务的下载按钮手动核对。）");
-    }
-  }
-  const stopped = ctx.shouldStop();
-  ctx.report({ done: accounts.length, total: bitEnvs.length, status: stopped ? "stopped" : "done" });
-
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
-  let outputPath = "";
-  if (rows.length) {
-    outputPath = path.join(dataDir, "查收录", `收录核对_${stamp}.xlsx`);
-    outputPath = excel.writeWorkbookSafe(
-      outputPath, rows, "收录核对",
-      ["环境", "账号", "任务名", "创建时间", "总数", "已收录", "被拒", "扣额度"], log
-    );
-    log(`收录明细已导出：${outputPath}`);
-  }
-  let failedPath = "";
-  if (failedRows.length) {
-    failedPath = path.join(dataDir, "查收录", `被拒明细_${stamp}.xlsx`);
-    failedPath = excel.writeWorkbookSafe(
-      failedPath, failedRows, "被拒明细",
-      ["环境", "任务名", "任务时间", "qid", "问题", "失败原因", "答案带链接", "问题链接"], log
-    );
-    log(`被拒明细已导出：${failedPath}`);
-  }
-  return { stopped, accounts, outputPath, failedPath, failedRows: failedRows.length, checked: okAccounts.length };
 }
 
 // ---------- IPC 注册（在 main.js 中调用） ----------

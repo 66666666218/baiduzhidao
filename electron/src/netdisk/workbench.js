@@ -64,6 +64,10 @@ function formatTask(task) {
   const ok = Number(t.successCount) || 0;
   const bad = Number(t.failCount) || 0;
   if (!total) return `${name}｜${time}｜状态未知`;
+  // 刚上传完、平台还没审时 successCount / failCount **都是 0** ——
+  // 这时候套用下面那句会输出「✅ 全部收录 0/5」：一条都还没收录，却写着"全部收录"。
+  // 2026-10-10 第一次真机跑就撞上了，所以单独把"还没出结果"这一档分出来。
+  if (!ok && !bad) return `${name}｜${time}｜⏳ 审核中（共 ${total} 条，还没出结果）`;
   if (!bad) return `${name}｜${time}｜✅ 全部收录 ${ok}/${total}`;
   return `${name}｜${time}｜⚠️ 收录 ${ok}/${total}，被拒 ${bad} 条`;
 }

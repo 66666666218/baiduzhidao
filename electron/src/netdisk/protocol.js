@@ -95,7 +95,14 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
 
   // 2) 分享页 → mset
   // 分享页偶发返回不含 mset 的响应（限流 / 半渲染）。一次拿不到就整条判死太脆：
-  // 实测同一条链接、同一份 Cookie，第一次 fetch 解析为空、重试就能拿到。所以给 3 次。
+  // 实测同一条链接、同一份 Cookie，第一次 fetch 解析为空、重试就能拿到。
+  //
+  // ⚠️ 退避**必须够长**。2026-10-10 真机跑批实测：10 条连着跑（并发 2、条间隔约 1 秒）时有 3 条
+  // 卡在这里失败，响应 52KB 无 mset；而几分钟后对**同样的链接**走**完全相同的流程**，一次就拿到
+  // 78KB 带 mset 的正常页面。也就是说链接是好的，是我们自己打太快被限流了 ——
+  // 而原来的退避只有 1s / 2s，3 次全撞在限流窗口里，等于白重试。
+  // 现在改成 2s / 6s / 12s 并加抖动（抖动是为了避免并发的那几条同时再撞上去）。
+  const SHARE_RETRY_DELAYS = [2000, 6000, 12000];
   const SHARE_DATA_RE = /(?:yunData\.setData|locals\.mset)\(([\s\S]+?)\);/;
   let html = "";
   let data = null;
@@ -107,9 +114,14 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
       try { data = JSON.parse(mm[1]); } catch { data = null; }
       if (data && Number(data.errno) === 0) break;
     }
-    if (attempt < 3) await sleep(1000 * attempt);
+    if (attempt < 3) await sleep(SHARE_RETRY_DELAYS[attempt - 1] + Math.random() * 1500);
   }
-  if (!data) throw new Error(`分享页无数据（重试 3 次仍失败；响应 ${html.length} 字节，多为限流或分享已失效）`);
+  if (!data) {
+    throw new Error(`分享页无数据（重试 3 次仍失败；响应 ${html.length} 字节）。`
+      + "**先别急着当链接失效**：连续跑批时这一条多半是限流 —— 隔几分钟重跑同一条若能成功就是限流，"
+      + "把「转存并发」调小、或加大条间间隔再试（已转存的会自动跳过）。"
+      + "若隔多久都拿不到，才是分享被取消或链接本身失效。");
+  }
   if (Number(data.errno) !== 0) throw new Error(`分享数据 errno=${data.errno}`);
   const uk = String(data.share_uk || data.uk || "");
   const shareid = String(data.shareid || "");
@@ -240,7 +252,13 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   const extraPaths = ((tBody.extra && tBody.extra.list) || []).map((x) => x && x.to).filter(Boolean);
   const dupPaths = ((tBody.duplicated && tBody.duplicated.list) || []).map((x) => x && x.path).filter(Boolean);
   const toPaths = extraPaths.concat(dupPaths);
-  if (!toPaths.length) throw new Error("转存返回成功但未取得落盘路径（extra/duplicated 均为空）");
+  // 把响应本体带一点出来：光说"extra/duplicated 均为空"没法判断是接口改了、
+  // 还是这几个文件其实被转到了别的地方。2026-10-10 真机跑批里 10 条里有 1 条撞上，
+  // 当时日志什么都没留下，只能再来一次 —— 证据必须当场留下。
+  if (!toPaths.length) {
+    throw new Error("转存返回成功但未取得落盘路径（extra/duplicated 均为空）。"
+      + `原始响应：${JSON.stringify(tBody).slice(0, 300)}${createHint}`);
+  }
   return { toPaths, fsIds, usedDir, fellBack };
 }
 

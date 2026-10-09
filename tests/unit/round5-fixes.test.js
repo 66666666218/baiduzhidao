@@ -181,3 +181,38 @@ test("随机抽题：策略名大小写不敏感（否则会出现「报告说�
   assert.deepEqual(upper.picked.map((p) => p.title), lower.picked.map((p) => p.title),
     "实际采样也必须按归一化后的策略走");
 });
+
+// ---------- 第一次真机跑批暴露的三处（2026-10-10） ----------
+
+test("查收录的任务标签：刚上传、平台还没审时不能说「✅ 全部收录 0/5」", () => {
+  const wb = require("../../electron/src/netdisk/workbench");
+  const task = (o) => ({ taskName: "T", createdAt: 1791562006, ...o });
+  // 真机现场：上传完立刻查收录，success=0 / fail=0，旧代码输出「✅ 全部收录 0/5」
+  // —— 一条都还没收录，却写着"全部收录"。
+  assert.match(wb.formatTask(task({ totalCount: 5, successCount: 0, failCount: 0 })), /审核中/);
+  assert.doesNotMatch(wb.formatTask(task({ totalCount: 5, successCount: 0, failCount: 0 })), /全部收录/);
+  assert.match(wb.formatTask(task({ totalCount: 5, successCount: 5, failCount: 0 })), /全部收录 5\/5/);
+  assert.match(wb.formatTask(task({ totalCount: 5, successCount: 3, failCount: 2 })), /被拒 2 条/);
+});
+
+test("分享页取不到数据时，报错要指向「限流」并给出下一步，而不是甩锅给链接失效", () => {
+  // 真机现场：10 条里 3 条报"分享页无数据"，几分钟后对**同样的链接**走同样的流程一次就成功
+  // —— 链接是好的，是我们自己打太快被限流。原来的文案只说"多为限流或分享已失效"，
+  // 没有告诉用户"怎么区分、怎么处理"。
+  const src = fs.readFileSync(path.join(__dirname, "..", "..", "electron/src/netdisk/protocol.js"), "utf8");
+  const at = src.indexOf("分享页无数据");
+  assert.ok(at > 0, "找不到那段报错");
+  const msg = src.slice(at, at + 400);
+  assert.match(msg, /限流/, "要提到限流");
+  assert.match(msg, /重跑|调小|间隔/, "要给出能照做的下一步");
+});
+
+test("分享页重试的退避必须够长（1s/2s 会全都撞在限流窗口里）", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "..", "electron/src/netdisk/protocol.js"), "utf8");
+  const m = /SHARE_RETRY_DELAYS = \[([^\]]+)\]/.exec(src);
+  assert.ok(m, "应有一个显式的退避表");
+  const delays = m[1].split(",").map((x) => Number(x.trim()));
+  assert.ok(delays.length >= 2, "至少要两次退避");
+  assert.ok(delays[0] >= 2000, `第一次退避 ${delays[0]}ms 太短（真机实测 1s 不足以躲开限流）`);
+  assert.ok(delays[delays.length - 1] >= 10000, `最后一次退避 ${delays[delays.length - 1]}ms 太短`);
+});
