@@ -7,6 +7,7 @@ const zhidao = require("../pages/zhidao");
 const { nowText } = require("../config");
 const excel = require("../storage/excel");
 const { describeError } = require("../errors");
+const protocolCrawl = require("../zhidao/protocol-crawl");
 
 /**
  * 爬题任务：进入答题区 → 锁定分类 → 逐页逐题打开 → 记录标题+链接入库。
@@ -51,6 +52,54 @@ async function runCrawlTask(ctx, deps) {
     if (ctx.shouldStop()) break;
     let browser = null;
     try {
+      // ★ 纯协议优先：存过 Cookie 的账号直接拉题目列表接口，**不开窗口**。
+      // 接口是活动页自己的 XHR（见 protocol-crawl.js 的注释）。
+      const cred = typeof deps.credentialOf === "function" ? deps.credentialOf(envLabel) : null;
+      if (cred && cred.bduss) {
+        const cookie = `BDUSS=${cred.bduss}${cred.stoken ? "; STOKEN=" + cred.stoken : ""}`;
+        const dispatcher = typeof deps.proxyOf === "function" ? deps.proxyOf(envLabel) : undefined;
+        const PAGE_SIZE = 20;
+        let added = 0;
+        let base = (startPage - 1) * PAGE_SIZE;
+        let empty = 0;
+        log(`【纯协议】${envLabel} 爬取「${category}」（不走窗口）`);
+        while (!ctx.shouldStop()) {
+          const got = await protocolCrawl.fetchQuestionPage({ cookie, category, base, rn: PAGE_SIZE, dispatcher });
+          if (!got.ok) { log(`纯协议爬题失败：${got.reason}`); break; }
+          if (!got.rows.length) { empty += 1; if (empty >= 2) break; base += PAGE_SIZE; continue; }
+          empty = 0;
+          let fresh = 0;
+          for (const row of got.rows) {
+            if (ctx.shouldStop()) break;
+            if (maxQuestions > 0 && added >= maxQuestions) break;
+            const key = zhidao.listKey(row.title);
+            if (!key || seenKeys.has(key)) { duplicateSkipped += 1; continue; }
+            seenKeys.add(key);
+            store.addBankQuestion({
+              category,
+              title: row.title,
+              questionContent: row.questionContent,
+              questionUrl: row.questionUrl,
+              bitEnv: envLabel,
+              status: "已采集",
+              createdAt: nowText(),
+            });
+            added += 1;
+            fresh += 1;
+            doneCount += 1;
+            ctx.emitItem({ title: row.title, status: "已采集", bitEnv: envLabel });
+            ctx.report({ done: doneCount, total: maxQuestions || 0, status: "running" });
+          }
+          log(`第 ${Math.floor(base / PAGE_SIZE) + 1} 页新增 ${fresh} 条，本次累计 ${added} 条。`);
+          if (maxQuestions > 0 && added >= maxQuestions) break;
+          if (fresh === 0) { empty += 1; if (empty >= 2) break; }
+          base += PAGE_SIZE;
+          await new Promise((res) => setTimeout(res, 800));
+        }
+        log(`${envLabel} 纯协议爬题完成：新增 ${added} 条（重复跳过 ${duplicateSkipped} 条）。`);
+        store.setEnvProgress?.(`${envLabel}:${category}`, { lastPage: Math.floor(base / PAGE_SIZE) + 1 });
+        continue;
+      }
       log(`打开比特环境：${envLabel}`);
       const handle = await browserPool.acquire(envLabel);
       browser = await chromium.connectOverCDP(handle.cdpUrl);
