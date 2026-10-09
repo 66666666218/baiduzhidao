@@ -114,13 +114,14 @@ const WB_REFERER = `${WB_HOST}/b/batch/batch-upload`;
  * 为什么不用浏览器：和转存一样——Cookie 取一次就够，之后全程 HTTP。
  * 浏览器只在"取 Cookie"那一步用。
  */
-async function fetchWorkbenchJson(pathname, cookie, { fetchImpl = globalThis.fetch, timeoutMs = 20000 } = {}) {
+async function fetchWorkbenchJson(pathname, cookie, { fetchImpl = globalThis.fetch, timeoutMs = 20000, dispatcher } = {}) {
   if (!String(cookie || "").trim()) throw new Error("缺少登录 Cookie（该账号未登录百度）");
   const url = `${WB_HOST}${pathname}`;
   let res;
   try {
     res = await fetchImpl(url, {
       headers: { Cookie: cookie, "User-Agent": WB_UA, Referer: WB_REFERER },
+      dispatcher,
       redirect: "follow",
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -173,12 +174,13 @@ function countReasons(failedRows) {
 }
 
 /** 取某个上传任务的「结果下载」文件（xlsx 二进制） */
-async function fetchTaskResult(taskId, cookie, { fetchImpl = globalThis.fetch, timeoutMs = 30000 } = {}) {
+async function fetchTaskResult(taskId, cookie, { fetchImpl = globalThis.fetch, timeoutMs = 30000, dispatcher } = {}) {
   if (!String(cookie || "").trim()) throw new Error("缺少登录 Cookie（该账号未登录百度）");
   const url = `${WB_HOST}/qa/api/bulkqa/task/download?id=${encodeURIComponent(taskId)}`;
   const res = await fetchImpl(url, {
     headers: { Cookie: cookie, "User-Agent": WB_UA, Referer: WB_REFERER },
     redirect: "follow",
+    dispatcher,
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) throw new Error(`结果下载失败 HTTP ${res.status}`);

@@ -34,7 +34,15 @@ function dispatcherFor(proxyUrl) {
     agent = new ProxyAgent(url);
   } catch (error) {
     // 地址写错不该让整个任务炸掉 —— 记一条警告然后直连
-    console.warn(`[proxy] 代理地址无法解析，本次直连：${url}（${error.message}）`);
+    // **脱敏**：代理地址的常见写法是 http://user:pass@host:port，整串打出去等于
+    // 把代理账号密码写进日志文件（日志还会被用户导出、贴给别人看）。
+    // 用 indexOf 而不是正则：正则里的反斜杠在层层工具链里被吞过两次，字符串操作不会。
+    const schemeEnd = url.indexOf("//");
+    const atSign = url.indexOf("@");
+    const masked = (schemeEnd >= 0 && atSign > schemeEnd)
+      ? url.slice(0, schemeEnd + 2) + "***@" + url.slice(atSign + 1)
+      : url;
+    console.warn(`[proxy] 代理地址无法解析，本次直连：${masked}（${error.message}）`);
     agent = undefined;
   }
   cache.set(url, agent);

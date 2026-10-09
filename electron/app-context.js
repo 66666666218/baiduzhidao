@@ -745,7 +745,14 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     const stoken = pick("STOKEN");
     if (!win.isDestroyed()) win.destroy();
     if (!bduss) return { ok: false, reason: "没有检测到登录（窗口已关闭或超时）。请重新点「登录并提取」，在窗口里完成登录。" };
-    return { ok: true, bduss, stoken };
+    // 顺便问一次账号名 —— 界面用它给"没填备注名"的情况自动命名，
+    // 免得用户登录成功却因为没填名字丢掉这份 Cookie、还得重登一遍。
+    let userName = "";
+    try {
+      const info = await fetchZhidaoLogin({ bduss, stoken });
+      userName = String((info && info.userName) || "");
+    } catch { /* 取不到就算了，不影响提取本身 */ }
+    return { ok: true, bduss, stoken, userName };
   });
 
   ipcMain.handle("netdisk:accounts:extract-from-window", async (_e, p) => {

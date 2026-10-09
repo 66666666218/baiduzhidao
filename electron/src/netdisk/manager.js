@@ -38,7 +38,7 @@ ManagerJar.prototype.bdstoken = function () {
 ManagerJar.prototype.constructor = ManagerJar;
 
 function clientOf(account) {
-  var jar = new protocol.Jar(account.bduss, account.stoken);
+  var jar = new protocol.Jar(account.bduss, account.stoken, account.dispatcher);
   Object.setPrototypeOf(jar, ManagerJar.prototype);
   return jar;
 }

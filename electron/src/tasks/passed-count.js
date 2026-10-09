@@ -42,7 +42,7 @@ async function runPassedCountTask(ctx, deps) {
   const bitEnvs = rawEnvs.map((env) => (env && typeof env === "object" ? env.label : env) || "").filter(Boolean);
   if (!bitEnvs.length) throw new Error("请先填写至少一个比特浏览器环境名称。");
 
-  await browserPool.adapter.checkConnection();
+  // 只在真要开窗口时才检查比特（真正的检查在下面的窗口分支里）
   const accounts = [];
   let browser = null;
 
@@ -75,6 +75,7 @@ async function runPassedCountTask(ctx, deps) {
         }
         log(`${envLabel} 纯协议取数失败，回落到窗口`);
       }
+      await browserPool.adapter.checkConnection();   // 走到这里才需要比特
       const handle = await browserPool.acquire(envLabel).catch((err) => {
         throw new Error(`${envLabel}：既没有已保存的 Cookie，比特窗口也打不开（${err.message}）。`
           + `请到「账号凭证」页点「登录并提取」存一份 Cookie。`);

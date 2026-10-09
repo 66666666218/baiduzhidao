@@ -144,7 +144,7 @@ async function runSubmitTask(ctx, deps) {
   }
   log(`提交逻辑：每账号提交 ${accountDailyLimit > 0 ? accountDailyLimit : "不限"} 条后轮换；打开题目链接、填入回答、点击提交。`);
 
-  await browserPool.adapter.checkConnection();
+  // 只在真要开窗口时才检查比特（真正的检查在下面的窗口分支里）
 
   // 被动探针：记录"提交回答"真实发出的写请求，为提交纯协议化提供依据。
   // 过滤掉打点/统计类噪声，只留 zhidao 域的 POST/PUT，并把 postData 开头一并留下
@@ -201,8 +201,13 @@ async function runSubmitTask(ctx, deps) {
               store.upsertAnswer(submitted);
               results.push(submitted);
               if (deps.autosavePath) {
-                try { excel.appendCsvRow(deps.autosavePath, excel.answerToRow(submitted), excel.ANSWER_HEADERS); } catch { /* 兜底通道失败不影响提交 */ }
+                try { excel.appendCsvRow(deps.autosavePath, excel.answerToRow(submitted), excel.ANSWER_HEADERS); }
+                catch (csvErr) { log(`⚠️ CSV 兜底写入失败（${csvErr.message}）—— 进程若异常退出，这条记录可能丢失。`); }
               }
+              // **必须写回来源表格**：窗口路径一直有这一步，协议路径我漏了。
+              // 少了它，表格里的状态永远停在"未提交"，下一轮「跳过已提交」读到旧状态
+              // → **整表重复提交**。这是协议化时最容易漏掉的"收尾动作"。
+              writeBackStatus(submitted);
               ctx.emitItem({ ...item, bitEnv: envLabel, status: "已提交" });
               log(`✅ ${processed}/${totalPlanned} 已提交：${item.title || qid}${r.aid ? "（aid=" + r.aid + "）" : ""}`);
             } else {
@@ -215,6 +220,7 @@ async function runSubmitTask(ctx, deps) {
         }
         log(`纯协议不可用（${tk.reason}），本账号回落到窗口`);
       }
+      await browserPool.adapter.checkConnection();   // 走到这里才需要比特
       log(`打开比特环境：${envLabel}（本账号 ${slot.rows.length} 条）`);
       const handle = await browserPool.acquire(envLabel);
       browser = await chromium.connectOverCDP(handle.cdpUrl);

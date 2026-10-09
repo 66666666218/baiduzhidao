@@ -42,6 +42,7 @@ function makeClient(jar) {
       },
       body: opts.body,
       redirect: "follow",
+      dispatcher: jar.dispatcher,
     });
     jar.apply(resp.headers.getSetCookie ? resp.headers.getSetCookie() : []);
     return resp.json().catch(() => ({}));
@@ -74,7 +75,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   let html = "";
   let data = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const pResp = await fetch(`${PAN}/s/${fullCode}`, { headers: { "User-Agent": UA, "Cookie": jar.str() }, redirect: "follow" });
+    const pResp = await fetch(`${PAN}/s/${fullCode}`, { headers: { "User-Agent": UA, "Cookie": jar.str() }, redirect: "follow", dispatcher: jar.dispatcher });
     jar.apply(pResp.headers.getSetCookie ? pResp.headers.getSetCookie() : []);
     html = await pResp.text();
     const mm = html.match(SHARE_DATA_RE);

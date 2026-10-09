@@ -127,8 +127,17 @@
     try {
       var creds = await rpc.invoke("auth:login-and-extract", { url: url });
       if (!creds || !creds.ok) { appendLog("登录提取失败：" + ((creds && creds.reason) || "未知原因")); return; }
-      var name = document.getElementById("nmAccountName").value.trim();
-      if (!name) { appendLog("登录成功，但「账号备注名」空着 —— 请填一个（要跟比特环境名一致），再点一次添加。"); return; }
+      // 备注名空着时**用百度账号名自动命名** —— 以前这里直接 return，
+      // 等于"登录成功却把 Cookie 丢了、要用户再登一次"，与界面承诺的
+      // "登进去就会自动关闭并填好"自相矛盾。
+      var typed = document.getElementById("nmAccountName").value.trim();
+      var name = typed || String(creds.userName || "").trim();
+      if (!name) {
+        appendLog("登录成功（账号 " + (creds.userName || "?") + "），但没能自动取名 —— 请在「账号备注名」填一个再点一次；Cookie 已暂存在本次会话里，不用重新登录。");
+        window.__pendingCred = creds;
+        return;
+      }
+      if (!typed) appendLog("未填备注名，已用百度账号名「" + name + "」自动命名。这个名字要与其他任务里的账号名一致才能被用上。");
       var info = await rpc.invoke("netdisk:accounts:add", { name: name, bduss: creds.bduss, stoken: creds.stoken });
       appendLog("✅ " + name + " 已入库（账号 " + ((info && info.userName) || "?") + "）" + (info && info.netdiskOk ? "，网盘已连接" : "，网盘未连接（只影响转存，答题链可用）"));
       loadAccounts();

@@ -46,7 +46,9 @@ async function runCrawlTask(ctx, deps) {
   const crawlOutputDir = String(payload.crawlOutputDir || "").trim().replace(/^"|"$/g, "");
   log(`准备爬取“${category}”全部题目（起始页 ${startPage}），只保存标题和链接。`);
   const adapter = browserPool.adapter;
-  await adapter.checkConnection();
+  // 只在**真要开窗口**时才检查比特客户端是否在线（真正的检查挪到下面窗口分支里）。
+  // 以前这句无条件执行，于是"纯协议模式"仍然隐含"比特客户端必须开着"——
+  // 用户按界面说的把比特关掉，第一步就失败，而错误只说"请先打开比特浏览器"。
 
   for (const envLabel of bitEnvs) {
     if (ctx.shouldStop()) break;
@@ -100,9 +102,12 @@ async function runCrawlTask(ctx, deps) {
           await new Promise((res) => setTimeout(res, 800));
         }
         log(`${envLabel} 纯协议爬题完成：新增 ${added} 条（重复跳过 ${duplicateSkipped} 条）。`);
-        store.setEnvProgress?.(`${envLabel}:${category}`, { lastPage: Math.floor(base / PAGE_SIZE) + 1 });
+        // 记断点。注意真实 API 是 setEnvPage —— 我之前写的是 setEnvProgress（不存在），
+        // 加了可选链所以没报错，但进度一直没写进去，等于断点续爬形同虚设。
+        store.setEnvPage(`${envLabel}:${category}`, Math.floor(base / PAGE_SIZE) + 1);
         continue;
       }
+      await adapter.checkConnection();   // 走到这里才需要比特
       log(`打开比特环境：${envLabel}`);
       const handle = await browserPool.acquire(envLabel);
       browser = await chromium.connectOverCDP(handle.cdpUrl);
