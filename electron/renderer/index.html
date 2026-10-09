@@ -16,6 +16,7 @@
       <nav>
         <button class="nav-item active" data-view="accounts">⚙️ 比特环境</button>
         <button class="nav-item" data-view="auto">⚡ 一键全自动</button>
+        <button class="nav-item" data-view="accounts-overview">👤 账号总览</button>
         <button class="nav-item" data-view="crawl">📥 题目爬取</button>
         <button class="nav-item" data-view="bank">📚 题库浏览</button>
         <button class="nav-item" data-view="random">🎲 随机抽题</button>
@@ -151,6 +152,28 @@
             <button class="btn primary" id="startAutoPipeline">▶ 开始一键全自动</button>
           </div>
           <div id="autoReport"></div>
+        </div>
+      </section>
+
+      <!-- 账号总览 -->
+      <section class="view" data-view="accounts-overview">
+        <h2>账号总览</h2>
+        <div class="card">
+          <p class="hint">按比特环境查每个账号的<b>剩余额度、上传条数、收录数、被拒数</b>。
+            数据来自答主工作台，需要该环境已登录百度账号（纯协议读取，不驱动页面）。</p>
+          <div class="card-actions">
+            <button class="btn primary" id="refreshAccountOverview">刷新账号总览</button>
+            <span class="hint" id="accountOverviewHint">点一下开始</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>比特环境</th><th>百度账号</th><th>剩余额度</th><th>上传任务</th>
+                <th>总条数</th><th>已收录</th><th>被拒</th><th>状态</th>
+              </tr></thead>
+              <tbody id="accountOverviewBody"></tbody>
+            </table>
+          </div>
         </div>
       </section>
 

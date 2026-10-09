@@ -128,6 +128,63 @@ $("exportBank").addEventListener("click", async () => {
   }
 });
 
+// ---------- 账号总览 ----------
+// 复用「查收录」那个任务：它已经按账号返回了 账号名/剩余额度/上传条数/收录/被拒，
+// 没必要再写一个任务去拿同样的数据。
+function renderAccountOverview(accounts) {
+  const tbody = $("accountOverviewBody");
+  tbody.innerHTML = "";
+  if (!accounts.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 8;
+    td.className = "empty-hint";
+    td.textContent = "没有可显示的账号：请先在设置页填写「比特环境名称」。";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const account of accounts) {
+    const tr = document.createElement("tr");
+    const cells = account.ok
+      ? [
+          account.envLabel,
+          account.name || "(未取到)",
+          account.remainingQuota == null ? "未知" : String(account.remainingQuota),
+          String(account.taskTotal || 0),
+          String(account.summary.totalRows),
+          String(account.summary.successRows),
+          String(account.summary.failedRows),
+          account.summary.hasFailure ? "⚠️ 有被拒" : "✅ 正常",
+        ]
+      : [account.envLabel, "-", "-", "-", "-", "-", "-", `❌ ${account.error}`];
+    for (const text of cells) {
+      const td = document.createElement("td");
+      td.textContent = text; // textContent 而不是 innerHTML：错误信息里可能带用户数据
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+}
+
+$("refreshAccountOverview").addEventListener("click", async () => {
+  $("accountOverviewHint").textContent = "查询中…";
+  try {
+    const settings = await rpc.invoke("settings:get");
+    const bitEnvs = settings.bitEnvs || [];
+    if (!bitEnvs.length) { $("accountOverviewHint").textContent = "请先在设置页填写比特环境账号"; return; }
+    // withReasons=false：总览只要汇总，不必为每批被拒去拉结果文件（那会很慢）
+    const result = await rpc.invoke("task:check-published", { bitEnvs, withReasons: false });
+    renderAccountOverview(result.accounts || []);
+    const okCount = (result.accounts || []).filter((a) => a.ok).length;
+    $("accountOverviewHint").textContent = `已刷新 ${okCount}/${bitEnvs.length} 个账号`;
+    appendLog(`账号总览已刷新：${okCount}/${bitEnvs.length} 个账号可用`);
+  } catch (error) {
+    $("accountOverviewHint").textContent = `刷新失败：${error.message}`;
+    appendLog(`账号总览刷新失败：${error.message}`);
+  }
+});
+
 // ---------- 软件更新（GitHub Releases） ----------
 let currentVersion = "";
 
@@ -727,7 +784,7 @@ function appendLog(text) {
   if (atBottom) view.scrollTop = view.scrollHeight;
 }
 
-const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "startBatchUpload", "startSearchResources", "checkPublished", "fetchPassed", "runSelfTest"];
+const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "startBatchUpload", "startSearchResources", "checkPublished", "refreshAccountOverview", "fetchPassed", "runSelfTest"];
 
 function setActionsEnabled(enabled) {
   for (const id of ACTION_BUTTON_IDS) {
