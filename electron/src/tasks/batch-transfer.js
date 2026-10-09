@@ -76,7 +76,16 @@ async function runBatchTransferTask(ctx, deps) {
   const perEnv = Math.max(1, Number(payload.perEnv) || 50); // 每窗口连续处理条数（轮换粒度）
   const destRoot = String(payload.destDir || "/来自资源批量转存").trim() || "/来自资源批量转存";
   const limit = Math.max(0, Number(payload.limit) || 0);
-  const cc = Math.max(1, Number(payload.cc) || 4);
+  // 默认并发从 4 改成 1。依据是 2026-10-10 的真机对照实验（同一批链接、同一账号、同一套请求）：
+  //   串行 cc=1  → 28 个请求 0 失败
+  //   并发 cc=2  → 9/9 失败
+  //   并发 cc=4  → 4/9 失败
+  // 也就是说"分享页取不到数据"**不是链接坏、不是格式问题、也不是账号被封**，
+  // 而是**同一个出口 IP 短时间内的并发请求数**触发的降级窗口（两个账号共用 IP 时会出现
+  // "账号1 失败、账号2 正常"的交替现象，正因为谁的请求落在窗口里谁中招）。
+  // 并发换来的速度，抵不过失败后要等几分钟重试的代价 —— 所以保守取 1；
+  // 想快就自己调大（--cc / payload.cc），但要知道失败率会跟着上去。
+  const cc = Math.max(1, Number(payload.cc) || 1);
   const delayMin = Math.max(0.5, Number(payload.delayMin) || 1);
   const delayMax = Math.max(delayMin, Number(payload.delayMax) || 2);
   const makeShare = payload.makeShare !== false;
@@ -179,6 +188,12 @@ async function runBatchTransferTask(ctx, deps) {
 
   const total = limit > 0 ? Math.min(limit, rows.length - startIdx) : rows.length - startIdx;
   log(`开始纯协议批量转存：目标 ${total} 条 | 并发 ${cc} | 目标目录 ${destRoot}`);
+  if (cc > 1) {
+    // 把实测数字直接摆出来：用户调大并发时该知道代价，而不是等失败了再来问。
+    log(`⚠️ 转存并发 ${cc}：真机对照实验里，并发 2 时「分享页取不到数据」的失败率是 100%、并发 4 是 44%，`
+      + `而串行（并发 1）跑 28 个请求零失败 —— 这是**同一出口 IP 的短时并发**触发的降级，不是链接坏。`
+      + `失败的那几条会在整批跑完后自动重试一遍，但会明显变慢。想稳就把并发调回 1。`);
+  }
   ctx.report({ done: 0, total, status: "running" });
 
   let done = 0, failed = 0, fatalStop = false;
@@ -270,9 +285,21 @@ async function runBatchTransferTask(ctx, deps) {
         // 上传走代理，等于同一批操作从两个 IP 发出，反而更可疑）。
         const dispatcher = typeof deps.proxyOf === "function" ? deps.proxyOf(cred.env) : undefined;
         const jar = new Jar(cred.bduss, cred.stoken, dispatcher);
-        const { toPaths } = await processOne(jar, {
+        const oneResult = await processOne(jar, {
           link: srcLink, pwd: cellPwd, destDir,
         });
+        // 大文件异步转存中：百度收下了但还没给落盘路径（show_msg=文件转存中）。
+        // **不能当失败**：文件确实在转，把它记成 failed 会虚报失败数、还可能进黑名单，
+        // 而且下次运行会重新发起一次转存（可能造成重复文件）。按"待确认"记档，下次来看。
+        if (oneResult.pending) {
+          const pendingEntry = { srcLink, name: rawName, status: "pending", attempts: ((prev && prev.attempts) || 0) + 1, error: "百度在异步转存中（大文件），本次拿不到落盘路径", at: new Date().toISOString() };
+          state.set(srcLink, pendingEntry);
+          saveState(pendingEntry);
+          log(`⏳ ${rawName.slice(0, 26)} → 百度在**异步转存中**（大文件），本次不算失败也不算完成；下次运行会再来确认。`);
+          ctx.emitItem({ ...itemBase, status: "转存中（大文件，待确认）" });
+          continue;
+        }
+        const { toPaths } = oneResult;
 
         let ownLink = "", ownPwd = "";
         if (makeShare) {
@@ -352,11 +379,14 @@ async function runBatchTransferTask(ctx, deps) {
         failed += 1;
         consecutiveFails += 1;
         const attempts = ((prev && prev.attempts) || 0) + 1;
-        const failEntry = { srcLink, name: rawName, status: "failed", attempts, error: (e.message || "").slice(0, 120), at: new Date().toISOString() };
+        // 截断长度要**给证据留地方**：上一轮我特意把百度返回的原始响应塞进错误信息里，
+        // 结果日志行只留 70 字、存档只留 120 字，正好把那段证据砍掉 ——
+        // 于是《琉璃》连续三轮失败，我每次都看不到原因，只能靠这次单独去挖。
+        const failEntry = { srcLink, name: rawName, status: "failed", attempts, error: (e.message || "").slice(0, 400), at: new Date().toISOString() };
         state.set(srcLink, failEntry);
         saveState(failEntry);
         ctx.emitItem({ ...itemBase, status: `转存失败：${(e.message || "").slice(0, 60)}` });
-        log(`✗ ${rawName.slice(0, 26)} → ${e.message.slice(0, 70)}`);
+        log(`✗ ${rawName.slice(0, 26)} → ${e.message.slice(0, 240)}`);
         if (e.fatal) { log("⛔ 容量不足，停止本次任务（已完成部分完好）。"); fatalStop = true; break; }
         if (consecutiveFails >= FAIL_STREAK_LIMIT) {
           log(`⚠️ 连续 ${consecutiveFails} 条失败，整条管线停止（断点已存档）。`);

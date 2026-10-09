@@ -141,3 +141,41 @@ test("processOne：分享页取不到数据时要打 sharePageLimited 标记（�
   });
   assert.equal(sharePageCalls, 3, "分享页要重试 3 次才放弃");
 });
+
+test("processOne：大文件异步转存（show_msg=文件转存中）要返回 pending，不能当成失败", async () => {
+  // 真机现场：《琉璃》4K 全集连续三轮被报「转存返回成功但未取得落盘路径」——
+  // 挖出原始响应才看到 show_msg 写着「文件转存中」：百度收下了、正在转，只是这次没给路径。
+  // 把它当失败会虚报失败数、可能进黑名单，而且下次运行还会再发起一次转存（可能重复落盘）。
+  const jar = new protocol.Jar("B", "");
+  const mset = JSON.stringify({ errno: 0, shareid: "111", uk: "222", bdstoken: "bt",
+    file_list: [{ fs_id: 1, isdir: 0, size: 100, path: "/a.mkv" }] });
+  await withFetch(async (url) => {
+    if (url.includes("/share/verify")) return fakeResponse({ errno: 0, randsk: "r" });
+    if (url.includes("/s/1abcdefghij")) return fakeResponse(`<script>locals.mset(${mset});</script>`);
+    if (url.includes("/api/create")) return fakeResponse({ errno: 0 });
+    if (url.includes("/share/transfer")) return fakeResponse({ errno: 0, show_msg: "文件转存中", task_id: "t1" });
+    return fakeResponse({});
+  }, async () => {
+    const r = await protocol.processOne(jar, { link: "https://pan.baidu.com/s/1abcdefghij", pwd: "ab12", destDir: "/x" });
+    assert.equal(r.pending, true, "要返回 pending 而不是抛错");
+    assert.deepEqual(r.toPaths, [], "这次拿不到路径");
+  });
+});
+
+test("processOne：errno=0 但没有路径、且不是「转存中」时，仍然按失败报（并带上原始响应）", async () => {
+  const jar = new protocol.Jar("B", "");
+  const mset = JSON.stringify({ errno: 0, shareid: "111", uk: "222", bdstoken: "bt",
+    file_list: [{ fs_id: 1, isdir: 0, size: 100, path: "/a.mkv" }] });
+  await withFetch(async (url) => {
+    if (url.includes("/share/verify")) return fakeResponse({ errno: 0, randsk: "r" });
+    if (url.includes("/s/1abcdefghij")) return fakeResponse(`<script>locals.mset(${mset});</script>`);
+    if (url.includes("/api/create")) return fakeResponse({ errno: 0 });
+    if (url.includes("/share/transfer")) return fakeResponse({ errno: 0, show_msg: "", requeno: "x" });
+    return fakeResponse({});
+  }, async () => {
+    await assert.rejects(
+      () => protocol.processOne(jar, { link: "https://pan.baidu.com/s/1abcdefghij", pwd: "ab12", destDir: "/x" }),
+      (err) => /未取得落盘路径/.test(err.message) && /原始响应/.test(err.message)
+    );
+  });
+});

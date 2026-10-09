@@ -358,7 +358,10 @@ function createAutoPipeline(deps) {
                 destDir: String(p.transferDestDir || "").trim() || "/来自资源批量转存",
                 outName: String(p.transferOutName || "").trim(),
                 perEnv: Number(p.transferPerEnv) || 50,
-                cc: Number(p.transferCc) || 4,
+                // 默认并发 1（不是 4）：真机对照实验里 cc=1 零失败、cc=2 全失败、
+                // cc=4 四成失败 —— 分享页的降级窗口是**同一 IP 的短时并发**触发的。
+                // 详见 batch-transfer.js 里那段注释。
+                cc: Number(p.transferCc) || 1,
                 delayMin: Number(p.transferDelayMin) || 1,
                 delayMax: Number(p.transferDelayMax) || 2,
                 makeShare: true,

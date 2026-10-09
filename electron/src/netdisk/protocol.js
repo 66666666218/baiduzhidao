@@ -262,6 +262,15 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   const extraPaths = ((tBody.extra && tBody.extra.list) || []).map((x) => x && x.to).filter(Boolean);
   const dupPaths = ((tBody.duplicated && tBody.duplicated.list) || []).map((x) => x && x.path).filter(Boolean);
   const toPaths = extraPaths.concat(dupPaths);
+  // 大文件是**异步转存**的：errno=0 但响应里没有落盘路径，`show_msg` 写着「文件转存中」。
+  // 真机现场：《琉璃》4K 全集连续三轮都被报成「转存返回成功但未取得落盘路径」——
+  // 我们把它当失败记档、还计进了失败数，其实文件正在转。这不是失败，是"还没转完"。
+  // 返回 pending 让调用方**按"待确认"处理**：不计失败、不进黑名单，下次运行再来看
+  //（到那时文件已在网盘里，百度会返回 errno=4「已转存」并给出路径）。
+  if (/转存中|正在转存/.test(String(tBody.show_msg || ""))) {
+    return { toPaths: [], pending: true, usedDir, fellBack: false, raw: tBody };
+  }
+
   // 把响应本体带一点出来：光说"extra/duplicated 均为空"没法判断是接口改了、
   // 还是这几个文件其实被转到了别的地方。2026-10-10 真机跑批里 10 条里有 1 条撞上，
   // 当时日志什么都没留下，只能再来一次 —— 证据必须当场留下。

@@ -162,7 +162,7 @@ async function main() {
     searchPages: num(argv["search-pages"], 1),
     searchRowLimit: num(argv["search-limit"], 10),
     transferPerEnv: num(argv["per-env"], 10),
-    transferCc: num(argv.cc, 2),
+    transferCc: num(argv.cc, 1),   // 默认 1：真机实测并发是触发分享页降级的主因
     transferDelayMin: 1,
     transferDelayMax: 2,
     transferDestDir: settings.transferDestDir || "/来自资源批量转存",
