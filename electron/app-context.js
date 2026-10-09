@@ -98,7 +98,7 @@ function deps() {
   return {
     browserPool, store, config,
     dataDir,   // 与「打开数据目录」/批量转存输出一致的基准目录
-    // 让任务能拿到「网盘管理」里存好的凭据：submit 用它走纯协议提交（不开窗口），
+    // 让任务能拿到「账号凭证」里存好的凭据：submit 用它走纯协议提交（不开窗口），
     // batch-transfer 用它免去开窗口取网盘凭证。
     // 该账号配了代理就返回 dispatcher（纯协议请求用它走代理）；没配返回 undefined（直连）
     proxyOf: (envLabel) => {
@@ -247,7 +247,7 @@ async function runSearchResourcesTask(ctx, deps) {
  * 做法和转存一致：从浏览器取一次 Cookie，之后全程纯协议（不再操作页面）。
  */
 /**
- * 从「网盘管理」存的账号里取 Cookie（按比特环境名匹配）。
+ * 从「账号凭证」存的账号里取 Cookie（按比特环境名匹配）。
  *
  * 为什么按名字匹配：账号是用户在「网盘管理 → 添加账号」里自己命名加进去的，
  * 想让它在查收录/权益检查里生效，名字必须和比特环境名一致——
@@ -306,7 +306,7 @@ async function runCheckPublishedTask(ctx, deps) {
     if (ctx.shouldStop()) break;
     let browser = null;
     try {
-      // 取登录态：**优先用「网盘管理」里存好的 Cookie，没存才开窗口**。
+      // 取登录态：**优先用「账号凭证」里存好的 Cookie，没存才开窗口**。
       // 实测：只带 BDUSS 就能调通工作台接口（BDUSS 是百度全域 Cookie），
       // 所以存过的账号不必为每次查收录/权益检查再开一次浏览器。
       let cookieStr = storedCookieOf(envLabel, log);

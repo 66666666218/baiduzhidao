@@ -85,7 +85,7 @@ async function runBatchTransferTask(ctx, deps) {
   const pwdKey = keys.find((k) => /提取码|密码|访问码/.test(k)) || "";
   log(`资源表 ${rows.length} 行 | 名称列="${nameKey}" 链接列="${linkKey}"`);
 
-  // 取各账号的网盘凭证。**优先用「网盘管理」里存好的 Cookie —— 存过就完全不开窗口**。
+  // 取各账号的网盘凭证。**优先用「账号凭证」里存好的 Cookie —— 存过就完全不开窗口**。
   // 转存之后的全程本来就不碰浏览器（纯 HTTP 协议），所以只要凭据能拿到，
   // 整条网盘链可以做到零窗口 —— 内存紧张的机器尤其需要这一点。
   const { credentialOf } = require("../netdisk/manager");

@@ -16,29 +16,18 @@ const { parseTopicRules, classifyByRules, DEFAULT_TOPIC_RULES } = require("../do
 const { buildTopicAllocation, topicKey } = require("../domain/account-topic");
 const excel = require("../storage/excel");
 
-const WB_HOST = "https://zhidao.baidu.com";
+const http = require("../zhidao/http");
+const WB_HOST = http.HOST;
 const UPLOAD_API = "/qa/api/bulkqa/upload";
-const UA_PROTO = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+const UA_PROTO = http.UA;   // UA 只有一处定义（zhidao/http.js）
 
 /**
  * 取 X-ik-token。**上传和提交都要它** —— 缺了只会得到含糊的「参数错误」，
  * 很容易误判成字段名写错（我就这么绕了很久）。它来自 /api/loginInfo 的 stoken 字段。
  */
-async function fetchIkToken(cookie, { fetchImpl = fetch, timeoutMs = 12000, dispatcher } = {}) {
-  try {
-    const res = await fetchImpl(`${WB_HOST}/api/loginInfo?t=${Date.now()}`, {
-      headers: { Cookie: cookie, "User-Agent": UA_PROTO, Referer: WB_HOST },
-      signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
-      dispatcher,
-    });
-    const json = JSON.parse(await res.text());
-    if (Number(json.isLogin) !== 1) return { ok: false, token: "", reason: "Cookie 无效或已过期（isLogin≠1）——请到「网盘管理」重新粘贴" };
-    const token = String(json.stoken || "").trim();
-    if (!token) return { ok: false, token: "", reason: "loginInfo 里没有 stoken 字段（接口可能改版）" };
-    return { ok: true, token, reason: "" };
-  } catch (error) {
-    return { ok: false, token: "", reason: `取 token 失败：${error.message}` };
-  }
+async function fetchIkToken(cookie, opts = {}) {
+  // 统一走公共底座（以前这里、protocol-submit、app-context 各写了一份取 token）。
+  return http.fetchLoginInfo(cookie, opts);
 }
 
 /**

@@ -4,31 +4,28 @@ const { chromium } = require("playwright-core");
 const zhidao = require("../pages/zhidao");
 const { getWorkPage } = require("./crawl");
 
-const WB = "https://zhidao.baidu.com";
+const http = require("../zhidao/http");
 const PROGRESS_API = "/qa/api/activity/anniversary21/answer-progress";
+// 活动页地址：这个接口属于活动页，Referer 必须是它。
+// 以前这里写的是 batch-upload 页 —— 语义错配；UA 更是裸 `Mozilla/5.0`（强机器人特征）。
+const ACT_PAGE = `${http.HOST}/hd/21th_activity/`;
 
 /**
  * 纯协议取「当天答题通过数」。成功返回 {done,total}，拿不到返回 null。
  * 接口是活动页自己在用的那个，实测关掉浏览器后 fetch 依然 200 ——
  * 也就是说这个数字**本来就不需要开窗口**。
  */
-async function fetchProgressByProtocol(cookie, { fetchImpl = fetch, timeoutMs = 12000, dispatcher } = {}) {
-  try {
-    const res = await fetchImpl(WB + PROGRESS_API, {
-      headers: { Cookie: cookie, "User-Agent": "Mozilla/5.0", Referer: `${WB}/b/batch/batch-upload`, "X-Requested-With": "XMLHttpRequest" },
-      signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
-      dispatcher,
-    });
-    const text = await res.text();
-    const json = JSON.parse(text);
-    if (Number(json.code) !== 200 || !json.data) return null;
-    const done = Number(json.data.valid_answer_count) || 0;
-    // 当前所处档位的门槛就是"分母"；没有档位信息时退化成 0（调用方按 unknown 处理）
-    const total = Number((json.data.next_tier && json.data.next_tier.threshold) || 0) || 0;
-    return { done, total };
-  } catch {
-    return null;
-  }
+async function fetchProgressByProtocol(cookie, { fetchImpl, timeoutMs = 12000, dispatcher } = {}) {
+  // 走公共底座：统一 UA / 超时 / 退避重试（以前一次网络抖动就静默返回 null，
+  // 调用方只能"回落到窗口"——为读一个数字白开一份 Chromium）。
+  const r = await http.requestJson(PROGRESS_API, { cookie, referer: ACT_PAGE, dispatcher, timeoutMs, retries: 2, fetchImpl });
+  if (!r.ok) return { ok: false, reason: r.reason };
+  const json = r.json || {};
+  if (Number(json.code) !== 200 || !json.data) return { ok: false, reason: `code=${json.code} ${json.msg || ""}` };
+  const done = Number(json.data.valid_answer_count) || 0;
+  // 当前所处档位的门槛就是"分母"；没有档位信息时退化成 0（调用方按 unknown 处理）
+  const total = Number((json.data.next_tier && json.data.next_tier.threshold) || 0) || 0;
+  return { ok: true, done, total, reason: "" };
 }
 
 /**
@@ -59,7 +56,7 @@ async function runPassedCountTask(ctx, deps) {
         const cookie = `BDUSS=${cred.bduss}${cred.stoken ? "; STOKEN=" + cred.stoken : ""}`;
         const dispatcher = typeof deps.proxyOf === "function" ? deps.proxyOf(envLabel) : undefined;
         const got = await fetchProgressByProtocol(cookie, { dispatcher });
-        if (got) {
+        if (got.ok) {
           const account = {
             bitEnv: envLabel,
             status: got.total > 0 ? (got.done >= got.total ? "completed" : "partial") : "partial",
@@ -73,7 +70,7 @@ async function runPassedCountTask(ctx, deps) {
           log(`【纯协议】${envLabel}：${got.total > 0 ? `${got.done}/${got.total}` : `已通过 ${got.done} 条`}`);
           continue;
         }
-        log(`${envLabel} 纯协议取数失败，回落到窗口`);
+        log(`${envLabel} 纯协议取数失败（${got.reason}），回落到窗口`);
       }
       await browserPool.adapter.checkConnection();   // 走到这里才需要比特
       const handle = await browserPool.acquire(envLabel).catch((err) => {

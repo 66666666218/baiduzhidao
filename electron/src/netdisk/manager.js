@@ -165,7 +165,7 @@ function transferRecords(dataDir) {
 
 /**
  * 按环境名取已保存的网盘凭据（BDUSS/STOKEN），没存过返回 null。
- * 名字必须与「网盘管理」里存的那条**一字不差**（和账号题材绑定同一套规矩）。
+ * 名字必须与「账号凭证」里存的那条**一字不差**（和账号题材绑定同一套规矩）。
  */
 function credentialOf(dataDir, envLabel) {
   var wanted = String(envLabel || "").trim();

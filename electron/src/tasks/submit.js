@@ -174,7 +174,7 @@ async function runSubmitTask(ctx, deps) {
     const envLabel = slot.envLabel;
     let browser = null;
     try {
-      // ★ 纯协议优先：该账号在「网盘管理」里存过 Cookie 就直接走 HTTP 提交，**不开窗口**。
+      // ★ 纯协议优先：该账号在「账号凭证」里存过 Cookie 就直接走 HTTP 提交，**不开窗口**。
       // 依据是实测：POST /msubmit/answer + `X-ik-token` 即可，不需要浏览器。
       // 没存过 Cookie 才回落到比特窗口（保留指纹隔离那条路）。
       const cred = typeof deps.credentialOf === "function" ? deps.credentialOf(envLabel) : null;
