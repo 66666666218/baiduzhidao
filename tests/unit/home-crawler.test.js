@@ -9,6 +9,7 @@ const {
   crawlHomeAnswers,
   crawlHomeResources,
 } = require("../../electron/src/netdisk/home-crawler");
+const extract = require("../../electron/src/netdisk/home-crawler");
 
 // ---------- parseHomepage ----------
 
@@ -382,4 +383,18 @@ test("提取码：提到了码却没抓到 → 必须标 pwdMissing（否则会�
 test("提取码：抓不到时也不能编一个出来（宁可空着，等 verify 去拒）", () => {
   const r = extractPanLinks("https://pan.baidu.com/s/1abcdefghij 提取码：请私信");
   assert.equal(r[0].pwd, "", "解析不出就必须留空，不能瞎猜");
+});
+
+// ---------- uid 解析：真实 uid 里带非十六进制字符（2026-10-10 实测） ----------
+
+test("parseHomepage：真实 uid 形如 xx…xxg008001000000，不能只认十六进制", () => {
+  // 知道真实 uid：`4d424069236f25705e79g008001000000` —— 中间那个 g 不是十六进制字符。
+  // 以前正则写 `[0-9a-f]{8,40}`，**在 g 处截断**，拿到残缺 uid，
+  // 主页接口对它返回 listNum:0 → 表现为"这个答主没有资源"，而真正原因是一个正则。
+  // 这条 bug 让"从答主主页爬资源"这个已有功能一直查不到东西。
+  const uid = "4d424069236f25705e79g008001000000";
+  assert.equal(extract.parseHomepage(`https://zhidao.baidu.com/usercenter?uid=${uid}`), uid);
+  assert.equal(extract.parseHomepage(`/usercenter?uid=${uid}&role=ugc`), uid);
+  assert.equal(extract.parseHomepage(uid), uid, "裸 uid 也要认");
+  assert.equal(extract.parseHomepage(`UID=${uid.toUpperCase()}`), uid, "大小写统一成小写");
 });

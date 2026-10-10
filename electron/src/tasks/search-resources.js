@@ -54,18 +54,57 @@ async function runSearchResourcesTask(ctx, deps) {
   }
 
   log(`按题材搜索（${terms.length} 个词）：${terms.map((t) => (t.topic ? `${t.topic}→${t.term}` : t.term)).join("、")}`);
+  const limit = Number(ctx.payload.limit) || 0;
   const result = await searchCrawler.crawlSearchResources({
     keywords: terms.map((t) => t.term),
     pages: Number(ctx.payload.pages) || settings.searchPages,
-    limit: Number(ctx.payload.limit) || 0,
+    limit,
     onLog: log,
     onProgress: (p) => ctx.report({ done: p.done, total: p.total, status: "running" }),
     shouldStop: () => ctx.shouldStop(),
   });
 
+  // **答主主页兜底**：搜索结果页里本来就带着答主主页链接（结果卡片里就有，零额外请求）。
+  // 一个资源型答主的主页往往挂着几十条带网盘链接的回答，比"搜索页那 10 条"多得多；
+  // 而且这条路走的是**知道接口、不碰网盘接口** —— 不会撞转存那条"分享页限流"。
+  // （home-crawler 那半边早就写好了，缺的一直是"关键词 → 主页"这半步。）
+  const homepages = Array.isArray(result.homepages) ? result.homepages : [];
+  const hpLimit = Math.max(0, Number(ctx.payload.homepageLimit) || 3);
+  let hpRows = [];
+  if (homepages.length && hpLimit > 0 && !ctx.shouldStop()) {
+    const picked = homepages.slice(0, hpLimit);
+    log(`搜索结果里发现 ${homepages.length} 个答主主页，挑 ${picked.length} 个去爬他们的资源…`);
+    try {
+      const hp = await homeCrawler.crawlHomeResources({
+        homepages: picked,
+        limit: 0,
+        enrichLimit: Math.max(0, Number(ctx.payload.homepageEnrichLimit) || 10),
+        onLog: log,
+        shouldStop: () => ctx.shouldStop(),
+      });
+      hpRows = Array.isArray(hp.rows) ? hp.rows : [];
+      log(`从这几个主页额外收到 ${hpRows.length} 条资源`);
+    } catch (error) {
+      // 单条兜底失败不影响搜索结果 —— 但要说出来，别静默少了几条
+      log(`（主页兜底失败，不影响关键词搜索的结果：${error.message}）`);
+    }
+  }
+
+  // 两份结果合并去重（同一资源可能既在搜索页、又在主页里）
+  const merged = [];
+  const seenByLink = new Set();
+  for (const r of result.rows.concat(hpRows)) {
+    const key = String(r.link || "");
+    if (!key || seenByLink.has(key)) continue;
+    seenByLink.add(key);
+    merged.push(r);
+  }
+  const finalRows = limit > 0 ? merged.slice(0, limit) : merged;
+  if (hpRows.length) log(`合并去重后共 ${finalRows.length} 条（上限 ${limit || "不限"}）`);
+
   // 列顺序有讲究：batch-transfer 靠列名猜「名称列/链接列/提取码列」，
   // 名称列必须在最前面，否则它可能把别的列当成资源名。
-  const rows = result.rows.map((r) => ({
+  const rows = finalRows.map((r) => ({
     资源名: r.name,
     链接: r.link,
     提取码: r.pwd,
@@ -112,7 +151,7 @@ async function runSearchResourcesTask(ctx, deps) {
   log(`搜资源产出 ${rows.length} 条：${savedPath}`);
   // 提到了提取码却没解析出来的行 —— **提前说**，别等转存时一条条撞。
   // 真机现场：搜到 10 条里有 1 条提取码为空，而那是一条确实需要码的分享，当时毫无提示。
-  const missingPwd = result.rows.filter((r) => r.pwdMissing).length;
+  const missingPwd = finalRows.filter((r) => r.pwdMissing).length;
   if (missingPwd) {
     log(`⚠️ 其中 ${missingPwd} 条提到了提取码但没能解析出来。如果这些分享确实需要码，转存时会失败（报 verify errno）。`
       + `建议打开资源表把「提取码」列补上，或删掉这几行再跑转存。`);

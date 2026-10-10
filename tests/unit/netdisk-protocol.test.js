@@ -179,3 +179,67 @@ test("processOne：errno=0 但没有路径、且不是「转存中」时，仍�
     );
   });
 });
+
+// ---------- 命名：用分享里的真实文件名（2026-10-10 用户反馈） ----------
+
+test("nameFromShare：用分享里的**真实文件名**，不是资源表里的问题标题", () => {
+  // 用户反馈："资源名不能按表格名称，应该按实际资源名称" —— 表里那列常常是
+  // "求XX网盘链接"这种从知道答案抓来的**问题标题**，拿它当资源名很荒唐。
+  assert.equal(protocol.nameFromShare({ file_list: [{ isdir: 0, server_filename: "星际穿越.mkv", path: "/电影/星际穿越.mkv" }] }), "星际穿越.mkv");
+  // 没有 server_filename 时从 path 取最后一段
+  assert.equal(protocol.nameFromShare({ file_list: [{ isdir: 0, path: "/电影/流浪地球2.mp4" }] }), "流浪地球2.mp4");
+  // 分享整个文件夹：用文件夹名
+  assert.equal(protocol.nameFromShare({ file_list: [{ isdir: 1, path: "/美剧合集" }] }), "美剧合集");
+  // 优先文件而不是目录
+  assert.equal(protocol.nameFromShare({ file_list: [{ isdir: 1, path: "/合集" }, { isdir: 0, path: "/合集/第1集.mkv" }] }), "第1集.mkv");
+});
+
+test("nameFromShare：非法字符要清掉、不能带出路径分隔符（否则会建出多余的目录层）", () => {
+  assert.equal(protocol.nameFromShare({ file_list: [{ isdir: 0, server_filename: "a/b:c*d?e\"f<g>h|i.mkv" }] }), "a b c d e f g h i.mkv");
+  assert.equal(protocol.nameFromShare({ file_list: [{ isdir: 0, server_filename: "  多余   空格.mkv  " }] }), "多余 空格.mkv");
+  assert.ok(protocol.nameFromShare({ file_list: [{ isdir: 0, server_filename: "长".repeat(200) }] }).length <= 60);
+});
+
+test("nameFromShare：拿不到名字时返回空串（调用方据此退回序号兜底，而不是建个叫 undefined 的目录）", () => {
+  assert.equal(protocol.nameFromShare({}), "");
+  assert.equal(protocol.nameFromShare(null), "");
+  assert.equal(protocol.nameFromShare({ file_list: [] }), "");
+});
+
+test("processOne：目标文件夹用真实资源名，且**公共目录层只建一次**（写请求是限流的触发点）", async () => {
+  const jar = new protocol.Jar("B", "");
+  const msets = {
+    "1aaaaaaaaaa": JSON.stringify({ errno: 0, shareid: "111", uk: "222", bdstoken: "bt",
+      file_list: [{ fs_id: 7, isdir: 0, size: 100, server_filename: "星际穿越.mkv", path: "/星际穿越.mkv" }] }),
+    "1bbbbbbbbbb": JSON.stringify({ errno: 0, shareid: "111", uk: "222", bdstoken: "bt",
+      file_list: [{ fs_id: 8, isdir: 0, size: 100, server_filename: "流浪地球2.mp4", path: "/流浪地球2.mp4" }] }),
+  };
+  const createPaths = [];
+  const created = new Set();
+  const fetchImpl = async (url, init) => {
+    if (url.includes("/share/verify")) return fakeResponse({ errno: 0, randsk: "r" });
+    for (const code of Object.keys(msets)) {
+      if (url.includes("/s/" + code)) return fakeResponse(`<script>locals.mset(${msets[code]});</script>`);
+    }
+    if (url.includes("/api/create")) {
+      createPaths.push(decodeURIComponent(String(init.body).replace(/^path=/, "").replace(/&isdir=1$/, "")));
+      return fakeResponse({ errno: 0 });
+    }
+    if (url.includes("/share/transfer")) return fakeResponse({ errno: 0, extra: { list: [{ to: "/x/y.mkv" }] } });
+    return fakeResponse({});
+  };
+  const parent = "/来自资源批量转存/测试组2/搜资源_x";
+  await withFetch(fetchImpl, async () => {
+    // 第一条：公共层（转存根/账号/资源表）+ 资源名那一层，都要建
+    await protocol.processOne(jar, { link: "https://pan.baidu.com/s/1aaaaaaaaaa", pwd: "ab12", destParent: parent, fallbackName: "00001", createdDirs: created });
+    assert.ok(createPaths.includes(`${parent}/星际穿越.mkv`), `目标文件夹应是真实资源名，实际建了：${JSON.stringify(createPaths)}`);
+    assert.ok(!createPaths.some((p) => /00001/.test(p)), "不该再出现序号");
+
+    // 第二条（同批同账号、**另一条分享**）：公共三层已在缓存里，只该建自己那层
+    createPaths.length = 0;
+    await protocol.processOne(jar, { link: "https://pan.baidu.com/s/1bbbbbbbbbb", pwd: "ab34", destParent: parent, fallbackName: "00002", createdDirs: created });
+    assert.deepEqual(createPaths, [`${parent}/流浪地球2.mp4`],
+      `第二条只该建自己那层（公共层已在缓存里），实际：${JSON.stringify(createPaths)}`);
+  });
+});
+

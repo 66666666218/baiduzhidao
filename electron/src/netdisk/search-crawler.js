@@ -177,6 +177,7 @@ async function crawlSearchResources({
 
   const rows = [];
   const seenLinks = new Set();
+  const homepages = new Set();   // 搜索结果里顺带收集到的答主主页（零额外请求）
   const stats = { keywords: list.length, pagesFetched: 0, failed: 0, results: 0, truncated: 0, linked: 0 };
   // 进度以「关键词 × 页」为单位上报。没有这个，搜资源阶段在界面上是完全静默的：
   // 既看不出在动，暂停/停止按钮也一直不启用。
@@ -208,6 +209,8 @@ async function crawlSearchResources({
         continue;
       }
 
+      // 顺手把这一页里出现的答主主页都记下来（结果卡片里就有，不用额外请求）：
+      for (const hp of extractAuthorHomepages(html)) homepages.add(hp);
       const results = parseSearchResults(html);
       stats.results += results.length;
       if (!results.length) onLog(`该页没解析到结果：${keyword} 第 ${pageIndex + 1} 页`);
@@ -237,10 +240,30 @@ async function crawlSearchResources({
     onLog(`⚠️ 丢弃 ${stats.truncated} 条被摘要截断的残缺链接（分享码不足 ${MIN_SHARE_CODE} 位，转存必然失败）`);
   }
   if (!rows.length) {
-    if (shouldStop && shouldStop()) return { rows, stats, stopped: true };
+    if (shouldStop && shouldStop()) return { rows, stats, homepages: Array.from(homepages), stopped: true };
     throw new Error("这些关键词没有搜到带网盘链接的结果（可换关键词或增加页数）");
   }
-  return { rows, stats };
+  return { rows, stats, homepages: Array.from(homepages) };
+}
+
+/**
+ * 从知道搜索结果页里收集**答主主页**。
+ *
+ * 为什么值得做：一个资源型答主的主页里往往挂着几十条带网盘链接的回答，
+ * 比"搜索页那 10 条"多得多。而且**爬主页走的是知道接口，不碰网盘接口** ——
+ * 不会撞转存那条"分享页限流"（实测那是网盘侧、按 IP 的写请求密度触发的）。
+ *
+ * 主页链接在搜索结果卡片里就有（`usercenter?uid=xxxx`），不用额外请求。
+ */
+function extractAuthorHomepages(html) {
+  const out = new Set();
+  // ⚠️ 字符集要**字母数字**，不能只认十六进制：知道真实 uid 形如
+  // `4d424069236f25705e79g008001000000`（中间带 g）。用 [0-9a-f] 会在 g 处截断，
+  // 得到一个残缺 uid，主页接口对它返回"0 条回答" —— 我第一版就是这么写的，实测才发现。
+  const re = /usercenter\?uid=([0-9a-z]{8,48})/gi;
+  let m;
+  while ((m = re.exec(String(html || "")))) out.add(`${PAN_HOST}/usercenter?uid=${m[1]}`);
+  return Array.from(out);
 }
 
 module.exports = {
@@ -252,6 +275,7 @@ module.exports = {
   cleanText,
   normalizeQuestionUrl,
   parseSearchResults,
+  extractAuthorHomepages,
   splitByShareCode,
   buildTopicSearchTerms,
   crawlSearchResources,

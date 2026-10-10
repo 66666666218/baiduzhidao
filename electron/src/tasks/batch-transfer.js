@@ -207,21 +207,33 @@ async function runBatchTransferTask(ctx, deps) {
   // 以前每个 worker 遇到风控都各自 `await sleep(10min)`，醒来时刻还各不相同——
   // 结果是"看起来全局静默了，其实 4 个 worker 在 10 分钟后集中爆发"，比不暂停更糟。
   let pausedUntil = 0;
-  // 限流（分享页取不到数据）专用的两个量：
-  //  · SHARE_LIMIT_COOLDOWN_MS：撞上限流后整批停多久（45 秒 —— 比风控的 10 分钟短得多，
-  //    因为这不是账号被打标，只是短时间请求太密）
-  //  · RETRY_COOLDOWN_MS：整批跑完到重试之间的等待。真机实测"隔几分钟"就恢复了，
-  //    取 150 秒；宁可多等，也好过重试一遍又全撞在窗口里白跑。
-  const SHARE_LIMIT_COOLDOWN_MS = 45 * 1000;
-  const RETRY_COOLDOWN_MS = 150 * 1000;
+  // 限流（分享页取不到数据）专用的两个量 —— **都按实测的窗口长度来定**。
+  //
+  // 2026-10-10 实测：连续做真转存（用已转存过的链接，只返回"已转存"、不新增文件）撞出窗口后，
+  // 每 15 秒探一次分享页，**窗口持续约 442~457 秒（≈7.5 分钟）**才恢复。
+  // 之前的 45 秒冷却 / 150 秒重试等于没起作用：冷却完还在窗口里，下一批继续废；
+  // 重试也落在窗口内，几乎必然再失败。现在两个都取 8 分钟（比实测略宽）。
+  //
+  // 代价要讲清楚：这意味着"每撞一次窗口，整批要停 8 分钟"。单 IP 下这是硬成本 ——
+  // 想快只能分摊 IP（给账号配代理），没有别的办法。
+  const SHARE_LIMIT_COOLDOWN_MS = 8 * 60 * 1000;
+  const RETRY_COOLDOWN_MS = 8 * 60 * 1000;
   let shareLimited = 0;            // 本批因限流被推迟的条数（日志用）
   let lastShareLimitPauseAt = 0;   // 上次因限流暂停的时刻（避免每条失败都触发一次暂停，把整批拖成慢动作）
+  let shareLimitPauses = 0;        // 本批一共停了几次（用于结尾给个"这批花了多久在等"的账）
   const qaRows = [];
 
   // 每条完整链（独立 Jar 会话，并发安全）；窗口按轮换粒度切换
   // 【并发修复】游标与名额必须跨 worker 共享：此前每个 worker 各持 cursor=0，
   // 默认 4 并发会把同一批资源重复处理 4 遍（表格出现重复行的根因）
   let envCursor = 0;
+  // 每个账号一份「已建目录」缓存：转存根 / 账号 / 资源表 这三层每条都一样，
+  // 以前每条都重跑 3 个建目录请求 —— 那是**写请求**，正是限流的触发点。缓存后每条只建自己那层。
+  const createdByEnv = new Map();
+  const createdOf = (env) => {
+    if (!createdByEnv.has(env)) createdByEnv.set(env, new Set());
+    return createdByEnv.get(env);
+  };
   function pickEnv() { return creds[envCursor % creds.length]; }
   let sharedCursor = 0;
   let reservedCount = 0;
@@ -278,15 +290,17 @@ async function runBatchTransferTask(ctx, deps) {
 
       try {
         const idx = String(i + 1).padStart(5, "0");
-        // 目录名带资源名（非占位名时）：08104_资源名，便于网盘里辨识
-        const dirLabel = isGenericName(rawName) ? "" : rawName.replace(/[\/:*?"<>|\r\n]/g, " ").trim().slice(0, 20);
-        const destDir = `${destRoot}/${cred.env}/${baseName}/${dirLabel ? idx + "_" + dirLabel : idx}`;
+        // 目标目录 = 「转存根/账号/资源表」这一层，**子文件夹名交给 processOne 用分享里的真实名字**
+        //（分享页的 mset 里本来就有 file_list，转存前就知道叫什么）。
+        // 以前的写法是 `序号_表里的问题标题`，于是网盘里看到的是一串编号 + 问题标题，
+        // 而不是"这条资源其实是什么"。现在零额外请求就拿到了真实名字。
+        const destParent = `${destRoot}/${cred.env}/${baseName}`;
         // 该账号配了代理就带着走：网盘域和知道域用同一条出口（不然转存走本机、
         // 上传走代理，等于同一批操作从两个 IP 发出，反而更可疑）。
         const dispatcher = typeof deps.proxyOf === "function" ? deps.proxyOf(cred.env) : undefined;
         const jar = new Jar(cred.bduss, cred.stoken, dispatcher);
         const oneResult = await processOne(jar, {
-          link: srcLink, pwd: cellPwd, destDir,
+          link: srcLink, pwd: cellPwd, destParent, fallbackName: idx, createdDirs: createdOf(cred.env),
         });
         // 大文件异步转存中：百度收下了但还没给落盘路径（show_msg=文件转存中）。
         // **不能当失败**：文件确实在转，把它记成 failed 会虚报失败数、还可能进黑名单，
@@ -314,9 +328,11 @@ async function runBatchTransferTask(ctx, deps) {
 
         // 名称质量门槛（不合规跳过问答，资源保留）
         const landedBase = decodeURIComponent((toPaths[0] || "").split("/").pop() || "");
-        // 表格名是序号/占位（如 1、1001、链接N）时，改用网盘落盘的真实文件名
-        let displayName = isGenericName(rawName) ? (landedBase || "资源") : rawName;
-        if (isGenericName(displayName)) displayName = landedBase || displayName;
+        // **资源名一律用网盘里落盘的真实文件名**，不用资源表里的那一列 ——
+        // 表里那列常常是"求XX网盘资源"这种**问题标题**（搜资源时从知道答案抓来的），
+        // 拿它当资源名，最后传到平台上的标题也是这个，用户看到的是一串问句而不是资源名。
+        // 只有真的拿不到落盘名时才退回表里的名字。
+        let displayName = landedBase || rawName || "资源";
         // 落盘真实文件名乱码 → 不进问答表（资源已转存，人工可在网盘处理）
         if (qaLib.isGarbledName(decodeURIComponent((toPaths[0] || "").split("/").pop() || ""))) {
           saveState({ srcLink, name: displayName, status: "done", phase: "done", toPaths, ownLink, note: "文件名乱码跳过问答", at: new Date().toISOString() });
@@ -369,9 +385,11 @@ async function runBatchTransferTask(ctx, deps) {
           shareLimited += 1;
           if (Date.now() - lastShareLimitPauseAt > 90 * 1000) {
             lastShareLimitPauseAt = Date.now();
+            shareLimitPauses += 1;
             pausedUntil = Math.max(pausedUntil, Date.now() + SHARE_LIMIT_COOLDOWN_MS);
-            log(`⏳ 分享页被限流（本批已遇到 ${shareLimited} 条），全部线程暂停 ${SHARE_LIMIT_COOLDOWN_MS / 1000} 秒；`
-              + `这几条已记下，整批跑完会再重试一遍 —— 不是链接坏了，是我们打太快。`);
+            log(`⏳ 分享页被限流（本批已遇到 ${shareLimited} 条），全部线程暂停 ${Math.round(SHARE_LIMIT_COOLDOWN_MS / 60000)} 分钟；`
+              + `这几条已记下，整批跑完会再重试一遍 —— 不是链接坏了，是我们打太快。`
+              + `（实测这个窗口要 ${Math.round(SHARE_LIMIT_COOLDOWN_MS / 60000)} 分钟才恢复，等不到就直接白跑）`);
           }
           continue;
         }
@@ -404,7 +422,7 @@ async function runBatchTransferTask(ctx, deps) {
   // 重试的目的是"换个时间点再试"，不是"再冲一次" —— 并发重试等于把刚过去的限流窗口又打一遍。
   if (retryQueue.length && !fatalStop && !ctx.shouldStop()) {
     const waiting = retryQueue.length;
-    log(`⏳ 有 ${waiting} 条因限流被推迟，等 ${Math.round(RETRY_COOLDOWN_MS / 1000)} 秒后**串行重试一遍**（不是链接问题，是节奏问题）…`);
+    log(`⏳ 有 ${waiting} 条因限流被推迟，等 ${Math.round(RETRY_COOLDOWN_MS / 60000)} 分钟后**串行重试一遍**（不是链接问题，是节奏问题）…`);
     await sleep(RETRY_COOLDOWN_MS);
     if (!ctx.shouldStop()) {
       phase = "retry";
@@ -433,6 +451,11 @@ async function runBatchTransferTask(ctx, deps) {
   }
   const totalOk = [...state.values()].filter((s) => s.status === "done").length;
   log(`=== 批量转存完成 === 本轮成功 ${done} | 失败 ${failed} | 历史累计 ${totalOk}`);
+  if (shareLimitPauses) {
+    // 把"这批到底花了多少时间在等"摆出来 —— 长跑时用户看到进度慢，得知道慢在哪。
+    log(`（本批因限流暂停 ${shareLimitPauses} 次，合计等待约 ${shareLimitPauses * Math.round(SHARE_LIMIT_COOLDOWN_MS / 60000)} 分钟；`
+      + `单 IP 下这是硬成本，想快只能给账号配代理分摊出口 IP）`);
+  }
   if (outputPath) log(`上传专用表已生成：${outputPath}（${qaRows.length} 条，可在 Excel 修改后直接上传）`);
   return { count: done, failed, totalOk, outputPath };
 }

@@ -14,11 +14,19 @@ const PAN_HOST = "https://zhidao.baidu.com";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** 主页 URL / 裸 uid → uid（支持 usercenter 完整链接、?uid= 参数、纯 hex uid） */
+/**
+ * 主页 URL / 裸 uid → uid（支持 usercenter 完整链接、?uid= 参数、纯 uid）
+ *
+ * ⚠️ 字符集必须是**字母数字**，不能只认十六进制。知道真实 uid 长这样：
+ *   `4d424069236f25705e79g008001000000`   ← 中间那个 `g` 不是十六进制字符
+ * 以前写的是 `[0-9a-f]{8,40}`，于是**在 g 处截断**，拿到一个残缺 uid，
+ * 主页接口对它返回 `listNum:0`（"该答主共 0 条回答"）—— 表现为"这个功能查不到资源"，
+ * 而真正原因是一个正则。是 2026-10-10 接"关键词→主页"时实测出来的。
+ */
 function parseHomepage(input) {
   const s = String(input || "").trim();
   if (!s) throw new Error("请填写答主主页地址");
-  const m = s.match(/uid=([0-9a-f]{8,40})/i) || s.match(/^([0-9a-f]{16,40})$/i);
+  const m = s.match(/uid=([0-9a-z]{8,48})/i) || s.match(/^([0-9a-z]{16,48})$/i);
   if (!m) throw new Error(`无法识别主页地址（需 usercenter 链接或 uid）：${s.slice(0, 80)}`);
   return m[1].toLowerCase();
 }

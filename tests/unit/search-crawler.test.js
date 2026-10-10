@@ -10,6 +10,7 @@ const {
   cleanText,
   normalizeQuestionUrl,
   parseSearchResults,
+  extractAuthorHomepages,
   splitByShareCode,
   crawlSearchResources,
 } = require("../../electron/src/netdisk/search-crawler");
@@ -186,4 +187,17 @@ test("crawlSearchResources：页面抓取失败也要推进进度", async () => 
     onProgress: (p) => progress.push(p),
   }));
   assert.ok(progress.some((p) => p.done === 1), "失败的那一页也要计数，否则进度会停在半路");
+});
+
+test("extractAuthorHomepages：从搜索结果页里收集答主主页（uid 必须完整，带 g 的那种）", () => {
+  const html = `
+    <dd><a href="/usercenter?uid=4d424069236f25705e79g008001000000" target="_blank">回答者: 甲</a></dd>
+    <dd><a href="/usercenter?uid=779c4069236f25705e79g1da301000000">回答者: 乙</a></dd>
+    <dd><a href="/usercenter?uid=4d424069236f25705e79g008001000000">重复的甲</a></dd>`;
+  const hps = extractAuthorHomepages(html);
+  assert.equal(hps.length, 2, "同一个 uid 只留一条");
+  assert.ok(hps.every((h) => h.startsWith("https://zhidao.baidu.com/usercenter?uid=")));
+  assert.ok(hps.includes("https://zhidao.baidu.com/usercenter?uid=4d424069236f25705e79g008001000000"),
+    `uid 不能被截断在 g 处，实际：${JSON.stringify(hps)}`);
+  assert.deepEqual(extractAuthorHomepages("<html>没有链接</html>"), []);
 });

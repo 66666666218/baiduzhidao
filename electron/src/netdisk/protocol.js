@@ -74,8 +74,27 @@ function makeClient(jar) {
   };
 }
 
+/**
+ * 从分享页的 mset 里取「这条资源叫什么」—— 用**真实文件/文件夹名**，不要用资源表里的名字。
+ *
+ * 关键：这一步发生在**转存之前**（分享页里本来就有 file_list），所以可以拿真实名字去命名
+ * 目标文件夹 —— 既不用转存完再改名（那要多一次写请求，而写请求正是限流的触发点），
+ * 也不会出现"序号_表里的问题标题"这种名字。
+ */
+function nameFromShare(data) {
+  const list = Array.isArray(data && data.file_list) ? data.file_list : [];
+  const seg = (p) => String(p || "").split("/").filter(Boolean).pop() || "";
+  // 优先用第一个**文件**的名字；全是文件夹时退回第一个文件夹的名字。
+  const file = list.find((x) => x && Number(x.isdir) !== 1 && (x.server_filename || x.path));
+  const dir = list.find((x) => x && Number(x.isdir) === 1 && (x.server_filename || x.path));
+  const picked = file || dir;
+  const raw = String((picked && (picked.server_filename || seg(picked.path))) || "").trim();
+  // 去掉文件名里的非法字符并限长（百度侧目录名上限远大于此，60 字足够辨识）
+  return raw.replace(/[\/:*?"<>|\r\n\t]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
+}
+
 // ---------- 单条完整链（纯协议） ----------
-async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken, makeShare }) {
+async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, fallbackName, createdDirs, bduss, stoken, makeShare }) {
   const m = String(link || "").match(/\/s\/(1[\w-]+)/);
   if (!m) throw new Error(`不认识的分享链接，已跳过：${link}`);
   const fullCode = m[1];
@@ -204,10 +223,18 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   //   于是下文 errno=2「目的路径不存在」时，完全看不出是建目录那步没成。
   //   现在把每层 errno 收进 createLog，跟着错误信息一起冒出来。
   const createLog = [];
-  const segments = String(destDir || "").split("/").filter(Boolean);
+  // 目标文件夹 = 父目录（账号/资源表）+ **分享里的真实名字**；
+  // 没给 destParent 时退回旧的 destDir 语义（脚本/老调用方兼容）。
+  const folder = (destParent ? nameFromShare(data) : "") || fallbackName || "资源";
+  const finalDir = destParent ? `${String(destParent).replace(/\/+$/, "")}/${folder}` : String(destDir || "");
+  const segments = finalDir.split("/").filter(Boolean);
   let acc = "";
   for (const seg of segments) {
     acc += `/${seg}`;
+    // **建过的目录不再重复建**：原来每条资源都把 4 层目录各建一遍，其中 3 层
+    //（来自资源批量转存 / 账号 / 资源表）每条完全相同 —— 白跑 3 个**写请求**，
+    // 而写请求正是触发限流的东西（读请求实测打满 5/秒都没事）。缓存一次，之后每条只建自己那层。
+    if (createdDirs && createdDirs.has(acc)) continue;
     const cResp = await panFetch(jar, `${PAN}/api/create?a=commit&bdstoken=${encodeURIComponent(bdstoken)}&web=1&channel=chunlei&clienttype=0`, {
       method: "POST",
       headers: { "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
@@ -217,6 +244,9 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
     // errno=0 新建成功；目录已存在时百度会返回非 0（见过 -8），也算可用。
     // 不在这里判成败——真正作数的是紧随其后的 transfer 结果，这里只留证据。
     if (Number(cBody.errno) !== 0) createLog.push(`${acc}=${cBody.errno}`);
+    // **只有确实可用时才进缓存**（0=新建成功，-8=已存在）。
+    // 别在失败时也缓存：那样后面的资源会跳过建目录，直接以 errno=2「目的路径不存在」失败。
+    if (createdDirs && (Number(cBody.errno) === 0 || Number(cBody.errno) === -8)) createdDirs.add(acc);
   }
 
   const transferTo = async (target) => {
@@ -229,13 +259,13 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
     return resp.json().catch(() => ({}));
   };
 
-  let usedDir = destDir;
+  let usedDir = finalDir;
   let tBody = await transferTo(usedDir);
   // errno=2：目的路径不存在。子目录建不出来时，回落到顶层目录再试一次——
   // 顶层（如 /来自资源批量转存）通常是早就存在的，能传进去。
   if (Number(tBody.errno) === 2) {
     const fallback = `/${segments[0] || ""}`;
-    if (fallback !== destDir) {
+    if (fallback !== finalDir) {
       const retry = await transferTo(fallback);
       if (Number(retry.errno) === 0 || Number(retry.errno) === 4) {
         tBody = retry;
@@ -243,7 +273,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
       }
     }
   }
-  const fellBack = usedDir !== destDir;
+  const fellBack = usedDir !== finalDir;
   const infoErr = tBody.info && tBody.info[0] && Number(tBody.info[0].errno);
   if (tBody.errno === 12 || tBody.errno === -10) throw Object.assign(new Error("网盘容量不足"), { fatal: true });
 
@@ -281,4 +311,4 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   return { toPaths, fsIds, usedDir, fellBack };
 }
 
-module.exports = { PAN, UA, TIMEOUT_MS, Jar, panFetch, processOne };
+module.exports = { PAN, UA, TIMEOUT_MS, Jar, panFetch, processOne, nameFromShare };
