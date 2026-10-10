@@ -268,3 +268,46 @@ test("权益门摘要：可用账号数要与判定口径一致（额度 0 的�
   assert.match(text, /可用上传账号 2\/3 个/, `口径应与权益门一致，实际：${text}`);
   assert.match(text, /1 个剩余额度为 0/);
 });
+
+// ---------- 纯协议模式**不许开窗口**（2026-10-10 用户反馈的核心） ----------
+// 用户选了纯协议（正是因为内存不够开不起比特窗口），软件却去开窗口、失败，
+// 他看到的是一句"窗口启动失败：内存使用率超出 95%" —— 与他选的模式完全矛盾。
+
+test("查收录：纯协议 + 没有凭据 → 不开窗口，而是记一条能照做的错误", async () => {
+  const path = require("path");
+  const { runCheckPublishedTask } = require("../../electron/src/tasks/check-published");
+  const dir = tempDir();   // 空目录 = 「账号凭证」里什么都没有
+  let acquireCalled = false;
+  const logs = [];
+  const deps = {
+    config: { load: () => ({ browserMode: "protocol", bitEnvs: ["测试组1"] }) },
+    dataDir: dir,
+    log: (m) => logs.push(String(m)),
+    browserPool: {
+      acquire: async () => { acquireCalled = true; throw new Error("不该走到这里"); },
+      release: async () => {},
+      adapter: { checkConnection: async () => ({ ok: true }) },
+    },
+  };
+  const ctx = { payload: { bitEnvs: ["测试组1"] }, shouldStop: () => false, livePayload() { return this.payload; }, report() {}, emitItem() {} };
+  const r = await runCheckPublishedTask(ctx, deps);
+
+  assert.equal(acquireCalled, false, "纯协议模式下**绝不能**去开比特窗口");
+  const acc = r.accounts.find((a) => a.envLabel === "测试组1");
+  assert.ok(acc && acc.status !== undefined || acc.ok === false);
+  assert.match(acc.error, /纯协议/, "要说清是模式导致的");
+  assert.match(acc.error, /Cookie|账号凭证/, "并说清是凭据的问题");
+  assert.match(logs.join("\n"), /不打开比特窗口/, "日志里也要写明白");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("凭据诊断：不复述环境名（日志会把它脱敏成 测*1，复述出来用户照着改只会更错）", () => {
+  const { credentialHint } = require("../../electron/src/netdisk/manager");
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, "网盘账号.json"), JSON.stringify({ accounts: [{ name: "天一项目社", bduss: "B", stoken: "S" }] }));
+  const hint = credentialHint(dir, "测试组1");
+  assert.match(hint, /天一项目社/, "要摆出「账号凭证」里实际存的名字（那个不脱敏、能照做）");
+  assert.doesNotMatch(hint, /测试组1/, "不该复述环境名 —— 它在日志里会被脱敏成 测*1");
+  assert.match(hint, /比特环境名称/, "给出方向：改成你在「比特环境名称」里写的那个名字");
+  fs.rmSync(dir, { recursive: true, force: true });
+});

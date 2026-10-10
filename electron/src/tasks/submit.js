@@ -306,6 +306,13 @@ async function runSubmitTask(ctx, deps) {
         }
         log(`纯协议不可用（${tk.reason}），本账号回落到窗口`);
         log(`   ${credentialHint(deps.dataDir, envLabel)}`);
+        // 纯协议模式**不开窗口**：用户选它正是为了不开（很多机器内存开不起来）。
+        // 记进 slotErrors，这样"全部账号都没能开始提交"的收尾判据仍会照常抛出。
+        if (_mode === "protocol") {
+          slotErrors.push({ env: envLabel, reason: `没有可用的 Cookie（${tk.reason}）` });
+          log("   → 纯协议模式不打开比特窗口，本账号跳过（想用窗口请把运行模式改成「比特窗口」）。");
+          return;
+        }
       }
       await browserPool.adapter.checkConnection();   // 走到这里才需要比特
       log(`打开比特环境：${envLabel}（本账号 ${slot.rows.length} 条）`);

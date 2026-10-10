@@ -63,6 +63,10 @@ function storedCookieOf(dataDir, envLabel, log) {
 async function runCheckPublishedTask(ctx, deps) {
   const { browserPool, log } = deps;
   const settings = deps.config.load();
+  // 纯协议模式下没有凭据也**不开窗口**（用户选它正是为了不开；很多机器内存开不起来）。
+  // 以前这里没有模式概念，一律回落到开窗口 —— 于是"纯协议"下也会看到
+  // "窗口启动失败：内存使用率超出 95%"，用户完全不知道该往哪查。
+  const _mode = String((deps.config && deps.config.load && deps.config.load().browserMode) || "protocol");
   const requested = (Array.isArray(ctx.payload.bitEnvs) ? ctx.payload.bitEnvs : [])
     .map((e) => (e && typeof e === "object" ? e.label ?? e.name : e))
     .map((x) => String(x || "").trim()).filter(Boolean);
@@ -85,8 +89,14 @@ async function runCheckPublishedTask(ctx, deps) {
       // 所以存过的账号不必为每次查收录/权益检查再开一次浏览器。
       let cookieStr = storedCookieOf(deps.dataDir, envLabel, log);
       if (!cookieStr) {
-        log(`查收录：打开比特环境 ${envLabel}（未存 Cookie，开窗口取登录态）`);
         log(`   ⚠️ 为什么没存到：${credentialHint(deps.dataDir, envLabel)}`);
+        if (_mode === "protocol") {
+          log("   → 纯协议模式不打开比特窗口（想用窗口请把运行模式改成「比特窗口」）。");
+          accounts.push({ envLabel, ok: false, hasPermission: null,
+            error: `纯协议模式不打开比特窗口，且没有可用的 Cookie。${credentialHint(deps.dataDir, envLabel)}` });
+          continue;
+        }
+        log(`查收录：打开比特环境 ${envLabel}（未存 Cookie，开窗口取登录态）`);
         const handle = await browserPool.acquire(envLabel);
         browser = await chromium.connectOverCDP(handle.cdpUrl);
         const context = browser.contexts()[0] || (await browser.newContext());

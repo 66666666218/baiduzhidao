@@ -79,6 +79,13 @@ async function runPassedCountTask(ctx, deps) {
         }
         log(`${envLabel} 纯协议取数失败（${got.reason}），回落到窗口`);
         log(`   ${credentialHint(deps.dataDir, envLabel)}`);
+        // 纯协议模式不开窗口：记成 error 账号（账号总览里带着原因显示），而不是去开窗口。
+        if (_mode === "protocol") {
+          collected[index] = { bitEnv: envLabel, status: "error",
+            error: `纯协议模式不打开比特窗口，且没有可用的 Cookie。${credentialHint(deps.dataDir, envLabel)}` };
+          log("   → 纯协议模式不打开比特窗口（想用窗口请把运行模式改成「比特窗口」）。");
+          return;
+        }
       }
       await browserPool.adapter.checkConnection();   // 走到这里才需要比特
       const handle = await browserPool.acquire(envLabel).catch((err) => {

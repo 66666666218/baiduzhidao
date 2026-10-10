@@ -17,6 +17,7 @@ const { buildTopicAllocation, topicKey, runWithConcurrency, accountConcurrencyOf
 const excel = require("../storage/excel");
 
 const http = require("../zhidao/http");
+const { credentialHint } = require("../netdisk/manager");
 const WB_HOST = http.HOST;
 const UPLOAD_API = "/qa/api/bulkqa/upload";
 const UA_PROTO = http.UA;   // UA 只有一处定义（zhidao/http.js）
@@ -192,6 +193,12 @@ async function runBatchUploadTask(ctx, deps) {
       ctx.report({ done: pBatches, total: pBatches, status: ctx.shouldStop() ? "stopped" : "done" });
       log(`=== 纯协议上传完成：共 ${okRows} 行 ===`);
       return { uploaded: okRows, batches: pBatches, quota: null };
+    }
+    // 纯协议模式下**不开窗口**（用户选它正是为了不开）。
+    if (_mode === "protocol") {
+      throw new Error(`【纯协议】模式不打开比特窗口，但这个账号没有可用的 Cookie（${tk.reason}）。`
+        + credentialHint(deps.dataDir, bitEnv)
+        + "（若确实想用比特窗口，请到设置页把运行模式改成「比特窗口」。）");
     }
     log(`纯协议不可用（${tk.reason}），回落到窗口`);
   }

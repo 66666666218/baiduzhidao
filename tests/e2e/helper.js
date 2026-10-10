@@ -46,7 +46,11 @@ async function createTestRig() {
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "zhidao-rig-"));
   const config = new Config(dataDir);
-  config.save({ activityUrl: `${base}/hd/21th_activity/`, verifyWaitSeconds: 2, delayMin: 0, delayMax: 0 });
+  // 显式声明走**比特窗口**那条路：这些 e2e 测的本来就是浏览器自动化（MockBitAdapter）。
+  // 以前这里没写 browserMode，于是它是"模式=纯协议、但没有凭据→靠回落到窗口"跑起来的 ——
+  // 正是把用户绕进去的那个配置（选了纯协议却开窗口）。2026-10-10 纯协议模式下
+  // 不再回落到窗口，所以这里必须把意图写明。
+  config.save({ activityUrl: `${base}/hd/21th_activity/`, verifyWaitSeconds: 2, delayMin: 0, delayMax: 0, browserMode: "bit" });
 
   const store = new Store(dataDir);
   const logs = [];

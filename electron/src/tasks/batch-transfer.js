@@ -69,6 +69,8 @@ async function runBatchTransferTask(ctx, deps) {
   const baseDataDir = deps.dataDir || app.getPath("userData"); // 与「打开数据目录」指向同一处
   const dataDir = path.join(baseDataDir, "\u6279\u91cf\u8f6c\u5b58");
   const payload = ctx.livePayload ? ctx.livePayload() : ctx.payload;
+  // 纯协议模式下没有凭据也**不开窗口**（用户选它正是为了不开；很多机器内存开不起来）。
+  const _mode = String((deps.config && deps.config.load && deps.config.load().browserMode) || "protocol");
   const filePath = String(payload.filePath || "").trim().replace(/^"|"$/g, "");
   if (!filePath || !fs.existsSync(filePath)) throw new Error("请先选择资源表格（xlsx 或 txt，一行一个链接）");
   // 多账号：bitEnvs 数组（逗号分隔或数组），按窗口轮换；单账号兼容 bitEnv
@@ -126,6 +128,10 @@ async function runBatchTransferTask(ctx, deps) {
     } else {
       log(`提取网盘凭证：${env}（未存 Cookie，开窗口取登录态）`);
       log(`   ⚠️ 为什么没存到：${credentialHint(baseDataDir, env)}`);
+      if (_mode === "protocol") {
+        log("   → 纯协议模式不打开比特窗口，本账号跳过（想用窗口请把运行模式改成「比特窗口」）。");
+        continue;
+      }
       const h = await browserPool.acquire(env);
       const b = await chromium.connectOverCDP(h.cdpUrl);
       const cs = await b.contexts()[0].cookies("https://pan.baidu.com");
@@ -138,7 +144,11 @@ async function runBatchTransferTask(ctx, deps) {
     creds.push({ env, bduss: bd, stoken: st });
     log(`✅ ${env} 凭证就绪 BDUSS(${bd.length}字符)${stored ? "（用存的 Cookie，未开窗口）" : ""}`);
   }
-  if (!creds.length) throw new Error("没有任何窗口具备 pan.baidu.com 登录态");
+  if (!creds.length) {
+    // 把"为什么一个都没有"说清楚：多数是名字对不上，而不是真的没登录
+    throw new Error("没有任何账号可用作转存（既没有已保存的网盘 Cookie，也没能开窗口取到登录态）。"
+      + credentialHint(baseDataDir, envList[0]));
+  }
   const bduss = creds[0].bduss;   // 兼容旧引用（分享创建用首个窗口凭证）
   const stoken = creds[0].stoken;
   log(`多账号就绪：${creds.length} 个窗口 —— 全程纯协议批量轮换`);

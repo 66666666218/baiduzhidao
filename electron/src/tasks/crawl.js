@@ -120,10 +120,16 @@ async function runCrawlTask(ctx, deps) {
         continue;
       }
       await adapter.checkConnection();   // 走到这里才需要比特
+      // **纯协议模式下没有凭据就不要开窗口。**
+      // 用户选纯协议正是为了不开窗口（很多机器内存根本开不起比特窗口）——
+      // 2026-10-10 用户就卡在这里：明明选了纯协议，看到的却是
+      // "窗口 1 启动失败，内存使用率超出 95%"，完全不知道该往哪查。
+      // 抛出去落在下面的 catch 里 → 汇成"所有账号都没能开始爬取"的聚合错误，
+      // 里面带着"为什么"和"去哪儿改"。想用比特窗口，把运行模式改成「比特窗口」即可。
+      if (_mode === "protocol" && !(cred && cred.bduss)) {
+        throw new Error(`【纯协议】模式不打开比特窗口，但这个账号没有可用的 Cookie。${credentialHint(deps.dataDir, envLabel)}`);
+      }
       log(`打开比特环境：${envLabel}`);
-      // 选了纯协议却没有这个账号的 Cookie，才会走到开窗这一步。把两边名字摆出来 ——
-      // 否则用户看到的是"我明明选了纯协议，怎么还是开了比特窗口"，而原因只是名字一字之差。
-      if (_mode === "protocol" && !(cred && cred.bduss)) log(`⚠️ 纯协议用不上：${credentialHint(deps.dataDir, envLabel)}`);
       const handle = await browserPool.acquire(envLabel);
       browser = await chromium.connectOverCDP(handle.cdpUrl);
       const context = browser.contexts()[0] || (await browser.newContext());

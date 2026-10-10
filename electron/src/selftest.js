@@ -100,7 +100,10 @@ async function runSelfTest({ onLog = () => {} } = {}) {
       stage("装配引擎依赖", async ({ previous }) => {
         const cdpUrl = previous["启动自检浏览器（无头 Edge）"];
         const config = new Config(dataDir);
-        config.save({ activityUrl: `${base}/hd/21th_activity/`, verifyWaitSeconds: 2, delayMin: 0, delayMax: 0 });
+        // 自检是**不用真实账号**跑的（走模拟站 + 无头 Edge），所以显式声明走「比特窗口」那条路。
+        // 以前没写 browserMode，靠的是纯协议→没凭据→回落到开窗口这个隐含兜底 ——
+        // 而那个兜底正是把用户绕进去的东西（选了纯协议却开窗口），2026-10-10 已堵掉。
+        config.save({ activityUrl: `${base}/hd/21th_activity/`, verifyWaitSeconds: 2, delayMin: 0, delayMax: 0, browserMode: "bit" });
         const store = new Store(dataDir);
         const llm = new LlmClient({
           apiKey: "selftest",
