@@ -563,6 +563,16 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     fs,
     path,
     resolveNetdiskRoles,
+    // 开工前预检用：纯协议模式下如果这些账号**一个可用凭据都没有**，直接拦住并说清
+    // 两边名字差在哪 —— 否则会逐个回落到开比特窗口，而用户选纯协议正是为了不开窗口。
+    credentialOf: (envLabel) => {
+      try { const { credentialOf: pick } = require("./src/netdisk/manager"); return pick(dataDir, envLabel); }
+      catch { return null; }
+    },
+    credentialHint: (envLabel) => {
+      try { const { credentialHint: hint } = require("./src/netdisk/manager"); return hint(dataDir, envLabel); }
+      catch { return ""; }
+    },
   });
   ipcMain.handle("task:auto-pipeline", (_event, payload) => autoPipeline.run(payload));
 

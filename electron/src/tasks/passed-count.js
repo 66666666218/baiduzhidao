@@ -3,6 +3,7 @@
 const { chromium } = require("playwright-core");
 const zhidao = require("../pages/zhidao");
 const { getWorkPage } = require("./crawl");
+const { credentialHint } = require("../netdisk/manager");
 const { runWithConcurrency, accountConcurrencyOf } = require("../domain/account-topic");
 
 const http = require("../zhidao/http");
@@ -77,6 +78,7 @@ async function runPassedCountTask(ctx, deps) {
           return;
         }
         log(`${envLabel} 纯协议取数失败（${got.reason}），回落到窗口`);
+        log(`   ${credentialHint(deps.dataDir, envLabel)}`);
       }
       await browserPool.adapter.checkConnection();   // 走到这里才需要比特
       const handle = await browserPool.acquire(envLabel).catch((err) => {

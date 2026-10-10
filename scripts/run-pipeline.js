@@ -143,6 +143,8 @@ const pipeline = createAutoPipeline({
   fs,
   path,
   resolveNetdiskRoles,
+  credentialOf: (envLabel) => credentialOf(dataDir, envLabel),
+  credentialHint: (envLabel) => require("../electron/src/netdisk/manager").credentialHint(dataDir, envLabel),
 });
 
 async function main() {

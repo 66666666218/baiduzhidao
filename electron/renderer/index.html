@@ -174,6 +174,12 @@
           </div>
           <div class="field-grid">
             <div class="field"><label>抽题条数</label><input type="number" id="autoPickCount" min="1" value="20" /></div>
+            <div class="field">
+              <label>爬题上限（每个分类最多新增多少题；0 = 不限）</label>
+              <input type="number" id="autoMaxQuestions" min="0" value="100" />
+              <p class="hint"><b>这一项管「爬题」，别和上面的「抽题条数」混</b>——抽题条数只管从题库里抽几条出来生成。
+              它和设置页的「任务总量上限」<b>是同一个设置</b>，改哪边都一样。</p>
+            </div>
             <div class="field"><label>每批上传行数</label><input type="number" id="autoBatchRows" min="1" value="500" /></div>
             <div class="field"><label>每账号每日限额（0=不限）</label><input type="number" id="autoAccountDailyLimit" min="0" />
               <p class="hint">只管<b>逐题提交</b>那条链（自己设的风控护栏，与平台额度无关）。网盘上传不受它约束。</p>

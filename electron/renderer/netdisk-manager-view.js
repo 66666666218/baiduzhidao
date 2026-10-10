@@ -149,13 +149,35 @@
       // 备注名空着时**用百度账号名自动命名** —— 以前这里直接 return，
       // 等于"登录成功却把 Cookie 丢了、要用户再登一次"，与界面承诺的
       // "登进去就会自动关闭并填好"自相矛盾。
-      var name = typed || String(creds.userName || "").trim();
+      //
+      // ⚠️ 但"用百度账号名命名"**本身是个陷阱**：那个名字（如「天一项目社」）
+      // 几乎不可能和「比特环境名称」（用户自己起的「测试组1」「测试组2」）对上，
+      // 而对不上就等于这份 Cookie 白存了 —— 任务按环境名找 Cookie 找不到，
+      // 只能回落到开比特窗口，用户看到的是"我明明选了纯协议却开了比特窗口"。
+      // （2026-10-10 用户就是这么踩的。）所以：优先用**「还没有凭据的那个环境名」**。
+      // 只有一个环境缺凭据时就直接用它 —— 那正是用户此刻要登录的那个号。
+      var name = typed;
+      if (!name) {
+        try {
+          var envs = ((await rpc.invoke("settings:get")).bitEnvs || []).map(function (e) { return e.label || e; });
+          var have = new Set((await rpc.invoke("netdisk:accounts:list") || []).map(function (a) { return a.name; }));
+          var missing = envs.filter(function (e) { return !have.has(e); });
+          if (missing.length === 1) {
+            name = missing[0];
+            appendLog("未填备注名 —— 已按「比特环境名称」里还缺凭据的那个用「" + name + "」命名（这样任务才能按名字找到它）。");
+          }
+        } catch (e) { /* 拿不到就用下面的兜底 */ }
+      }
+      if (!name) name = String(creds.userName || "").trim();
       if (!name) {
         appendLog("登录成功（账号 " + (creds.userName || "?") + "），但没能自动取名 —— 请在「账号备注名」填一个再点一次；Cookie 已暂存在本次会话里，不用重新登录。");
         window.__pendingCred = creds;
         return;
       }
-      if (!typed) appendLog("未填备注名，已用百度账号名「" + name + "」自动命名。这个名字要与其他任务里的账号名一致才能被用上。");
+      if (!typed && name === String(creds.userName || "").trim()) {
+        appendLog("⚠️ 未填备注名，只能用百度账号名「" + name + "」命名 —— **它必须和「比特环境名称」里的一字不差**，否则任务找不到这份 Cookie、会回落到开比特窗口。"
+          + "建议：到「账号凭证」删掉它，用「登录并提取」重登一次，备注名填成你的比特环境名。");
+      }
       var info2 = await rpc.invoke("netdisk:accounts:add", { name: name, bduss: creds.bduss, stoken: creds.stoken });
       appendLog("✅ " + name + " 已入库（账号 " + ((info2 && info2.userName) || "?") + "）" + (info2 && info2.netdiskOk ? "，网盘已连接" : "，网盘未连接（只影响转存，答题链可用）"));
       loadAccounts();

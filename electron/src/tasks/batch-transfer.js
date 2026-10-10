@@ -16,6 +16,7 @@ const { chromium } = require("playwright-core");
 const { createShare } = require("../netdisk/share");
 const { Jar, processOne } = require("../netdisk/protocol");
 const qaLib = require("../netdisk/qa-template-lib");
+const { credentialHint } = require("../netdisk/manager");
 const { envLabelsOf } = require("../domain/account-topic");
 
 
@@ -124,6 +125,7 @@ async function runBatchTransferTask(ctx, deps) {
       st = stored.stoken;
     } else {
       log(`提取网盘凭证：${env}（未存 Cookie，开窗口取登录态）`);
+      log(`   ⚠️ 为什么没存到：${credentialHint(baseDataDir, env)}`);
       const h = await browserPool.acquire(env);
       const b = await chromium.connectOverCDP(h.cdpUrl);
       const cs = await b.contexts()[0].cookies("https://pan.baidu.com");

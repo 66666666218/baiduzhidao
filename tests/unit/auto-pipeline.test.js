@@ -393,3 +393,86 @@ test("artifacts：一个阶段都没跑成时是空数组，不是 null（界面
   assert.ok(Array.isArray(result.artifacts));
   assert.deepEqual(result.artifacts, []);
 });
+
+// ---------- 开工前预检：纯协议 + 一个凭据都没有 → 拦住并说清名字差在哪 ----------
+// 起因（2026-10-10 用户反馈）：他选了纯协议，软件却开出了比特窗口。
+// 真实原因是「比特环境名称」写的是 测试组1/测试组2，而「账号凭证」里存的名字是
+// 登录时自动取的百度账号名（天一项目社 / 账号10081452）—— 按名字找不到 Cookie，
+// 只能回落开窗口；而日志只说"回落到窗口"，看不出是名字对不上。
+
+test("纯协议 + 一个账号都没有凭据 → 直接拦住，并把两边的名字摆出来", async () => {
+  const { createAutoPipeline } = require("../../electron/src/workflows/auto-pipeline");
+  const { resolveNetdiskRoles } = require("../../electron/src/domain/account-topic");
+  const logs = [];
+  const settings = { bitEnvs: ["测试组1", "测试组2"], browserMode: "protocol" };
+  const pipeline = createAutoPipeline({
+    config: { load: () => settings },
+    startTask: async () => ({}),
+    taskDeps: () => ({}),
+    pickQuestions: async () => ({ canceled: false, filePath: "/tmp/x.xlsx" }),
+    emit: (_c, m) => logs.push(String(m)),
+    pulse: () => {},
+    dataDir: "/tmp",
+    taskRunners: new Proxy({}, { get: () => async () => ({}) }),
+    CATEGORIES: ["情感类"],
+    excel: { readTableRows: () => [], importRowToAnswer: (r) => r, answerToRow: (r) => r, ANSWER_HEADERS: [] },
+    fs: { existsSync: () => true },
+    path,
+    resolveNetdiskRoles,
+    credentialOf: () => null,   // 一个都没有
+    credentialHint: () => "「账号凭证」里存的是：天一项目社、账号10081452；而这里要的是「测试组1」。",
+  });
+  await assert.rejects(() => pipeline.run({}),
+    (err) => {
+      assert.match(err.message, /纯协议/, "要说清是模式问题");
+      assert.match(err.message, /天一项目社/, "要把「账号凭证」里实际存的名字摆出来");
+      assert.match(err.message, /测试组1/, "也要说清这里要的是哪个名字");
+      assert.match(err.message, /比特窗口/, "并给出去处：确实想开窗口就去改模式");
+      return true;
+    });
+});
+
+test("纯协议 + 部分账号有凭据 → 不拦，但明确预告哪些会回落开窗口", async () => {
+  const { createAutoPipeline } = require("../../electron/src/workflows/auto-pipeline");
+  const { resolveNetdiskRoles } = require("../../electron/src/domain/account-topic");
+  const logs = [];
+  const settings = { bitEnvs: ["有凭据", "没凭据"], browserMode: "protocol" };
+  const pipeline = createAutoPipeline({
+    config: { load: () => settings },
+    startTask: async () => ({}),
+    taskDeps: () => ({}),
+    pickQuestions: async () => ({ canceled: false, filePath: "/tmp/x.xlsx" }),
+    emit: (_c, m) => logs.push(String(m)),
+    pulse: () => {},
+    dataDir: "/tmp",
+    taskRunners: new Proxy({}, { get: () => async () => ({}) }),
+    CATEGORIES: ["情感类"],
+    excel: { readTableRows: () => [], importRowToAnswer: (r) => r, answerToRow: (r) => r, ANSWER_HEADERS: [] },
+    fs: { existsSync: () => true },
+    path,
+    resolveNetdiskRoles,
+    credentialOf: (e) => (e === "有凭据" ? { bduss: "x" } : null),
+    credentialHint: () => "",
+  });
+  // 只勾一个不依赖账号的阶段，看预检的预告日志
+  await pipeline.run({ stages: ["search"] });
+  assert.match(logs.join("\n"), /没有 Cookie，到它们时会回落到开比特窗口：没凭据/);
+});
+
+test("比特模式（非纯协议）不做这个拦截 —— 那时开窗口本来就是它的正常行为", async () => {
+  const { createAutoPipeline } = require("../../electron/src/workflows/auto-pipeline");
+  const { resolveNetdiskRoles } = require("../../electron/src/domain/account-topic");
+  const settings = { bitEnvs: ["A"], browserMode: "bit" };
+  const pipeline = createAutoPipeline({
+    config: { load: () => settings },
+    startTask: async () => ({}), taskDeps: () => ({}),
+    pickQuestions: async () => ({ canceled: false, filePath: "/tmp/x.xlsx" }),
+    emit: () => {}, pulse: () => {}, dataDir: "/tmp",
+    taskRunners: new Proxy({}, { get: () => async () => ({}) }),
+    CATEGORIES: ["情感类"],
+    excel: { readTableRows: () => [], importRowToAnswer: (r) => r, answerToRow: (r) => r, ANSWER_HEADERS: [] },
+    fs: { existsSync: () => true }, path, resolveNetdiskRoles,
+    credentialOf: () => null, credentialHint: () => "",
+  });
+  await assert.doesNotReject(() => pipeline.run({ stages: ["search"] }));
+});

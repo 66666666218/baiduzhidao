@@ -176,9 +176,29 @@ function credentialOf(dataDir, envLabel) {
   return { bduss: String(hit.bduss).trim(), stoken: String(hit.stoken || "").trim() };
 }
 
+/**
+ * 找不到某个环境的凭据时，给一句**能照做**的诊断。
+ *
+ * 为什么需要：协议模式找不到 Cookie 会**静默回落到开窗口**（这是设计上的兜底），
+ * 用户看到的是"我明明选了纯协议，怎么还是开了比特窗口"，而真正原因往往只是
+ * **名字一字之差** —— 比如「比特环境名称」写的是 `测试组1`，而「账号凭证」里
+ * 存的名字是登录时自动取用的百度账号名 `天一项目社`。
+ * 只报"纯协议不可用"等于把用户扔在原地；这里把两边到底叫什么直接摆出来。
+ */
+function credentialHint(dataDir, envLabel) {
+  var names = loadAccounts(dataDir).map(function (a) { return String(a.name || "").trim(); }).filter(Boolean);
+  if (!names.length) {
+    return "「账号凭证」里一个账号都没有 —— 到那一页点「登录并提取」，登录后会自动入库。";
+  }
+  return "「账号凭证」里存的是：" + names.join("、") + "；而这里要的是「" + String(envLabel || "") + "」。"
+    + "两边名字必须**一字不差**才能用上 —— 到「账号凭证」把备注名改成「" + String(envLabel || "") + "」，"
+    + "或把这里的账号名改成上面其中一个。";
+}
+
 module.exports = {
   ManagerJar: ManagerJar,
   credentialOf: credentialOf,
+  credentialHint: credentialHint,
   clientOf: clientOf,
   loadAccounts: loadAccounts,
   saveAccounts: saveAccounts,

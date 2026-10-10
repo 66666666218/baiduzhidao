@@ -13,6 +13,7 @@ const { chromium } = require("playwright-core");
 const workbench = require("../netdisk/workbench");
 const excel = require("../storage/excel");
 const { describeError } = require("../errors");
+const { credentialHint } = require("../netdisk/manager");
 
 /**
  * 从「账号凭证」存的账号里取 Cookie（按比特环境名匹配）。
@@ -85,6 +86,7 @@ async function runCheckPublishedTask(ctx, deps) {
       let cookieStr = storedCookieOf(deps.dataDir, envLabel, log);
       if (!cookieStr) {
         log(`查收录：打开比特环境 ${envLabel}（未存 Cookie，开窗口取登录态）`);
+        log(`   ⚠️ 为什么没存到：${credentialHint(deps.dataDir, envLabel)}`);
         const handle = await browserPool.acquire(envLabel);
         browser = await chromium.connectOverCDP(handle.cdpUrl);
         const context = browser.contexts()[0] || (await browser.newContext());

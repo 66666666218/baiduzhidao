@@ -701,6 +701,10 @@ if ($("browserMode")) {
   });
 }
 
+// 爬题上限：两个入口绑同一个设置，互相跟着走（同「运行模式」那套做法）
+if ($("maxQuestions")) $("maxQuestions").addEventListener("input", () => { if ($("autoMaxQuestions")) $("autoMaxQuestions").value = $("maxQuestions").value; });
+if ($("autoMaxQuestions")) $("autoMaxQuestions").addEventListener("input", () => { if ($("maxQuestions")) $("maxQuestions").value = $("autoMaxQuestions").value; });
+
 // 「账号并发」改了要立刻刷新全自动页那句提示（它引用了并发数）
 if ($("accountConcurrency")) {
   $("accountConcurrency").addEventListener("input", () => {
@@ -718,6 +722,9 @@ $("startAutoPipeline").addEventListener("click", async () => {
   if ($("autoStageUpload").checked) stages.push("upload");
   // 全自动页的模式是"同一个设置"的第二个入口 —— 单向写回设置页那个，避免两处互相覆盖
   if ($("autoRunMode") && $("browserMode")) $("browserMode").value = $("autoRunMode").value;
+  // 爬题上限同理：全自动页这个框和设置页的「任务总量上限」是**同一个设置**，
+  // 单向写回设置页那个输入框，再由 saveSettingsQuiet 统一存（只做单向，避免两处互相覆盖）。
+  if ($("autoMaxQuestions") && $("maxQuestions")) $("maxQuestions").value = $("autoMaxQuestions").value;
   if (!stages.length) { appendLog("请至少勾选一个阶段。"); return; }
   if (!await saveSettingsQuiet()) return;
 
@@ -921,6 +928,7 @@ async function loadSettings() {
   $("delayMin").value = settings.delayMin;
   $("delayMax").value = settings.delayMax;
   $("maxQuestions").value = settings.maxQuestions;
+  if ($("autoMaxQuestions")) $("autoMaxQuestions").value = $("maxQuestions").value;
   $("closeAfter").value = String(settings.closeAfter);
   $("autoSubmit").value = String(Boolean(settings.autoSubmit));
   $("crawlStartPage").value = settings.crawlStartPage || 1;

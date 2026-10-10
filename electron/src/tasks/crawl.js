@@ -5,6 +5,7 @@ const { chromium } = require("playwright-core");
 const { SEL } = require("../pages/selectors");
 const zhidao = require("../pages/zhidao");
 const { nowText } = require("../config");
+const { credentialHint } = require("../netdisk/manager");
 const excel = require("../storage/excel");
 const { describeError } = require("../errors");
 const protocolCrawl = require("../zhidao/protocol-crawl");
@@ -120,6 +121,9 @@ async function runCrawlTask(ctx, deps) {
       }
       await adapter.checkConnection();   // 走到这里才需要比特
       log(`打开比特环境：${envLabel}`);
+      // 选了纯协议却没有这个账号的 Cookie，才会走到开窗这一步。把两边名字摆出来 ——
+      // 否则用户看到的是"我明明选了纯协议，怎么还是开了比特窗口"，而原因只是名字一字之差。
+      if (_mode === "protocol" && !(cred && cred.bduss)) log(`⚠️ 纯协议用不上：${credentialHint(deps.dataDir, envLabel)}`);
       const handle = await browserPool.acquire(envLabel);
       browser = await chromium.connectOverCDP(handle.cdpUrl);
       const context = browser.contexts()[0] || (await browser.newContext());

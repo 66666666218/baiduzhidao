@@ -4,6 +4,7 @@ const { chromium } = require("playwright-core");
 const protocolSubmit = require("../zhidao/protocol-submit");
 const zhidao = require("../pages/zhidao");
 const { nowText } = require("../config");
+const { credentialHint } = require("../netdisk/manager");
 const { getWorkPage } = require("./crawl");
 const { buildAllocation, runWithConcurrency, accountConcurrencyOf } = require("../domain/account-topic");
 const { describeError } = require("../errors");
@@ -304,6 +305,7 @@ async function runSubmitTask(ctx, deps) {
           return;
         }
         log(`纯协议不可用（${tk.reason}），本账号回落到窗口`);
+        log(`   ${credentialHint(deps.dataDir, envLabel)}`);
       }
       await browserPool.adapter.checkConnection();   // 走到这里才需要比特
       log(`打开比特环境：${envLabel}（本账号 ${slot.rows.length} 条）`);

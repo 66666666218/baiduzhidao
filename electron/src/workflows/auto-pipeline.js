@@ -90,6 +90,8 @@ function createAutoPipeline(deps) {
   const {
     config, startTask, taskDeps, pickQuestions, emit, pulse, dataDir,
     taskRunners, CATEGORIES, excel, fs, path, resolveNetdiskRoles,
+    // 可选：预检用。不给就不做"纯协议却一个凭据都没有"的拦截（测试与脚本可以不传）。
+    credentialOf: credentialOfFor, credentialHint: credentialHintFor,
   } = deps;
 
   // 「停止」旗标：TaskManager.stop 只能停当前那个任务，而编排在阶段之间还要决定
@@ -181,6 +183,27 @@ function createAutoPipeline(deps) {
     // 配置类错误**不进 report**，直接抛给调用方 —— 界面上"请先去设置页填账号"
     // 比"有阶段失败（详见上方结果）"有用得多。
     if (!bitEnvs.length) throw new Error("请先在设置页「比特环境名称」填写账号。");
+
+    // **纯协议模式 + 一个账号都没有可用凭据 = 必然逐个回落到开比特窗口。**
+    // 用户明确选了纯协议（很多人正是因为内存不够才选它），结果却开出一串窗口，
+    // 而日志只会说"回落到窗口"——他完全不知道是名字对不上。
+    // 这里在**开工之前**就拦住，并直接把两边名字摆出来。只在"一个都没有"时拦，
+    // 部分账号有凭据时仍然逐个回落（那种情况是有意义的：先跑能跑的）。
+    const _mode = String((config.load && config.load().browserMode) || "protocol");
+    if (_mode === "protocol" && typeof credentialOfFor === "function") {
+      const withCred = bitEnvs.filter((env) => {
+        try { const c = credentialOfFor(env); return c && c.bduss; } catch { return false; }
+      });
+      if (!withCred.length) {
+        throw new Error("当前是「纯协议」模式，但这些账号在「账号凭证」里一个可用的 Cookie 都没有 —— "
+          + "继续跑只会逐个回落到开比特窗口（你选纯协议正是为了不开窗口）。"
+          + credentialHintFor(bitEnvs[0]) + "（若确实想用比特窗口，请到设置页把运行模式改成「比特窗口」。）");
+      }
+      if (withCred.length < bitEnvs.length) {
+        const missing = bitEnvs.filter((e) => !withCred.includes(e));
+        emit("task:log", `⚠️ 这些账号在「账号凭证」里没有 Cookie，到它们时会回落到开比特窗口：${missing.join("、")}`);
+      }
+    }
 
     try {
 
