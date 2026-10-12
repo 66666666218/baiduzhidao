@@ -85,8 +85,13 @@ $("startCrawl").addEventListener("click", async () => {
   if (!await saveSettingsQuiet()) return;
   try {
     const settings = await rpc.invoke("settings:get");
+    // 本页账号框优先：以前这里硬用 `settings.bitEnvs`（设置页全量），
+    // 用户在别处只留一个号也拦不住 —— "我只选了一个账号"却跑了好几个，就是这个。
+    const { envs: bitEnvs, source } = resolveEnvsFromBox("crawlBitEnvs", settings);
+    if (!bitEnvs.length) { appendLog("请先在本页「本次爬取账号」或设置页「比特环境名称」填写账号。"); return; }
+    logEnvSource("本次爬取账号", bitEnvs, source);
     const result = await rpc.invoke("task:crawl", {
-      bitEnvs: settings.bitEnvs,
+      bitEnvs,
       category: $("category").value,
       crawlStartPage: Number($("crawlStartPage").value) || 1,
       crawlOutputDir: $("crawlOutputDir").value,
@@ -405,8 +410,13 @@ $("startSubmit").addEventListener("click", async () => {
       appendLog("请先选择包含回答内容的来源表格。");
       return;
     }
+    // 本页账号框优先（同爬题页那处）：自动提交**会真的把回答发出去**，
+    // 用错账号撤不回来，所以"这次是哪几个号"必须先摆出来再动手。
+    const { envs: bitEnvs, source } = resolveEnvsFromBox("submitBitEnvs", settings);
+    if (!bitEnvs.length) { appendLog("请先在本页「本次提交账号」或设置页「比特环境名称」填写账号。"); return; }
+    logEnvSource("本次提交账号", bitEnvs, source);
     const result = await rpc.invoke("task:submit", {
-      bitEnvs: settings.bitEnvs,
+      bitEnvs,
       results: [],
       filePath,
       submitLimit: Number($("submitLimit").value) || 0,
@@ -551,13 +561,43 @@ function settingEnvLabels(settings, key) {
 }
 
 /**
- * 取本次参与上传的账号。返回 { envs, source } —— source 用于把"这批账号是怎么来的"
- * 摆到用户面前：**不知道账号列表从哪来，就不可能知道为什么多传了一个号**。
+ * 「本次参与账号」的统一取法：**本页账号框优先，留空才回落设置页全量**。
+ *
+ * 为什么必须回传 source：账号选错是成本最高的一类错误（答案已经发出去、额度已经扣掉，
+ * 撤不回来）。而"我明明只填了一个号，怎么两个都跑了"这种问题 ——
+ * **不知道这批账号是从哪来的，就永远查不出来**。
+ *
+ * 这一幕在本仓库出过两次：
+ *   · 「批量上传」页：以前不读本页账号框，直接用 settings.bitEnvs（已修）；
+ *   · 「自动提交」/「题目爬取」页：**压根没有账号框**，永远用设置页全量账号（本轮修）——
+ *     用户在别处怎么选都不生效，日志里也看不出这次跑的是哪几个号。
+ * 所以现在每个会对外动作的入口都必须走这里，并且把结果与来源打给用户看。
+ */
+function resolveEnvsFromBox(inputId, settings, settingsKey = "bitEnvs") {
+  const box = $(inputId);
+  const raw = box ? String(box.value || "") : "";
+  const ui = uniqueStrings(raw.split(/\r?\n|[,，]/).map((s) => s.trim()).filter(Boolean));
+  if (ui.length) return { envs: ui, source: "ui" };
+  return { envs: settingEnvLabels(settings, settingsKey), source: "settings" };
+}
+
+/** 把"本次到底哪几个号会参与、是哪来的"说清楚 —— 静默用全量账号是最贵的一类事故 */
+function logEnvSource(label, envs, source) {
+  if (!envs.length) return;
+  if (source === "settings") {
+    appendLog(`⚠️ 「${label}」是空的，本次用设置页的全部账号（${envs.length} 个）：${envs.join("、")}`
+      + " —— 只想让某几个号参与，就把它们填进这个框（每行一个）。");
+  } else {
+    appendLog(`本次参与账号（${envs.length} 个）：${envs.join("、")}`);
+  }
+}
+
+/**
+ * 取本次参与上传的账号（上传页那个框是上传动作的唯一入口）。
+ * 语义与 resolveEnvsFromBox 完全一致，保留独立名字是为了让"上传读的是哪个框"在调用点一目了然。
  */
 function resolveUploadEnvs(settings) {
-  const ui = readUploadEnvs();
-  if (ui.length) return { envs: ui, source: "ui" };
-  return { envs: settingEnvLabels(settings, "bitEnvs"), source: "settings" };
+  return resolveEnvsFromBox("uploadBitEnv", settings);
 }
 
 /** 框里写了设置页没有的账号名 —— 多半是笔误，上传时才会报"未登录"，先说一声 */
@@ -586,9 +626,12 @@ $("startBatchUpload").addEventListener("click", async () => {
       bitEnv,
       batchRows: Number($("uploadBatchRows").value) || 500,
       maxBatches: Number($("uploadMaxBatches").value) || 999,
-      // 这条通道与「按题材上传」共用 upload-batch.js，契约测试要求两边都传齐字段；
-      // 单账号路径用不到它们，传了也无副作用。
-      bitEnvs: settings.bitEnvs,
+      // 这条通道与「按题材上传」共用 upload-batch.js，契约测试要求两边都传齐字段。
+      // ⚠️ bitEnvs 传的是**本次那个号**（不是 settings.bitEnvs）：
+      // 以前这里偷懒传了设置页全量，语义上就成了"我要用全部账号上传"——
+      // runBatchUploadTask 现在只读 bitEnv 所以没炸，但只要哪天它改读 bitEnvs，
+      // 用户在框里只填一个号也会瞬间变成全量上传。字段传了就要传对。
+      bitEnvs: envs,
       accountTopics: settings.accountTopics,
       topicRules: settings.topicRules,
     });

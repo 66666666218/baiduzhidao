@@ -265,6 +265,7 @@
                 <button class="btn soft" id="pickCrawlDir">选择</button>
               </div>
             </div>
+            <div class="field" style="grid-column: 1 / -1;"><label>本次爬取账号（每行一个；留空 = 设置页的全部账号）</label><textarea id="crawlBitEnvs" rows="2" placeholder="留空即全部&#10;爬取是只读的，通常填一个能登进去的号就够"></textarea></div>
           </div>
           <div class="card-actions">
             <button class="btn primary" id="startCrawl">开始爬取</button>
@@ -416,6 +417,7 @@
                 <option value="off">关闭：按普通轮询（排查用）</option>
               </select>
             </div>
+            <div class="field" style="grid-column: 1 / -1;"><label>本次提交账号（每行一个；留空 = 设置页的全部账号）</label><textarea id="submitBitEnvs" rows="2" placeholder="留空即全部&#10;只想让某一个号提交，就只填它那一行"></textarea></div>
           </div>
           <div class="field">
             <label class="check"><input type="checkbox" id="skipReviewAnswers" /> 跳过「质检判为需复核」的答案</label>

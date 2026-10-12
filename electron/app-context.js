@@ -23,7 +23,7 @@ const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
 const { INVOKE_CHANNELS } = require("./src/ipc-channels");
 const { describeUpdateError, describeError, scrubUrl } = require("./src/errors");
-const { resolveNetdiskRoles } = require("./src/domain/account-topic");
+const { resolveNetdiskRoles, envLabelsOf } = require("./src/domain/account-topic");
 const { createAutoPipeline } = require("./src/workflows/auto-pipeline");
 const { AccountManager } = require("./src/browser/account-manager");
 // 「从比特窗口提取 Cookie」这条通道要连 CDP 取 Cookie，所以主进程仍然需要 chromium。
@@ -171,6 +171,23 @@ async function startTask(name, payload, runner) {
     logger.log(`⚠️ 检测到另一个写入者（${foreignWriter.owner} · 进程 ${foreignWriter.pid}，${Math.round(foreignWriter.idleMs / 1000)} 秒前还在活动）正在写同一份数据目录，` +
       "两边会互相覆盖题库/记录。请先关掉它（命令行工具或主程序）再继续。");
   }
+  // 「这次到底哪几个号会参与」必须在开工第一行就打出来。
+  // 账号选错是成本最高的一类错误（答案已发出、额度已扣，撤不回来），而每个入口
+  // 取号的地方都不一样（本页账号框 / 设置页全量 / 一键全自动的账号分工）——
+  // 不在这里统一留痕，用户只能靠猜"这次跑的到底是哪几个号"。
+  // 同名写两遍要当场点名：那会生成两个同名 slot，**那个号会被执行两遍**。
+  const envLabels = payload && Array.isArray(payload.bitEnvs)
+    ? envLabelsOf(payload.bitEnvs)
+    : (payload && String(payload.bitEnv || "").trim() ? [String(payload.bitEnv).trim()] : []);
+  if (envLabels.length) {
+    logger.log(`本次参与账号（${envLabels.length} 个）：${envLabels.join("、")}`);
+    const unique = Array.from(new Set(envLabels));
+    if (unique.length !== envLabels.length) {
+      logger.log(`⚠️ 账号名单里有重复名字（${envLabels.length} 行 / ${unique.length} 个不同账号），`
+        + "重复的号会被执行两遍 —— 请检查来源（本页账号框 / 设置页「比特环境名称」）。");
+    }
+  }
+
   // 每个任务一份 CSV 自动保存兜底（防表格占用/崩溃丢记录）
   const autosaveDir = path.join(dataDir, "autosave");
   fs.mkdirSync(autosaveDir, { recursive: true });

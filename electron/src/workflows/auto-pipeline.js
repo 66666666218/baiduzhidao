@@ -179,6 +179,12 @@ function createAutoPipeline(deps) {
     const bitEnvs = requested.labels.length ? requested.labels : fallback.labels;
     // 去重掉的账号要留痕：这条链是无人值守跑的，用户第二天只看结果，
     // "我填了 4 个号怎么只跑了 3 个"这类疑问必须能在日志里找到答案。
+    // 「这次到底哪几个号会参与、是哪来的」必须先摆出来再开工。
+    // 一键全自动是无人值守的，用户第二天只看结果；不写这一行，
+    // "我明明只填了一个号，怎么两个都跑了"就只能靠猜（本轮就是这个现象）。
+    emit("task:log", `本次参与账号（${bitEnvs.length} 个）：${bitEnvs.join("、")}`
+      + `（来源：${requested.labels.length ? "一键全自动页「本次参与的账号」" : "设置页「比特环境名称」"}）`);
+
     const droppedDupes = (requested.labels.length ? requested : fallback).duplicated;
     if (droppedDupes.length) {
       emit("task:log", `⚠️ 账号列表里有重复名字（${droppedDupes.join("、")}），已自动去重 ——`
