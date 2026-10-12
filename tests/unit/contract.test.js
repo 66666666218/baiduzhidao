@@ -57,8 +57,12 @@ test("契约②：renderer 调用的所有通道都有 main 侧 handler", () => 
   assert.deepEqual(missing, [], `renderer 调用但无 handler: ${missing.join(", ")}`);
 });
 
+// 只看**真会执行**的代码：注释里举例"以前这里给 openReleases 挂过监听器"不算真实引用，
+// 不剥注释的话守卫会咬自己的手（本仓库 round13 的 D5/D8 就自伤过一次）。
+const rendererJsCode = rendererJs.replace(/^\s*(\/\/|\*|\/\*).*$/gm, "");
+
 test("契约③：renderer 引用的所有 DOM id 都存在于 index.html", () => {
-  const used = new Set([...rendererJs.matchAll(/\$\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1]));
+  const used = new Set([...rendererJsCode.matchAll(/\$\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1]));
   const defined = new Set([...indexHtml.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
   const missing = [...used].filter((u) => !defined.has(u));
   assert.deepEqual(missing, [], `renderer 引用但 html 中不存在: ${missing.join(", ")}`);

@@ -9,9 +9,16 @@
 const path = require("path");
 const fs = require("fs");
 const XLSX = require("xlsx");
+// 读 xlsx 统一走 storage/excel.js 的 readFirstSheet（本文件不再自己 XLSX.readFile）
+const excel = require("../electron/src/storage/excel");
+// ⚠️ 这个 require 必须排在下面 `const dataDir = resolveDataDir(root)` **之前**。
+// 第 13 轮接线时把它漏在了第 20 行（`const root`/`dataDir` 之后），结果整个脚本一跑就
+// `ReferenceError: Cannot access 'resolveDataDir' before initialization`（const 的暂时性死区）。
+// `node --check` 查不出来 —— 它只管语法，这不是语法错误。round13 的 TDZ 守卫就是为了拦这个。
+const { resolveDataDir, readCdp } = require("../electron/src/data-dir");
 
 const root = path.resolve(__dirname, "..");
-const dataDir = path.join(root, "运行缓存");
+const dataDir = resolveDataDir(root);
 const srcFile = process.argv[2] || path.join(dataDir, "workbench-all-questions.xlsx");
 const batchRows = Math.max(1, Number(process.argv[3]) || 500);
 const maxBatches = Number(process.argv[4]) || 999;
@@ -19,7 +26,7 @@ const maxBatches = Number(process.argv[4]) || 999;
 const { chromium } = require("playwright-core");
 
 (async () => {
-  const cdp = fs.readFileSync(path.join(dataDir, "cdp.txt"), "utf8").trim();
+  const cdp = readCdp(dataDir);
   const browser = await chromium.connectOverCDP(`http://${cdp}`);
   const context = browser.contexts()[0];
   let page = context.pages().find((p) => p.url().includes("/b/batch"));
@@ -29,10 +36,9 @@ const { chromium } = require("playwright-core");
     await page.waitForTimeout(4000);
   }
 
-  const wb = XLSX.readFile(srcFile);
-  const sheetName = wb.SheetNames[0];
-  const sheet = wb.Sheets[sheetName];
-  const allRows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  // 读表统一走 storage/excel.js。用 readFirstSheet 是因为下面切分片要用原表名
+  //（一次读盘同时拿到表名与行）。
+  const { sheetName, rows: allRows } = excel.readFirstSheet(srcFile);
   const keys = Object.keys(allRows[0]);
   const kAnswer = keys.find((k) => k.includes("回答内容"));
   const filled = allRows.filter((r) => String(r[kAnswer] || "").trim());

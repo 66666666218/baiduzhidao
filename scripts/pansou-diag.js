@@ -6,12 +6,13 @@
  */
 
 const path = require("path");
+const { resolveDataDir } = require("../electron/src/data-dir");
 const fs = require("fs");
 const { launchHeadlessEdge } = require("../electron/src/edge-launcher");
 const { chromium } = require("playwright-core");
 
 const keyword = process.argv[2] || "电子课本";
-const cacheDir = path.resolve(__dirname, "..", "运行缓存");
+const cacheDir = resolveDataDir(path.resolve(__dirname, ".."));
 
 (async () => {
   const edge = await launchHeadlessEdge({});

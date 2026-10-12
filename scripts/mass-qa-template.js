@@ -20,6 +20,9 @@
  */
 
 const path = require("path");
+const { resolveDataDir } = require("../electron/src/data-dir");
+// 读 xlsx 统一走 storage/excel.js 的 readFirstSheet（本文件不再自己 XLSX.readFile）
+const excel = require("../electron/src/storage/excel");
 const fs = require("fs");
 const XLSX = require("xlsx");
 
@@ -27,7 +30,7 @@ const XLSX = require("xlsx");
 const srcFile = process.argv[2] && !process.argv[2].startsWith("--")
   ? path.resolve(process.argv[2]) : null;
 const outDir = process.argv[3] && !process.argv[3].startsWith("--")
-  ? path.resolve(process.argv[3]) : path.join(__dirname, "..", "运行缓存", "答题模板QA");
+  ? path.resolve(process.argv[3]) : path.join(resolveDataDir(path.resolve(__dirname, "..")), "答题模板QA");
 const chunkRows = Math.max(100, Number(process.argv[4]) || 5000);
 
 if (!srcFile || !fs.existsSync(srcFile)) {
@@ -45,10 +48,10 @@ const buildAnswerHtml = (link, intro) => qaLib.buildAnswerHtml(link, intro);
 
 // ---------- 主流程 ----------
 (async () => {
-  const wb = XLSX.readFile(srcFile);
-  const sheet = wb.Sheets[wb.SheetNames[0]];
-  const raw = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false });
-  console.log(`读取 ${raw.length} 行（工作表: ${wb.SheetNames[0]}）`);
+  // 读表统一走 storage/excel.js。用 readFirstSheet 是因为日志里还要打印表名
+  // （一次读盘同时拿到表名与行，不用为了表名再读一遍）。
+  const { sheetName, rows: raw } = excel.readFirstSheet(srcFile, { raw: false });
+  console.log(`读取 ${raw.length} 行（工作表: ${sheetName}）`);
 
   const seenLinks = new Set();
   const seenTitles = new Set();

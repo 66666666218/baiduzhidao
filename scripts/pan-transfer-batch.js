@@ -5,9 +5,17 @@
  *   输入 txt（一行一个链接）或 xlsx → 纯 HTTP 协议逐条：
  *   verify → 分享页解析(mset) → 建目标目录 → fsidlist 转存 → 创建自有永久分享 → 按答题模板出问答行
  *
- * 依据：qingchuangjy/wangpan 参考实现 + 2026-09-23 实测（料理鼠王纯协议落盘成功）。
- * 无浏览器依赖：只需 BDUSS/STOKEN 凭证（从比特浏览器 Cookie 提取一次）。
- * 每条资源独立 Cookie 会话（Jar 隔离），无竞态，支持并发。
+ * ⚠️ 本脚本**不再自己实现协议链**。以前这里抄了一份 `Jar` / `makeClient` / `processOne`，
+ * 抄的那份落后主实现一大截，后果都不是"少个功能"，而是会**静默做错事**：
+ *   · 直接 `fetch(`，没有 dispatcher（代理）也没有超时 → 同一批操作从两个 IP 发出、
+ *     或某条请求永久吊住而日志一片安静；
+ *   · 没有 分享页无 mset 的重试/退避 → 跑批时把限流误判成"链接失效"，白丢资源；
+ *   · 没有 errno=2（目的路径不存在）回落顶层目录 → 建目录偶发失败就整条报废；
+ *   · 没有 errno=4（已转存）的路径拼装回落 → 每轮把同一条资源当"失败"重来一遍；
+ *   · 没有 info[0].errno 提升 → 容量不足（-9）被当成"成功但未取得落盘路径"；
+ *   · 没有 0 字节占位过滤 / 递归目录展开 / 建目录缓存。
+ * 现在统一 require 主实现（electron/src/netdisk/protocol.js），上面这些改进自动跟着走。
+ * 「一份逻辑只有一个家」——这也是仓库里反复写下来的约定（见 domain/account-topic.js 的 dedupeEnvLabels）。
  *
  * 断点续跑（state.jsonl）/ 失败3次黑名单 / 连续失败熔断 / errno=4 已存在复用。
  *
@@ -24,15 +32,27 @@ const path = require("path");
 const fs = require("fs");
 const XLSX = require("xlsx");
 const { chromium } = require("playwright-core");
-const { createShare } = require("../electron/src/netdisk/share");
+const { resolveDataDir, readCdp } = require("../electron/src/data-dir");
+// —— 协议链、Cookie 罐、客户端、分享创建：全部走主实现，本文件不再重复定义 ——
+const { Jar, makeClient, processOne } = require("../electron/src/netdisk/protocol");
+const { SHARE_DAILY_LIMIT, SHARE_SOFT_WARN_AT } = require("../electron/src/netdisk/share");
+// 表单元格 → {link, pwd}：四份拷贝已收敛到这一处（pan-transfer-ui.js 曾因拷贝漏改而整表静默跳过）
+const { parseLinkCell } = require("../electron/src/netdisk/pan-link");
+// 「share_failed 的行重跑时要不要补分享 / 要不要彻底跳过」——判断只此一处（见该文件头）
+const { planShareRetry, shareRetryFields } = require("../electron/src/netdisk/share-retry");
+// 「哪一列是名称/链接/提取码」：原本四处、三种算法，收敛到一处（本文件原本就是弱的那份）
+const { detectColumns } = require("../electron/src/netdisk/table-columns");
+// 转存台账（state.jsonl）：原本五份，收敛到一处
+const { loadLedger, appendLedger } = require("../electron/src/netdisk/state-ledger");
+// 读 xlsx 统一走 storage/excel.js 的 readTableRows（本文件不再自己 XLSX.readFile）
+const excel = require("../electron/src/storage/excel");
 const qaLib = require("../electron/src/netdisk/qa-template-lib");
 // isGenericName 原本只写在 batch-transfer.js 里、没导出，本脚本却直接用 ——
 // 跑到 288/307 行就 ReferenceError（契约⑥ 扫出来的）。
-const { isGenericName } = require("../electron/src/tasks/batch-transfer");
+// runShareStep 同理：分享是**独立失败域**（见其注释），抄一份必然与主实现漂移。
+const { isGenericName, runShareStep } = require("../electron/src/tasks/batch-transfer");
 
 const root = path.resolve(__dirname, "..");
-const PAN = "https://pan.baidu.com";
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 // ---------- 参数 ----------
 const args = {};
@@ -51,161 +71,15 @@ const paceMs = Math.max(300, Number(args["pace-ms"]) || 1200);
 const destRoot = args.dest || "/来自资源批量转存";
 
 const baseName = path.basename(inputFile).replace(/\.(xlsx|txt)$/i, "").slice(0, 40);
-const workDir = path.join(root, "运行缓存", "transfer-batch", baseName);
+const workDir = path.join(resolveDataDir(root), "transfer-batch", baseName);
 const stateFile = path.join(workDir, "state.jsonl");
 const outDir = args["out-dir"] ? path.resolve(args["out-dir"]) : path.join(workDir, "上传专用表");
 
-function loadState() {
-  const map = new Map();
-  try {
-    for (const line of fs.readFileSync(stateFile, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      try { const r = JSON.parse(line); map.set(r.srcLink, r); } catch { /* 跳过 */ }
-    }
-  } catch { /* 首次 */ }
-  return map;
-}
-const saveState = (e) => { fs.mkdirSync(workDir, { recursive: true }); fs.appendFileSync(stateFile, JSON.stringify(e) + "\n"); };
+// 台账读写收敛到 netdisk/state-ledger.js（本文件原本自己抄了一份）
+const state = loadLedger(stateFile, "srcLink");
+const saveState = (e) => appendLedger(stateFile, e);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const now = () => new Date().toISOString().slice(11, 19);
-function parseLinkCell(text) {
-  const s = String(text || "");
-  const link = (s.match(/https?:\/\/pan\.baidu\.com\/s\/[\w-]+(?:\?pwd=[a-z0-9]{4})?/i) || [])[0] || "";
-  let pwd = (s.match(/[?&]pwd=([a-z0-9]{4})/i) || [])[1] || "";
-  if (!pwd) pwd = (s.match(/(?:提取码|密码|访问码)[:：\s]*([a-z0-9]{4})/i) || [])[1] || "";
-  return { link, pwd };
-}
-function randomPwd() {
-  const c = "abcdefghjkmnpqrstuvwxyz23456789";
-  return Array.from({ length: 4 }, () => c[Math.floor(Math.random() * c.length)]).join("");
-}
-
-// ---------- CookieJar 客户端（每条资源独立实例） ----------
-class Jar {
-  constructor(bduss, stoken) {
-    this.map = new Map([["BDUSS", bduss]]);
-    if (stoken) this.map.set("STOKEN", stoken);
-  }
-  apply(setCookies) {
-    for (const sc of setCookies || []) {
-      const pair = String(sc).split(";")[0];
-      const eq = pair.indexOf("=");
-      if (eq > 0) this.map.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
-    }
-  }
-  str() { return [...this.map.entries()].map(([k, v]) => `${k}=${v}`).join("; "); }
-}
-
-function makeClient(jar) {
-  return async (pathAndQuery, opts = {}) => {
-    const resp = await fetch(`${PAN}${pathAndQuery}`, {
-      method: opts.method || "GET",
-      headers: {
-        "User-Agent": UA,
-        "Cookie": jar.str(),
-        "Referer": opts.referer || `${PAN}/disk/main`,
-        ...(opts.headers || {}),
-      },
-      body: opts.body,
-      redirect: "follow",
-    });
-    jar.apply(resp.headers.getSetCookie ? resp.headers.getSetCookie() : []);
-    return resp.json().catch(() => ({}));
-  };
-}
-
-// ---------- 单条完整链（纯协议） ----------
-async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken, makeShare }) {
-  const m = link.match(/\/s\/(1[\w-]+)/);
-  const fullCode = m[1];
-  const surl = fullCode.startsWith("1") ? fullCode.slice(1) : fullCode;
-  const rawUrl = `${PAN}/s/${fullCode}?pwd=${pwd}`;
-
-  // 1) verify
-  const vResp = await fetch(`${PAN}/share/verify?surl=${encodeURIComponent(surl)}&t=${Date.now()}&channel=chunlei&web=1&bdstoken=null&clienttype=0`, {
-    method: "POST",
-    headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": `${PAN}/share/init?surl=${encodeURIComponent(surl)}`, "Content-Type": "application/x-www-form-urlencoded" },
-    body: `pwd=${pwd}&vcode=&vcode_str=`,
-  });
-  jar.apply(vResp.headers.getSetCookie ? vResp.headers.getSetCookie() : []);
-  const vBody = await vResp.json().catch(() => ({}));
-  if (vBody.errno === -65 || vBody.errno === -62 || vBody.errno === -70) throw Object.assign(new Error(`verify风控 errno=${vBody.errno}`), { risk: true });
-  if (vBody.errno !== 0 || !vBody.randsk) throw new Error(`verify errno=${vBody.errno}`);
-
-  // 2) 分享页 → mset
-  const pResp = await fetch(`${PAN}/s/${fullCode}`, { headers: { "User-Agent": UA, "Cookie": jar.str() }, redirect: "follow" });
-  jar.apply(pResp.headers.getSetCookie ? pResp.headers.getSetCookie() : []);
-  const html = await pResp.text();
-  const mm = html.match(/(?:yunData\.setData|locals\.mset)\(([\s\S]+?)\);/);
-  if (!mm) throw new Error("分享页无数据（可能已失效）");
-  const data = JSON.parse(mm[1]);
-  if (Number(data.errno) !== 0) throw new Error(`分享数据 errno=${data.errno}`);
-  const uk = String(data.share_uk || data.uk || "");
-  const shareid = String(data.shareid || "");
-  const bdstoken = String(data.bdstoken || "");
-  const rawList = Array.isArray(data.file_list) ? data.file_list : (data.file_list && data.file_list.list) || [];
-
-  // 3) 递归收集 fs_id（root 空时走 /share/list）
-  let fsIds = [];
-  let dirPaths = [];
-  const collect = (entries) => {
-    for (const f of entries) {
-      if (Number(f.isdir) === 1) dirPaths.push(f.path);
-      else if (f.fs_id) fsIds.push(Number(f.fs_id));
-    }
-  };
-  collect(rawList);
-  const listDir = async (dir) => {
-    const qs = new URLSearchParams({ web: "5", app_id: "250528", desc: "1", showempty: "0", page: "1", num: "100", order: "time", view_mode: "1", channel: "chunlei", clienttype: "0", shorturl: surl, dir });
-    if (bdstoken) qs.set("bdstoken", bdstoken);
-    const j = await fetch(`${PAN}/share/list?${qs}`, { headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": rawUrl } }).then((r) => r.json()).catch(() => ({}));
-    if (j.errno === 0 && Array.isArray(j.list)) collect(j.list);
-  };
-  for (const d of dirPaths.slice(0, 10)) await listDir(d);
-  if (!fsIds.length) {
-    const root = await fetch(`${PAN}/share/list?web=5&app_id=250528&desc=1&showempty=0&page=1&num=100&order=time&view_mode=1&channel=chunlei&clienttype=0${bdstoken ? "&bdstoken=" + bdstoken : ""}&shorturl=${encodeURIComponent(surl)}&root=1`, { headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": rawUrl } }).then((r) => r.json()).catch(() => ({}));
-    if (root.errno === 0 && Array.isArray(root.list)) {
-      dirPaths = [];
-      collect(root.list);
-      for (const d of (root.list.filter((f) => Number(f.isdir) === 1).map((f) => f.path)).slice(0, 10)) await listDir(d);
-    }
-  }
-  if (!fsIds.length) throw new Error("分享里没有文件");
-
-  // 4) 建目录 + 转存
-  const cResp = await fetch(`${PAN}/api/create?a=commit&bdstoken=${encodeURIComponent(bdstoken)}&web=1&channel=chunlei&clienttype=0`, {
-    method: "POST",
-    headers: { "User-Agent": UA, "Cookie": jar.str(), "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
-    body: `path=${encodeURIComponent(destDir)}&isdir=1`,
-  });
-  await cResp.json().catch(() => ({}));
-  const tResp = await fetch(`${PAN}/share/transfer?shareid=${shareid}&from=${uk}&bdstoken=${encodeURIComponent(bdstoken)}&channel=chunlei&clienttype=0&web=1`, {
-    method: "POST",
-    headers: { "User-Agent": UA, "Cookie": jar.str(), "Referer": rawUrl, "Origin": PAN, "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
-    body: `fsidlist=${encodeURIComponent(JSON.stringify(fsIds))}&path=${encodeURIComponent(destDir)}`,
-  });
-  const tBody = await tResp.json().catch(() => ({}));
-  const infoErr = tBody.info && tBody.info[0] && Number(tBody.info[0].errno);
-  if (tBody.errno === 12 || tBody.errno === -10) throw Object.assign(new Error("网盘容量不足"), { fatal: true });
-
-  // errno=4：文件此前已转存过 → 视为成功，复用已有路径
-  if (Number(tBody.errno) === 4) {
-    const dupPaths = ((tBody.duplicated && tBody.duplicated.list) || []).map((x) => x.path).filter(Boolean);
-    const alt = (tBody.info || []).map((x) => x.path).filter(Boolean);
-    const to = dupPaths.length ? dupPaths : alt;
-    if (!to.length) throw new Error("重复转存但未取得已有文件路径");
-    return { toPaths: to, dup: true };
-  }
-  if (Number(tBody.errno) !== 0 && !(infoErr === 0)) throw new Error(`转存 errno=${tBody.errno} ${tBody.show_msg || ""}`);
-
-  // 5) 权威落盘路径
-  const toPaths = ((tBody.extra && tBody.extra.list) || []).map((x) => x.to)
-    .concat((tBody.duplicated && tBody.duplicated.list) || []).filter(Boolean);
-  // 这里以前写的是 `files.map(f => f.path)` —— 而 `files` 在这个文件里**根本没有定义**，
-  // 一旦 extra/duplicated 都为空就会 ReferenceError（守卫扩到 obj.method( 形式后抓出来的）。
-  if (!toPaths.length) throw new Error("转存返回成功但未取得落盘路径（extra/duplicated 均为空）");
-  return { toPaths, fsIds };
-}
 
 // ---------- 主流程 ----------
 (async () => {
@@ -215,17 +89,22 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
     const lines = fs.readFileSync(inputFile, "utf8").split(/\r?\n/).map((x) => x.trim()).filter((x) => x && !x.startsWith("#"));
     rows = lines.map((line, i) => ({ __name: `链接${i + 1}`, __link: line }));
   } else {
-    const wb = XLSX.readFile(inputFile);
-    rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: false });
+    // 读表统一走 storage/excel.js（全仓唯一入口）。raw:false 不能省 —— 提取码带前导零时会丢数据。
+    rows = excel.readTableRows(inputFile, { raw: false });
   }
   const keys = Object.keys(rows[0]);
-  const nameKey = keys.find((k) => /文件名|名称|标题|资源/.test(k)) || keys.find((k) => !/链接|网址|url/i.test(k)) || keys[0];
-  const linkKey = keys.find((k) => /链接|网址|url/i.test(k)) || keys.find((k) => /pan\.baidu\.com/.test(String(rows[0][k] || ""))) || keys[1];
-  const pwdKey = keys.find((k) => /提取码|密码|访问码/.test(k)) || "";
+  const { nameKey, linkKey, pwdKey, nameDegraded } = detectColumns(rows);
   console.log(`资源表 ${rows.length} 行 | 名称列="${nameKey}" 链接列="${linkKey}"`);
+  if (nameDegraded) {
+    console.log(`⚠️ 这张表没有可用的「名称」列（现在拿"${nameKey}"凑数），资源名不可信 ——`
+      + "建议加一列「名称」或「标题」，否则出题标题会是链接/提取码。");
+  }
 
   // 1) 凭证（从比特浏览器提取一次，之后全程纯 HTTP）
-  const cdp = fs.readFileSync(path.join(root, "运行缓存", "cdp.txt"), "utf8").trim();
+  // 读 CDP 端口统一走 data-dir.js：新电脑上「运行缓存/」根本不存在（.gitignore 忽略），
+  // 以前这里直接 readFileSync，用户看到的是裸 ENOENT，既不知道要开比特浏览器、
+  // 也不知道那个目录本来就是 git 忽略、从没被创建过。
+  const cdp = readCdp(resolveDataDir(root));
   const browser = await chromium.connectOverCDP(`http://${cdp}`);
   const cookies = await browser.contexts()[0].cookies("https://pan.baidu.com");
   const bduss = (cookies.find((c) => c.name === "BDUSS") || {}).value || "";
@@ -234,22 +113,36 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   if (!bduss) { console.error("❌ 无网盘凭证（BDUSS）"); process.exit(1); }
   console.log(`凭证就绪 BDUSS(${bduss.length}字符) —— 全程纯协议，无浏览器`);
 
-  // 2) 任务清单
-  const state = loadState();
+  // 2) 任务清单（state 已在文件顶部从台账读好）
   const tasks = [];
-  let junk = 0;
+  // 分出「剔除原因」而不是一个笼统的 junk 计数：跑批是无人值守的，
+  // 只报"剔除 87"没人知道该去补提取码、还是该去改表头。分开点名才能直接行动。
+  // sharedSkipped：往期「转存成了、分享没建成」且已判定不再重试的（百度永久禁止 / 补分享次数用尽）
+  const drop = { noLink: 0, noPwd: 0, blacklist: 0, alreadyDone: 0, shareSkipped: 0 };
   for (let i = startIdx; i < rows.length; i += 1) {
     if (limit > 0 && tasks.length >= limit) break;
     const rawName = String(rows[i][nameKey] || "").trim();
     const { link, pwd: cellPwd } = parseLinkCell(String(rows[i][linkKey] || "") + (pwdKey ? ` 提取码:${rows[i][pwdKey]}` : ""));
     const srcLink = link + (link.includes("pwd=") ? "" : `?pwd=${cellPwd}`);
-    if (!link || !cellPwd) { junk += 1; continue; }
+    if (!link) { drop.noLink += 1; if (drop.noLink <= 5) console.log(`  ⏭ 第 ${i + 1} 行没解析出链接：${rawName.slice(0, 24) || "(名称为空)"}`); continue; }
+    if (!cellPwd) { drop.noPwd += 1; if (drop.noPwd <= 5) console.log(`  ⏭ 第 ${i + 1} 行无提取码（链接本身也没带 ?pwd=）：${rawName.slice(0, 24)}`); continue; }
     const prev = state.get(srcLink);
-    if (prev && prev.status === "done" && prev.ownLink) continue; // 断点：已确权
-    if (prev && (prev.attempts || 0) >= 3) { junk += 1; continue; }
-    tasks.push({ idx: i, rawName, srcLink, link, pwd: cellPwd, attempts: (prev && prev.attempts) || 0 });
+    if (prev && prev.status === "done" && prev.ownLink) { drop.alreadyDone += 1; continue; } // 断点：已确权
+    if (prev && (prev.attempts || 0) >= 3) { drop.blacklist += 1; continue; }               // 失败 3 次黑名单
+    // 上次「转存成了、分享没建成」→ 拿历史落盘路径直接补分享，**不再转存**（文件早就在网盘里了）
+    const retry = planShareRetry(prev);
+    if (retry.action === "skip") {
+      drop.shareSkipped += 1;
+      if (drop.shareSkipped <= 5) console.log(`  ⏭ 跳过 ${rawName.slice(0, 24)}：${retry.reason}`);
+      continue;
+    }
+    tasks.push({ idx: i, rawName, srcLink, link, pwd: cellPwd, attempts: (prev && prev.attempts) || 0, retry });
   }
-  console.log(`本轮任务 ${tasks.length} 条（脏/黑名单剔除 ${junk}）`);
+  const dropTotal = Object.values(drop).reduce((a, b) => a + b, 0);
+  console.log(`本轮任务 ${tasks.length} 条 | 往期已完成跳过 ${drop.alreadyDone} 条`);
+  if (dropTotal - drop.alreadyDone > 0) {
+    console.log(`剔除 ${dropTotal - drop.alreadyDone} 行：无链接 ${drop.noLink} | 无提取码 ${drop.noPwd} | 黑名单 ${drop.blacklist} | 分享不再重试 ${drop.shareSkipped}`);
+  }
 
   // 规范化名称去重键（历史完成 + 本轮，跨写法/跨链接去重）
   const seenKeys = new Set();
@@ -264,7 +157,22 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   // 3) 并发池执行
   const pendingKeys = new Set();  // 在途预留（并发去重）
   let done = 0, failed = 0, consecutiveFails = 0, fatalStop = false;
+  // 分享是**独立失败域**（见 share.js / runShareStep 注释）：本脚本单账号，env 用固定标签，
+  // 只为让 runShareStep 的"该账号已达每日上限 → 本批后续仅转存不建分享"能正确工作。
+  const ENV_LABEL = args.env || "脚本账号";
+  const shareBlocked = new Set();     // 已撞每日分享上限的账号
+  const sharesByEnv = new Map();      // 每账号本轮已建分享数（用于软告警）
+  const warnedSoft = new Set();       // 已发过软告警的账号（避免刷屏）
+  const createdDirs = new Set();      // 建目录缓存（跨资源复用，省写请求）
+  let transferredNoShare = 0;
   const startedAt = Date.now();
+  // 分享上限是**账号级**的，跟资源条数无关：这批总量若已超过上限，提前把话说清楚，
+  // 免得到最后一堆条都是"转存成功但建不了分享"而不知道为什么。
+  if (tasks.length > SHARE_DAILY_LIMIT) {
+    console.log(`⚠️ 本批 ${tasks.length} 条，而百度单账号每日最多建 ${SHARE_DAILY_LIMIT} 个分享链接`
+      + `（软告警线 ${SHARE_SOFT_WARN_AT}）。超出的部分会**转存成功但没有分享链接**（因此不进问答表）。`
+      + "要全部出问答，请分批跑（隔天）或用多账号。");
+  }
   const quota = async () => {
     const jar = new Jar(bduss, stoken);
     const cli = makeClient(jar);
@@ -288,26 +196,63 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
       // 每条独立 Cookie 会话
       const jar = new Jar(bduss, stoken);
       const entryBase = { srcLink: t.srcLink, name: t.rawName };
+      // 提到 try 外面：catch 里要按它撤销"在途预留"，否则那条名字会被永久占住。
+      // （原来在 catch 里写 `typeof preKey !== "undefined"` 就是因为 const 是块作用域 —— 治标不治本。）
+      let preKey = "";
       try {
         const idx = String(t.idx + 1).padStart(5, "0");
         const dirLabel = isGenericName(t.rawName) ? "" : String(t.rawName).replace(/[\/:*?"<>|\r\n]/g, " ").trim().slice(0, 20);
         const destDir = `${destRoot}/${baseName}/${dirLabel ? idx + "_" + dirLabel : idx}`;
         // 预检去重：规范化名已存在或已被其他 worker 预留 → 跳过（并发安全）
-        const preKey = qaLib.normalizeName(t.rawName || "");
+        preKey = qaLib.normalizeName(t.rawName || "");
         if (preKey && preKey.length >= 2 && (seenKeys.has(preKey) || pendingKeys.has(preKey))) {
           console.log(`  ⏭ 跳过重复（${preKey}）：${(t.rawName || "").slice(0, 24)}`);
           await sleep(paceMs);
           continue;
         }
         if (preKey && preKey.length >= 2) pendingKeys.add(preKey);
-        const { toPaths } = await processOne(jar, {
-          link: t.link, pwd: t.pwd, rawName: t.rawName, idx: t.idx, destDir, bduss, stoken, makeShare: true,
+        // 协议链走主实现（protocol.js）。这里只传 destDir（脚本的扁平「根/资源表/序号_名」语义）；
+        // createdDirs 让「根」「根/资源表」这两层只建一次 —— 每条少两个写请求。
+        let toPaths;
+        if (t.retry && t.retry.action === "share-only") {
+          // 文件上次就转存成功了，台账里有落盘路径 —— 一步都不必再碰转存接口，
+          // 直接拿历史路径补建分享（否则每轮都多打一次 /share/transfer 并撞 errno=4）
+          toPaths = t.retry.toPaths;
+          console.log(`  [W${workerId}][${now()}] 🔁 ${t.rawName.slice(0, 26)} 上次已转存、只是分享没建成 → 直接补分享（第 ${t.retry.shareAttempts + 1} 次）`);
+        } else {
+          const oneResult = await processOne(jar, { link: t.link, pwd: t.pwd, destDir, createdDirs });
+          // 大文件是**异步转存**：errno=0 但响应里没有落盘路径，show_msg 写着「文件转存中」。
+          // 这不是失败（文件确实在转），记 pending 待下次确认。计成 failed 会虚报失败数，
+          // 3 次之后还会进黑名单，而其实它每次都在正常转。
+          if (oneResult.pending) {
+            saveState({ ...entryBase, status: "pending", attempts: (t.attempts || 0) + 1, error: "百度在异步转存中（大文件），本次拿不到落盘路径", at: new Date().toISOString() });
+            pendingKeys.delete(preKey);
+            console.log(`  [W${workerId}][${now()}] ⏳ ${t.rawName.slice(0, 26)} 百度异步转存中（大文件），不算失败，下次再确认`);
+            continue;
+          }
+          toPaths = oneResult.toPaths;
+        }
+        // 自有永久分享（确权后）。**关键**：转存成功 ≠ 分享成功 —— 分享是独立失败域。
+        // 以前这里 `if (!share.link) throw`，于是"已达每日 300 分享上限"被外层 catch
+        // 当成"整条失败"：已落盘的文件每轮都被重传（errno=4）+ 再撞分享接口，纯粹自伤。
+        // runShareStep 会把这种情况返回 shareFailed（不重传、不计失败），并在撞上限时封该账号。
+        const share = await runShareStep({
+          makeShare: true, env: ENV_LABEL, bduss, stoken, toPaths,
+          shareBlocked, sharesByEnv, warnedSoft, log: (m) => console.log(`  ${m}`),
         });
-        // 自有永久分享（确权后）
-        const ownPwd = randomPwd();
-        const share = await createShare({ bduss, stoken, paths: toPaths, password: ownPwd });
-        if (!share.link) throw new Error("创建分享失败");
-        const ownLink = `${share.link}?pwd=${share.password}`;
+        if (share.shareFailed) {
+          // shareAttempts/shareForbidden 让下一轮 planShareRetry 知道还能不能再补一次
+          saveState({ ...entryBase, status: "share_failed", phase: "transferred", toPaths, ...shareRetryFields(t.retry, share), error: share.shareErrMsg.slice(0, 200), at: new Date().toISOString() });
+          pendingKeys.delete(preKey);
+          done += 1;
+          transferredNoShare += 1;
+          consecutiveFails = 0;   // 转存确实成功了，连败应当清零（否则一批"仅转存"会误触熔断）
+          console.log(`  [W${workerId}][${now()}] ⚠️ ${t.rawName.slice(0, 26)} 已转存但建分享失败（不重传）`
+            + `${share.shareLimited ? "[每日上限]" : share.shareForbidden ? "[该资源禁止二次分享]" : ""}：${share.shareErrMsg.slice(0, 80)}`);
+          continue;
+        }
+        const ownPwd = share.ownPwd;
+        const ownLink = share.ownLink;
         const landedBase = decodeURIComponent((toPaths[0] || "").split("/").pop() || "");
         let displayName = isGenericName(t.rawName) ? (landedBase || "资源") : t.rawName;
         if (isGenericName(displayName)) displayName = landedBase || displayName;
@@ -315,7 +260,10 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
         if (qaLib.reject(displayName, ownLink)) {
           displayName = decodeURIComponent((toPaths[0] || "").split("/").pop() || "").replace(/\[([^\]]*)\]/g, "$1").trim();
           if (qaLib.reject(displayName, ownLink)) {
-            saveState({ srcLink: t.srcLink, name: t.rawName, status: "done", phase: "done", toPaths, ownLink, ownPwd: share.password, note: "名称不合规跳过问答", at: new Date().toISOString() });
+            saveState({ srcLink: t.srcLink, name: t.rawName, status: "done", phase: "done", toPaths, ownLink, ownPwd, note: "名称不合规跳过问答", at: new Date().toISOString() });
+            pendingKeys.delete(preKey);
+            done += 1;
+            consecutiveFails = 0;
             console.log(`  [W${workerId}][${now()}] ⚠️ ${t.rawName.slice(0, 26)} 已转存但名称不合规，跳过问答`);
             continue;
           }
@@ -326,7 +274,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
           问题标题: qaLib.buildTitle(meta, t.idx),
           回答内容: qaLib.buildAnswerHtml(ownLink, qaLib.buildIntro(meta)),
         };
-        const okEntry = { srcLink: t.srcLink, name: displayName, status: "done", phase: "done", toPaths, ownLink, ownPwd: share.password, qaRow, at: new Date().toISOString() };
+        const okEntry = { srcLink: t.srcLink, name: displayName, status: "done", phase: "done", toPaths, ownLink, ownPwd, qaRow, at: new Date().toISOString() };
         state.set(t.srcLink, okEntry);
         saveState(okEntry);
         const doneKey = qaLib.normalizeName(displayName);
@@ -339,10 +287,13 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
         failed += 1;
         consecutiveFails += 1;
         t.attempts = (t.attempts || 0) + 1;
-        if (typeof preKey !== "undefined" && preKey) pendingKeys.delete(preKey);
+        if (preKey) pendingKeys.delete(preKey);
         saveState({ ...entryBase, status: "failed", attempts: t.attempts, error: (e.message || "").slice(0, 120), at: new Date().toISOString() });
         console.log(`  [W${workerId}][${now()}] ✗ ${t.rawName.slice(0, 26)} → ${e.message.slice(0, 70)}`);
         if (e.fatal) { console.log("⛔ 容量不足，管线停止（已完成部分完好）。"); fatalStop = true; break; }
+        // 分享页限流（protocol 打的标记）：不是链接失效，是打太快 —— 冷却 3 分钟再继续，
+        // 别把整批都判死（原来这里没有任何针对性处理，10 条连着跑就会有一批撞上）。
+        if (e.sharePageLimited) { console.log("  ⏸ 分享页限流（非链接失效），冷却 3 分钟…"); await sleep(3 * 60 * 1000); }
         if (e.risk) { console.log("  ⏸ verify 风控，全局暂停 10 分钟…"); await sleep(10 * 60 * 1000); }
         if (consecutiveFails >= 10) { console.log("⚠️ 连续 10 条失败，自动停止（可稍后重跑续传）。"); break; }
       }
@@ -372,7 +323,15 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, bduss, stoken
   }
   const mins = Math.round((Date.now() - startedAt) / 60000);
   console.log("\n=== 批量转存完成 ===");
-  console.log(`本轮成功 ${done} | 失败 ${failed} | 历史累计 ${allDone.length} | 用时 ${mins} 分钟`);
+  console.log(`本轮转存成功 ${done} | 失败 ${failed} | 历史累计可用问答 ${allDone.length} | 用时 ${mins} 分钟`);
+  // 「转了但没有分享」必须单独说清楚：它不是失败（文件在你的网盘里），但**没有链接就出不了问答**。
+  // 以前这类条目悄悄混在"失败"或干脆不计，用户看到的数字对不上却找不到原因。
+  if (transferredNoShare > 0) {
+    console.log(`⚠️ 其中 ${transferredNoShare} 条**已转存但没生成分享链接**（资源在网盘里，不进问答表）`
+      + `，原因：${[...shareBlocked].length ? `账号「${[...shareBlocked].join("、")}」已达每日 ${SHARE_DAILY_LIMIT} 个分享上限` : "该资源被百度禁止二次分享 / 建分享接口偶发拒绝"}`
+      + "。明天或换账号重跑本批即可补上（已转存的会走 errno=4 复用路径，不会重复占用空间）。");
+  }
   if (allDone.length) console.log(`上传专用表: ${outDir}`);
+  console.log(`状态文件: ${stateFile}（重跑自动断点续传）`);
   process.exit(0);
 })().catch((e) => { console.error("FATAL:", (e.message || "").slice(0, 180)); process.exit(1); });

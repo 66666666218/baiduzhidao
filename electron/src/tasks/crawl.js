@@ -303,7 +303,9 @@ async function runCrawlTask(ctx, deps) {
         }
         currentPage += 1;
         const pageDelay = Math.max(0, Number(payload.pageDelayMs != null ? payload.pageDelayMs : config.pageDelayMs) || 0);
-        if (pageDelay) await page.waitForTimeout(pageDelay).catch(() => {});
+        // 翻页间隔走 ctx.delay（可被停止信号打断）：设置页可以把这个值填到很大，
+        // 一次性硬等的话点了停止也要把整段等完，看起来就像停止按钮失灵。
+        if (pageDelay) await ctx.delay(pageDelay / 1000, pageDelay / 1000);
       }
       break; // 单个环境即可完成全量爬取
     } catch (error) {
@@ -332,13 +334,18 @@ async function runCrawlTask(ctx, deps) {
   const writeFailed = store.flushAll();
   if (writeFailed.length) log(`⚠️ 题库没能落盘：${writeFailed.map((f) => `${f.name}（${f.error}）`).join("、")} —— 本轮爬到的题可能没保存。`);
 
-  // 可选：把题库导出到自定义文件夹（UI 的"爬取结果文件夹"）
+  // 可选：把题库导出到自定义文件夹（UI 的"爬取结果文件夹"）。
+  // **把导出路径返回出去**：一键全自动要靠它把"题库文件"列进产物清单。以前导出路径只写在日志里，
+  // 编排层拿到的是 undefined，于是自动跑批时用户既不知道有没有导出、也不知道导出到了哪。
+  let exportPath = "";
   if (crawlOutputDir) {
     try {
       const bankAll = store.loadBank();
       const xlsxPath = excel.uniqueFilePath(path.join(crawlOutputDir, `题库_${category}_${stamp()}.xlsx`));
-      excel.writeWorkbookSafe(xlsxPath, bankAll.map(excel.bankToRow), "完整题库", excel.BANK_HEADERS, log);
-      log(`题库已导出到：${xlsxPath}`);
+      const used = excel.writeWorkbookSafe(xlsxPath, bankAll.map(excel.bankToRow), "完整题库", excel.BANK_HEADERS, log);
+      // writeWorkbookSafe 在原表被 Excel 占用时会改写到备份路径并**返回那个路径**，必须接住它。
+      exportPath = used || xlsxPath;
+      log(`题库已导出到：${exportPath}`);
     } catch (error) {
       log(`导出爬取结果失败：${error.message}`);
     }
@@ -347,7 +354,7 @@ async function runCrawlTask(ctx, deps) {
   const stopped = ctx.shouldStop();
   ctx.report({ done: doneCount, total: doneCount, status: stopped ? "stopped" : "done" });
   log(`${stopped ? "已停止" : "爬取完成"}：新增 ${doneCount} 道题${duplicateSkipped ? `，跳过无效/重复页面 ${duplicateSkipped} 次` : ""}。`);
-  return { stopped, count: doneCount };
+  return { stopped, count: doneCount, outputPath: exportPath };
 }
 
 function stamp() {

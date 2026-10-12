@@ -19,12 +19,11 @@
  */
 
 const path = require("path");
+const { resolveDataDir } = require("../electron/src/data-dir");
 const { chromium } = require("playwright-core");
 
 const root = path.resolve(__dirname, "..");
-const dataDir = process.env.ZHIDAO_DATA_DIR
-  ? path.resolve(process.env.ZHIDAO_DATA_DIR)
-  : path.join(root, "运行缓存");
+const dataDir = resolveDataDir(root);
 
 const { createAdapter } = require("../electron/src/browser");
 const { BitBrowserAdapter, extractBrowserList } = require("../electron/src/browser/bitbrowser");

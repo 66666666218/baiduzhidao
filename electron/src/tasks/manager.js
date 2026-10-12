@@ -16,6 +16,21 @@
 const { TaskStateMachine, STATES } = require("./statemachine");
 const { roundRobinAssign, capacityOf } = require("../domain/account-topic");
 
+/**
+ * 停止宽限期：点了「停止」之后，给任务这么多秒自己收尾（走到下一个 shouldStop 检查点
+ * 并 report 终态）。超过还没退出，就**强制释放任务锁**。
+ *
+ * 为什么必须有这一条（2026-10-13 用户实测反馈「点了一键全自动之后容易卡住，点了取消，
+ * 想进行里面的操作也会卡」）：
+ *   停止只是把 `ticket.stopped` 置 true —— 它是**协作式**的，任务必须自己走到检查点才
+ *   看得到。而任务里存在不可中断的 await（浏览器 API、30 秒硬等、网络读流），期间
+ *   `this.current` 一直非空，`assertIdle()` 就会把之后**每一个**任务都拒掉，
+ *   界面按钮也因为没有终态进度而永久灰着 —— 表现就是"整个软件卡住了"，只能重启进程。
+ *   宁可放锁让新任务和正在退出的旧任务短暂重叠（旧任务下一检查点就会自己退出），
+ *   也不能永久锁死。
+ */
+const STOP_GRACE_MS = 20 * 1000;
+
 class TaskManager {
   constructor({ eventBus } = {}) {
     this.eventBus = eventBus || null;
@@ -44,8 +59,9 @@ class TaskManager {
     if (this.isActive()) throw new Error("已有任务正在运行，请先停止或等待完成。");
   }
 
-  emitEvent(event, payload) {
-    if (this.eventBus) this.eventBus.emit(event, { taskName: this.current ? this.current.name : undefined, ...payload });
+  emitEvent(event, payload, ticket) {
+    const owner = ticket || this.current;
+    if (this.eventBus) this.eventBus.emit(event, { taskName: owner ? owner.name : undefined, ...payload });
   }
 
   /**
@@ -61,46 +77,55 @@ class TaskManager {
       taskId: `${name}_${Date.now()}`,
       emit: (event, meta) => this.emitEvent(event, { taskId: machine.taskId, ...meta }),
     });
-    this.current = { name, machine, stopped: false, paused: false, livePayload: { ...(payload || {}) } };
-    this.emitEvent("task.started", { taskId: machine.taskId });
+    const ticket = { name, machine, stopped: false, paused: false, livePayload: { ...(payload || {}) },
+      // 回调挂在票据上：强制释放时任务已经不在 this.current 里了，
+      // 只有票据能拿到"怎么通知界面/日志"。
+      onProgress: onProgress || null, onLog: onLog || null,
+      stopRequestedAt: 0, forceReleased: false, releaseTimer: null };
+    this.current = ticket;
+    this.emitEvent("task.started", { taskId: machine.taskId }, ticket);
     machine.start();
 
+    // ⚠️ 从这里往下**一律用 ticket，不再用 this.current**。
+    // 原因：强制释放会把 this.current 置空（否则任务锁永久不释放），而旧任务还在跑。
+    // 若 ctx.shouldStop() 读的是 this.current，释放后它返回 false ——
+    // 旧任务会以为"停止请求被撤销了"，继续跑下去，正好和强制释放的目的相反。
     const self = this;
     /** 最近一次上报的进度；暂停/恢复时要复用 done/total 改写状态，不然界面进度条会跳空 */
     let lastProgress = null;
     const ctx = {
-      payload: this.current.livePayload,
-      shouldStop: () => Boolean(self.current && self.current.stopped),
-      shouldPause: () => Boolean(self.current && self.current.paused),
+      payload: ticket.livePayload,
+      shouldStop: () => Boolean(ticket.stopped),
+      shouldPause: () => Boolean(ticket.paused),
       /** 暂停检查点：已请求暂停时挂起，直到 resume/cancel/stop */
       async pausePoint(label = "") {
-        if (!self.current || !self.current.paused) return;
+        if (!ticket.paused) return;
         // 并发>1 时多个 worker 会同时走到这里：状态机只允许 RUNNING→PAUSED，
         // 第二个 worker 再 pause 就是非法迁移并抛错，会把整个任务 Promise.all 打崩。
         if (machine.state === STATES.RUNNING) {
           machine.pause(label || "checkpoint");
-          self.emitEvent("task.paused", { taskId: machine.taskId, label: label || "checkpoint" });
+          self.emitEvent("task.paused", { taskId: machine.taskId, label: label || "checkpoint" }, ticket);
           onLog?.("任务已暂停（检查点：" + (label || "checkpoint") + "）。");
           // 进度条也要显式变成"已暂停"：任务挂在 pausePoint 里不再 report，
           // 界面会一直停在"进行中"，用户分不清是卡住还是在等恢复。
           if (lastProgress) onProgress?.({ ...lastProgress, status: "paused" });
         }
-        while (self.current && self.current.paused && !self.current.stopped) {
+        while (ticket.paused && !ticket.stopped) {
           await new Promise((resolve) => setTimeout(resolve, 150));
         }
-        if (self.current && !self.current.stopped && machine.state === STATES.PAUSED && machine.can(STATES.RUNNING)) {
+        if (!ticket.stopped && machine.state === STATES.PAUSED && machine.can(STATES.RUNNING)) {
           machine.resume();
-          self.emitEvent("task.resumed", { taskId: machine.taskId });
+          self.emitEvent("task.resumed", { taskId: machine.taskId }, ticket);
           onLog?.("任务已恢复。");
           if (lastProgress) onProgress?.({ ...lastProgress, status: "running" });
         }
       },
-      livePayload: () => (self.current ? { ...self.current.livePayload } : { ...(payload || {}) }),
+      livePayload: () => ({ ...ticket.livePayload }),
       updateLiveSettings: (patch) => {
-        if (!self.current || self.current.stopped) return;
-        self.current.livePayload = { ...self.current.livePayload, ...(patch || {}) };
+        if (ticket.stopped) return;
+        ticket.livePayload = { ...ticket.livePayload, ...(patch || {}) };
       },
-      delay: randomDelayFactory(() => self.shouldStopCurrent()),
+      delay: randomDelayFactory(() => ticket.stopped),
       report: (progress) => {
         lastProgress = progress || null;
         onProgress?.(progress);
@@ -110,14 +135,17 @@ class TaskManager {
 
     try {
       const result = await run(ctx);
-      if (this.current && this.current.stopped) {
+      // 判定用 ticket.stopped 而不是 this.current.stopped：被强制释放的任务收尾时
+      // this.current 已经是别的任务（或 null），用 this.current 会把"用户手动停掉的"
+      // 记成"成功完成"，历史列表里就再也看不出它是被停的。
+      if (ticket.stopped) {
         machine.cancel("user_stop");
-        this.emitEvent("task.cancelled", { taskId: machine.taskId });
+        this.emitEvent("task.cancelled", { taskId: machine.taskId }, ticket);
       } else {
         machine.succeed();
-        this.emitEvent("task.succeeded", { taskId: machine.taskId });
+        this.emitEvent("task.succeeded", { taskId: machine.taskId }, ticket);
       }
-      this.archive();
+      this.archive(ticket);
       return result;
     } catch (error) {
       if (!machine.isTerminal) {
@@ -128,12 +156,15 @@ class TaskManager {
         else machine.cancel(`failed_while_${machine.state.toLowerCase()}（${error.message}）`);
         // 状态机记录里也给一份，免得消费方只看 failReason 时又是空的
         machine.failReason = error.message;
-        this.emitEvent("task.failed", { taskId: machine.taskId, error: error.message });
+        this.emitEvent("task.failed", { taskId: machine.taskId, error: error.message }, ticket);
       }
-      this.archive();
+      this.archive(ticket);
       throw error;
     } finally {
-      this.current = null;
+      // 只清自己那把锁：强制释放后用户可能已经起了新任务，无条件置 null 会把新任务的锁擦掉，
+      // 于是新任务还没跑完就"没人占着"了 —— 互斥形同虚设。
+      if (this.current === ticket) this.current = null;
+      if (ticket.releaseTimer) { clearTimeout(ticket.releaseTimer); ticket.releaseTimer = null; }
     }
   }
 
@@ -141,12 +172,44 @@ class TaskManager {
     return Boolean(this.current && this.current.stopped);
   }
 
-  stop() {
-    if (this.current) {
-      this.current.stopped = true;
-      this.current.paused = false; // 停止优先于暂停
+  /**
+   * 请求停止。协作式：任务在下一个检查点自行退出；超过宽限期没退出则强制放锁。
+   * @returns {{ok:true, accepted:boolean, taskName?:string, graceMs:number}}
+   *   accepted=false 表示此刻没有任务在跑（一键全自动在阶段之间点时就是这种情况）。
+   */
+  stop({ graceMs = STOP_GRACE_MS } = {}) {
+    const ticket = this.current;
+    if (!ticket) return { ok: true, accepted: false, graceMs };
+    ticket.stopped = true;
+    ticket.paused = false; // 停止优先于暂停
+    ticket.stopRequestedAt = Date.now();
+    if (!ticket.releaseTimer) {
+      ticket.releaseTimer = setTimeout(() => this.forceRelease(ticket), graceMs);
+      // 别让这个定时器拖住进程退出（打包版关窗时不需要等它）
+      if (typeof ticket.releaseTimer.unref === "function") ticket.releaseTimer.unref();
     }
-    return { ok: true };
+    return { ok: true, accepted: true, taskName: ticket.name, graceMs };
+  }
+
+  /**
+   * 强制释放任务锁：任务卡在不可中断的 await 上（浏览器 API / 长硬等 / 读流）时，
+   * 光置旗标是放不开的 —— 不释放的话 assertIdle() 会永久拒绝之后所有任务。
+   *
+   * 释放后旧任务仍持有 ticket，它的 ctx.shouldStop() 依旧为 true，
+   * 所以旧任务走到下一个检查点就会自己退出，与新任务的重叠窗口很短。
+   */
+  forceRelease(ticket, reason = "停止后超过宽限期仍未退出") {
+    if (!ticket || this.current !== ticket) return false;
+    ticket.forceReleased = true;
+    ticket.releaseTimer = null;
+    this.current = null;
+    // 必须补一条终态进度：界面靠它把动作按钮解锁。少了这一下，
+    // 用户看到的就是"点了停止，之后什么按钮都点不动"。
+    ticket.onProgress?.({ done: 0, total: 0, status: "stopped" });
+    ticket.onLog?.(`⚠️ 任务「${ticket.name}」${reason}，已强制释放任务锁 —— 之后可以正常操作了。`
+      + "（它在后台退出后不会再影响界面；若它其实还在跑，请重启软件彻底清掉。）");
+    this.emitEvent("task.force-released", { taskId: ticket.machine.taskId, reason }, ticket);
+    return true;
   }
 
   /** 请求暂停：任务在下一个检查点挂起 */
@@ -168,9 +231,11 @@ class TaskManager {
     }
   }
 
-  archive() {
-    if (!this.current) return;
-    this.history.push(this.current.machine.snapshot());
+  /** 归档用显式 ticket：被强制释放的任务收尾时 this.current 已经不是它了 */
+  archive(ticket) {
+    const owner = ticket || this.current;
+    if (!owner) return;
+    this.history.push(owner.machine.snapshot());
     if (this.history.length > 50) this.history.splice(0, this.history.length - 50);
   }
 }
@@ -203,4 +268,4 @@ function allocateRowsToEnvs(rows, envLabels, { perEnvLimit, accountDailyLimit } 
   return allocation;
 }
 
-module.exports = { TaskManager, allocateRowsToEnvs, randomDelayFactory };
+module.exports = { TaskManager, allocateRowsToEnvs, randomDelayFactory, STOP_GRACE_MS };

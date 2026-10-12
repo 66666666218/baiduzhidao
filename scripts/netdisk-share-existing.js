@@ -13,11 +13,16 @@ const path = require("path");
 const fs = require("fs");
 const XLSX = require("xlsx");
 const { chromium } = require("playwright-core");
-const { createShare } = require("../electron/src/netdisk/share");
+const { resolveDataDir, readCdp } = require("../electron/src/data-dir");
+const { createShare, randomPwd } = require("../electron/src/netdisk/share");
+// 台账读写收敛到 netdisk/state-ledger.js（本文件原本自己抄了一份）。
+// ⚠️ 注意去重键是 **srcPath**（不是转存类用的 srcLink）：本脚本不转存，
+//    是对"网盘里已存在的路径"建分享，按路径去重才对。详见该模块头注释。
+const { loadLedger, appendLedger } = require("../electron/src/netdisk/state-ledger");
 const qaLib = require("../electron/src/netdisk/qa-template-lib");
 
 const root = path.resolve(__dirname, "..");
-const workDir = path.join(root, "运行缓存", "网盘已有资源QA");
+const workDir = path.join(resolveDataDir(root), "网盘已有资源QA");
 const stateFile = path.join(workDir, "state.jsonl");
 const _positional = process.argv.slice(2).find((a) => !a.startsWith("--"));
 const outDir = _positional ? path.resolve(_positional) : path.join(workDir, "上传专用表");
@@ -25,34 +30,17 @@ const outDir = _positional ? path.resolve(_positional) : path.join(workDir, "上
 // 跳过清单：测试文件/空目录/敏感命名
 const SKIP_NAMES = ["netdisk-share-test.txt", "老司机必看.zip", "上海第二工业大学杀杀杀完整版.zip",
   "尽快保存 避免失效 保存即可观看", "云一朵知识问答", "redian百度转存_20260919_013706", "【抖音最新注册跳核对技术】无限注册.zip"];
-function randomPwd() {
-  const chars = "abcdefghjkmnpqrstuvwxyz23456789";
-  return Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-}
+// randomPwd 已收敛到 netdisk/share.js（原本三份）；台账也收敛到 state-ledger.js。
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function loadState() {
-  const map = new Map();
-  try {
-    for (const line of fs.readFileSync(stateFile, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      try { const r = JSON.parse(line); map.set(r.srcPath, r); } catch { /* 跳过 */ }
-    }
-  } catch { /* 首次 */ }
-  return map;
-}
-function saveState(entry) {
-  fs.mkdirSync(workDir, { recursive: true });
-  fs.appendFileSync(stateFile, JSON.stringify(entry) + "\n");
-}
+const state = loadLedger(stateFile, "srcPath");
+const saveState = (entry) => appendLedger(stateFile, entry);
 
 (async () => {
   // --dir=/xxx：枚举指定网盘目录（默认根目录）
   const dirArg = (() => { const m = process.argv.slice(2).find((a) => a.startsWith("--dir=")); return m ? m.slice(6) : "/"; })() || "/";
   const dirArgNorm = dirArg.startsWith("/") ? dirArg : "/" + dirArg;
   // 1) 连接比特浏览器拿登录态
-  const cdpFile = path.join(root, "运行缓存", "cdp.txt");
-  const cdp = fs.readFileSync(cdpFile, "utf8").trim();
+  const cdp = readCdp(resolveDataDir(root));
   const browser = await chromium.connectOverCDP(`http://${cdp}`);
   const context = browser.contexts()[0];
   const cookies = await context.cookies("https://pan.baidu.com");
@@ -81,8 +69,7 @@ function saveState(entry) {
   }
   console.log(`分享单元 ${units.length} 个（跳过测试/空/敏感项）`);
 
-  // 3) 逐个创建自有永久分享 + 生成问答行
-  const state = loadState();
+  // 3) 逐个创建自有永久分享 + 生成问答行（state 已在文件顶部从台账读好，键=srcPath）
   const qaRows = [];
   let done = 0, failed = 0;
   for (let i = 0; i < units.length; i += 1) {

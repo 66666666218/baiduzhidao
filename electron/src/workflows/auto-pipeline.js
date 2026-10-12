@@ -14,15 +14,28 @@
  * 真正"没勾选"的阶段不算跳过 —— 那是用户的意思，不该污染结论。
  */
 
+// account-topic 是纯函数模块（只依赖 answer-kind，不碰 electron），可以安全地在编排层直接 require，
+// 这样账号列表的归一化/去重规则全仓库只有一份，不会出现"上传侧改了、编排层没改"。
+const { dedupeEnvLabels } = require("../domain/account-topic");
+
 /** 阶段 id 全集；payload.stages 为空时按全部跑 */
 const ALL_STAGES = ["crawl", "pick", "generate", "submit", "transfer", "upload"];
 
-/** 环境名统一成字符串数组（兼容 ["A"] 与 [{label:"A"}] 两种写法） */
+/** 心跳：单阶段超过 3 分钟才开始报，之后每 2 分钟一行（再密就成噪音了） */
+const HEARTBEAT_AFTER_MIN = 3;
+const HEARTBEAT_EVERY_MS = 2 * 60 * 1000;
+
+/**
+ * 环境名统一成字符串数组（兼容 ["A"] 与 [{label:"A"}] 两种写法）+ **去重**。
+ *
+ * 为什么不再自己写一遍：这里原来和 `account-topic.envLabelsOf` 是逐行相同的两份拷贝，
+ * 结果上传侧（upload-batch）补了去重之后，这一份没跟着改 ——
+ * 「同名账号写两遍 → 生成两个同名 slot → 那个号被执行两遍」的坑在一键全自动里照样存在，
+ * 而且它会顺着 bitEnvs 传染给下面**每一个**阶段（转存尤其致命：两个线程同号同 IP 会被降级）。
+ * 现在统一委托给 `dedupeEnvLabels`，规则只有一份。
+ */
 function normEnvs(list) {
-  return (Array.isArray(list) ? list : [])
-    .map((env) => (env && typeof env === "object" ? env.label ?? env.name : env))
-    .map((x) => String(x || "").trim())
-    .filter(Boolean);
+  return dedupeEnvLabels(list).labels;
 }
 
 /** 取一个"数字"（缺字段/非数字一律 0，别让摘要里出现 NaN） */
@@ -101,20 +114,58 @@ function createAutoPipeline(deps) {
   // TaskManager 的单任务互斥能挡住第二次执行，但挡不住这个副作用，所以在入口直接拒绝。
   let running = false;
 
+  // 心跳用：当前阶段名 + 开始时刻。整条链是无人值守的，一个阶段跑十几分钟很正常，
+  // 但界面上只有"进行中"三个字 —— 用户分不清是"在干活"还是"卡死了"，往往直接点停止，
+  // 于是本来能跑完的链被自己掐断（2026-10-13 反馈「点了一键全自动之后容易卡住」）。
+  let stageLabel = "";
+  let stageStartedAt = 0;
+
   return {
     abort() { aborted = true; },
     isAborted() { return aborted; },
+    isRunning() { return running; },
     run,
   };
+
+  /**
+   * 阶段心跳：单个阶段超过 HEARTBEAT_AFTER_MS 还没结束，就每 HEARTBEAT_EVERY_MS 报一行。
+   * 只报"仍在运行 + 已几分钟"，不假装知道它在干什么 —— 那句话要是编的，就又是界面在撒谎。
+   */
+  function startHeartbeat() {
+    const timer = setInterval(() => {
+      if (!stageLabel || aborted) return;
+      const minutes = Math.round((Date.now() - stageStartedAt) / 60000);
+      if (minutes < HEARTBEAT_AFTER_MIN) return;
+      emit("task:log", `⏳ 仍在运行：${stageLabel}（已 ${minutes} 分钟）。若确认不需要它了，`
+        + "点「停止当前任务」即可 —— 停止后其余功能照常可用。");
+    }, HEARTBEAT_EVERY_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    return () => clearInterval(timer);
+  }
 
   async function run(payload) {
     if (running) throw new Error("一键全自动正在运行中，请先等它结束或点「停止」。");
     running = true;
     aborted = false;
+    stageLabel = "";
+    const stopHeartbeat = startHeartbeat();
     try {
-      return await runInner(payload);
+      const result = await runInner(payload);
+      // ── 终态进度：界面靠这一下把动作按钮解锁 ──
+      // 之前整条链只在"最后一个阶段恰好是 TaskManager 任务、且它跑到了自己的终态 report"
+      // 时才会解锁。抽题阶段（不走 TaskManager）、跳过阶段、以及**停止后 runStage 的早退**
+      // 都不发任何进度 —— 界面永久停在"进行中"，所有动作按钮灰着点不动。
+      // 这就是「点了取消，想进行里面的操作也卡」的真正成因，不是任务没停，是界面没解锁。
+      pulse(aborted ? "stopped" : result && result.ok ? "done" : "failed");
+      return result;
+    } catch (error) {
+      // 编排自身抛错（配置类、预检类）也要解锁，否则同样永久灰着
+      pulse("failed");
+      throw error;
     } finally {
       running = false;
+      stageLabel = "";
+      stopHeartbeat();
     }
   }
 
@@ -123,8 +174,16 @@ function createAutoPipeline(deps) {
     const enabled = new Set(Array.isArray(p.stages) && p.stages.length ? p.stages : ALL_STAGES);
     const settings = config.load();
     // 本次参与的账号：调用方显式指定优先（一键全自动页可以只挑几个号跑），默认用设置页的全部
-    const requestedEnvs = normEnvs(p.bitEnvs);
-    const bitEnvs = requestedEnvs.length ? requestedEnvs : normEnvs(settings.bitEnvs);
+    const requested = dedupeEnvLabels(p.bitEnvs);
+    const fallback = dedupeEnvLabels(settings.bitEnvs);
+    const bitEnvs = requested.labels.length ? requested.labels : fallback.labels;
+    // 去重掉的账号要留痕：这条链是无人值守跑的，用户第二天只看结果，
+    // "我填了 4 个号怎么只跑了 3 个"这类疑问必须能在日志里找到答案。
+    const droppedDupes = (requested.labels.length ? requested : fallback).duplicated;
+    if (droppedDupes.length) {
+      emit("task:log", `⚠️ 账号列表里有重复名字（${droppedDupes.join("、")}），已自动去重 ——`
+        + "不去重那个号会在转存/上传阶段被执行两遍，且并行时两个线程共用同一出口 IP 会被降级。");
+    }
 
     const report = [];
     let failure = null;
@@ -148,6 +207,9 @@ function createAutoPipeline(deps) {
       }
       emit("task:log", `══════ 一键全自动 · ${label} ══════`);
       pulse();
+      // 心跳要知道"现在在哪个阶段、从什么时候开始"（见 startHeartbeat）
+      stageLabel = label;
+      stageStartedAt = Date.now();
       try {
         const result = await fn();
         // 带上"这一步到底做出了什么"。结果表里只写「✅ 爬题」等于没说 ——
@@ -165,6 +227,9 @@ function createAutoPipeline(deps) {
         pulse("failed");
         failure = error;
         return null;
+      } finally {
+        // 阶段结束就停心跳：下一个阶段会重新设。不清的话"已结束"后还会继续报"仍在运行"。
+        stageLabel = "";
       }
     };
 
@@ -212,6 +277,7 @@ function createAutoPipeline(deps) {
         const categories = Array.isArray(p.categories) && p.categories.length ? p.categories : CATEGORIES;
         await runStage("crawl", `爬题（${categories.join("、")}）`, async () => {
           let added = 0;
+          const crawledExports = [];
           for (const category of categories) {
             if (aborted || failure) break;
             const result = await startTask(
@@ -221,6 +287,9 @@ function createAutoPipeline(deps) {
                 category,
                 crawlStartPage: settings.crawlStartPage,
                 maxQuestions: settings.maxQuestions,
+                // 「爬取结果文件夹」：手动爬题一直会按它导出题库，而一键全自动这里**漏传了** ——
+                // 于是设置页填了文件夹、自动跑批也从不导出（静默地少做一件事，日志里连痕迹都没有）。
+                crawlOutputDir: settings.crawlOutputDir,
                 // 续爬：暂停/停止后重跑时从上次那页接着走，而不是从头再扫一遍。
                 // 已入库的题本来就会自动跳过，所以从头扫不会重复入库、但会白白多花几十分钟。
                 resume: true,
@@ -228,7 +297,10 @@ function createAutoPipeline(deps) {
               (ctx) => taskRunners.crawl(ctx, taskDeps())
             );
             added += Number(result && result.count) || 0;
+            // 导出的题库文件要进产物清单：自动跑批第二天用户先看的就是"东西在哪"。
+            if (result && result.outputPath) crawledExports.push(result.outputPath);
           }
+          for (const file of crawledExports) addArtifact("题库导出", file);
           return { added };
         });
       }
@@ -364,6 +436,10 @@ function createAutoPipeline(deps) {
                 bitEnvs: uploadEnvsConfigured,
                 pages: Number(p.searchPages) || 0,
                 limit: Number(p.searchRowLimit) || 0,
+                // 目标条数：设了之后采集不到会自己加码（多翻页 → 多爬主页 → 补泛化词）。
+                // 全自动是无人值守的，跑到半夜发现"只采到 7 条"时没人能回来加页数 —— 所以必须自动。
+                targetCount: Number(p.searchTargetCount) || settings.searchTargetCount || 0,
+                searchConcurrency: Number(settings.searchConcurrency) || 2,
               }, (c) => taskRunners.searchResources(c, taskDeps()))
             );
             if (searched && searched.outputPath && fs.existsSync(searched.outputPath)) {
@@ -381,10 +457,11 @@ function createAutoPipeline(deps) {
                 destDir: String(p.transferDestDir || "").trim() || "/来自资源批量转存",
                 outName: String(p.transferOutName || "").trim(),
                 perEnv: Number(p.transferPerEnv) || 50,
-                // 默认并发 1（不是 4）：真机对照实验里 cc=1 零失败、cc=2 全失败、
-                // cc=4 四成失败 —— 分享页的降级窗口是**同一 IP 的短时并发**触发的。
-                // 详见 batch-transfer.js 里那段注释。
-                cc: Number(p.transferCc) || 1,
+                // cc=0 → 交给 batch-transfer 的"自动"判定：**默认串行**，只有当每个账号都配了
+                // 互不相同的代理（出口 IP 隔离）时才自动放开并行。这里以前写死 `|| 1`，
+                // 把"0=自动"的语义吃掉了 —— 用户明明配好了多账号+独立代理，一键全自动却仍强制串行，
+                // 而且他找不到任何地方能改（界面上这是"自动"）。改回透传用户值，默认不填即 0=自动。
+                cc: Number(p.transferCc) || 0,
                 delayMin: Number(p.transferDelayMin) || 1,
                 delayMax: Number(p.transferDelayMax) || 2,
                 makeShare: true,

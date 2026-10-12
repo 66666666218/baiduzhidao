@@ -10,11 +10,10 @@
 
 const fs = require("fs");
 const path = require("path");
+const { resolveDataDir } = require("../electron/src/data-dir");
 
 const root = path.resolve(__dirname, "..");
-const dataDir = process.env.ZHIDAO_DATA_DIR
-  ? path.resolve(process.env.ZHIDAO_DATA_DIR)
-  : path.join(root, "运行缓存");
+const dataDir = resolveDataDir(root);
 const logFile = path.join(dataDir, "logs", "live-crawl.log");
 
 const { Config } = require("../electron/src/config");
@@ -43,7 +42,9 @@ let restoreFn = null;
       config.save(snapshot);
       if (store) store.releaseLock();
     } catch (error) {
-      console.error("还原设置失败，请手动检查 运行缓存/settings.json：", error.message);
+      // 别把 "运行缓存/settings.json" 写死：新电脑/改过 ZHIDAO_DATA_DIR 时那句提示会指向
+      // 一个根本不存在的目录，用户照着找必然扑空。用真实解析出来的路径。
+      console.error("还原设置失败，请手动检查", path.join(dataDir, "settings.json"), "：", error.message);
     }
   };
   restoreFn = () => {

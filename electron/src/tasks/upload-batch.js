@@ -13,7 +13,7 @@ const path = require("path");
 const fs = require("fs");
 const { chromium } = require("playwright-core");
 const { parseTopicRules, classifyByRules, DEFAULT_TOPIC_RULES } = require("../domain/topic-rules");
-const { buildTopicAllocation, topicKey, runWithConcurrency, accountConcurrencyOf } = require("../domain/account-topic");
+const { buildTopicAllocation, topicKey, runWithConcurrency, accountConcurrencyOf, dedupeEnvLabels } = require("../domain/account-topic");
 const excel = require("../storage/excel");
 
 const http = require("../zhidao/http");
@@ -26,8 +26,12 @@ const UA_PROTO = http.UA;   // UA 只有一处定义（zhidao/http.js）
  * 批量追加台账。一批一次 IO —— 以前每行一次 `appendFileSync`，
  * 500 行就是 500 次磁盘写入，在机械盘/杀软实时扫描下会明显拖慢。
  * 内容是 JSONL（每行一条），一次写多行与逐行写在语义上完全等价。
+ *
+ * ⚠️ 这个函数曾经叫 `appendLedger`，与 `netdisk/state-ledger.js` 导出的那个 **同名**，
+ * 但两者完全不同：这里追加的是**上传链接**（`{link, at}`），那边是**转存断点续跑的状态行**。
+ * 同名不同义在本仓库是明确隐患（调用点一多必然有人接错），第 14 轮改名 `appendLinkLedger`。
  */
-function appendLedger(ledgerFile, links) {
+function appendLinkLedger(ledgerFile, links) {
   const rows = (links || []).filter(Boolean);
   if (!rows.length) return;
   const at = new Date().toISOString();
@@ -121,9 +125,9 @@ async function runBatchUploadTask(ctx, deps) {
 
   // 读取表格
   const XLSX = require("xlsx");
-  const wb = XLSX.readFile(filePath);
-  const sheetName = wb.SheetNames[0];
-  const allRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: "" });
+  // 读表统一走 storage/excel.js。用 readFirstSheet 是因为下面拆分片时要用原表名
+  // （一次读盘同时拿到表名与行，不必为了表名再读一遍）。
+  const { sheetName, rows: allRows } = excel.readFirstSheet(filePath);
   if (!allRows.length) throw new Error("表格为空");
   const keys = Object.keys(allRows[0]);
   const kAnswer = keys.find((k) => k.includes("回答内容")) || keys[keys.length - 1];
@@ -185,7 +189,7 @@ async function runBatchUploadTask(ctx, deps) {
         log(`批次 ${b + 1}/${pBatches}: ${chunk.length} 行 → ${r.ok ? `成功 taskId=${r.taskId}` : `失败(${r.reason})`}`);
         ctx.emitItem({ title: `批次 ${b + 1}/${pBatches}`, status: r.ok ? `上传成功 ${chunk.length} 行` : `上传失败：${r.reason}` });
         if (!r.ok) { log("本批失败，停止（可稍后重跑续传）。"); break; }
-        appendLedger(ledgerFile, chunk.map((row) => linkOf(row)));
+        appendLinkLedger(ledgerFile, chunk.map((row) => linkOf(row)));
         okRows += chunk.length;
         ctx.report({ done: b + 1, total: pBatches, status: "running" });
         if (b < pBatches - 1) await new Promise((res) => setTimeout(res, 3000));
@@ -230,7 +234,9 @@ async function runBatchUploadTask(ctx, deps) {
   if (!page) {
     page = await context.newPage();
     await page.goto("https://zhidao.baidu.com/b/batch/batch-upload", { waitUntil: "domcontentloaded", timeout: 40000 }).catch(() => {});
-    await page.waitForTimeout(4500);
+    // 用 ctx.delay 而不是 page.waitForTimeout：前者每 500ms 看一次停止信号，
+    // 后者是一次性硬等，点了停止也得把这几秒等完（见下面 30 秒那处，那才是真要命的）。
+    await ctx.delay(4.5, 4.5);
   }
   // 被动探针：把真实上传请求的形态记进日志。
   // 「上传纯协议化」需要知道表单字段名，而它只能从真实请求里读 —— 与其专门抓一次包，
@@ -279,10 +285,10 @@ async function runBatchUploadTask(ctx, deps) {
     XLSX.writeFile(wbPart, partFile);
 
     await page.goto("https://zhidao.baidu.com/b/batch/batch-upload", { waitUntil: "domcontentloaded", timeout: 40000 }).catch(() => {});
-    await page.waitForTimeout(4000);
+    await ctx.delay(4, 4);
     await page.locator('input[name="upload-panel-task-name"]').fill(`${bitEnv}-${b + 1}/${totalBatches}-${chunk.length}条`).catch(() => {});
     await page.locator("input[type=file]").first().setInputFiles(partFile);
-    await page.waitForTimeout(2500);
+    await ctx.delay(2.5, 2.5);
 
     const responsePromise = page.waitForResponse((res) => res.url().includes("bulkqa/upload"), { timeout: 60000 }).catch(() => null);
     await page.evaluate(() => {
@@ -305,10 +311,14 @@ async function runBatchUploadTask(ctx, deps) {
     log(`批次 ${b + 1}/${totalBatches}: ${chunk.length} 行 → ${ok ? "成功" : `失败(${msg})`}`);
     if (!ok) { log("本批失败，停止（可稍后重跑续传）。"); break; }
     // 成功后记台账（保守：记录本批所有链接，避免重复提交被拒）
-    appendLedger(ledgerFile, chunk.map((row) => linkOf(row)));
+    appendLinkLedger(ledgerFile, chunk.map((row) => linkOf(row)));
     uploaded += chunk.length;
     ctx.report({ done: b + 1, total: totalBatches, status: "running" });
-    if (b < totalBatches - 1) await page.waitForTimeout(30000);
+    // 批间等 30 秒（平台侧限速）。原来是 `page.waitForTimeout(30000)` 一次性硬等：
+    // 期间 shouldStop() 一次都不会被检查，用户点了停止要干等半分钟才见效，
+    // 而上传一批往往十几批 —— 连点几次停止看起来就像"停止按钮没用、软件卡住了"。
+    // ctx.delay 每 500ms 查一次停止信号，收到就立刻返回。
+    if (b < totalBatches - 1) await ctx.delay(30, 30);
   }
   } finally {
     // 无论成功/异常：释放窗口 + 清理分片临时文件
@@ -341,16 +351,18 @@ async function runTopicUploadTask(ctx, deps) {
   const sourcePath = String(payload.filePath || "").trim().replace(/^"|"$/g, "");
   if (!sourcePath || !fs.existsSync(sourcePath)) throw new Error("请先选择上传专用表（xlsx）");
 
-  const envLabels = (Array.isArray(payload.bitEnvs) ? payload.bitEnvs : [])
-    .map((env) => (env && typeof env === "object" ? env.label ?? env.name : env))
-    .map((label) => String(label || "").trim())
-    .filter(Boolean);
-  if (!envLabels.length) throw new Error("请先填写至少一个比特环境名称。");
+  // 去重后再干：同一个名字写两遍会生成两个同名 slot，**那个账号会被上传两遍**。
+  // 台账去重挡不住它（两次上传的是同一批链接，第二次才进台账），所以只能在入口拦。
+  const { labels: envLabels, duplicated } = dedupeEnvLabels(payload.bitEnvs);
+  if (!envLabels.length) throw new Error("请先填写至少一个上传账号（每行一个）。");
+  if (duplicated.length) log(`⚠️ 上传账号里有重复名字（${duplicated.join("、")}），已自动去重 —— 不去重那个号会被上传两遍。`);
+  // 把「本次到底哪几个号会上传」打在最前面：账号选错是**成本最高**的一类错误
+  //（平台已经收下、额度已经扣掉，撤不回来）。以前这一行没有，出问题只能靠猜。
+  log(`本次上传账号（${envLabels.length} 个）：${envLabels.join("、")}`);
 
   const XLSX = require("xlsx");
-  const wb = XLSX.readFile(sourcePath);
-  const sheetName = wb.SheetNames[0];
-  const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: "" });
+  // 读表统一走 storage/excel.js（同上，拆题材分表时还要用原表名）
+  const { sheetName, rows } = excel.readFirstSheet(sourcePath);
   if (!rows.length) throw new Error("表格为空");
   const keys = Object.keys(rows[0]);
   const titleKey = pickTitleKey(keys);
@@ -486,4 +498,4 @@ async function runTopicUploadTask(ctx, deps) {
   };
 }
 
-module.exports = { runBatchUploadTask, runTopicUploadTask, pickTitleKey, safeFileToken, collectTopicRows, fetchIkToken, uploadByProtocol, appendLedger };
+module.exports = { runBatchUploadTask, runTopicUploadTask, pickTitleKey, safeFileToken, collectTopicRows, fetchIkToken, uploadByProtocol, appendLinkLedger };

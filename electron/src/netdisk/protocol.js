@@ -3,7 +3,11 @@
 /**
  * 百度网盘转存协议客户端（纯 HTTP · 无浏览器）。
  * Jar = 每条资源独立 Cookie 会话；processOne = 单条完整链（verify→mset→建目录→转存）。
- * 参考 qingchuangjy/wangpan + 2026-09-23 实测（38条/分钟）。
+ * 参考实现：本机 C:\Users\周万鹏\wangpan（backend/app/providers/baidu/provider.py，
+ * 多网盘批量转存项目；其 CHANGELOG 记录了百度侧 errno=115 禁止二次分享、
+ * errno=4 按 target_dir+文件名 拼路径等实测结论）+ 本项目 2026-09-23 实测（38条/分钟）。
+ * 注意：该参考项目在 Gitee 上的地址（qingchuangjy/wangpan）已不可访问（账号不存在），
+ * 要看源码请用本机这份副本。
  *
  * 所有请求都走 `panFetch`（UA/Cookie/代理/超时/set-cookie 回写只有这一处定义）。
  * 别在这份文件里直接写 `fetch(` —— 漏掉代理就会出现"同一批操作从两个 IP 发出"，
@@ -11,6 +15,10 @@
  */
 
 const PAN = "https://pan.baidu.com";
+// 「一次 /share/transfer 响应意味着什么」的唯一实现：info 提升 / errno=4 已转存 /
+// 容量不足 / errno=2 路径不存在 / 异步转存中。三处调用方（本文件、transfer.js、
+// scripts/pan-transfer-ui.js）共用它，别再各写一份判断。
+const { normalizeTransferBody, DUP_ERRNO } = require("./transfer-outcome");
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 网盘单次 API 调用的超时。以前这里**一个超时都没有** —— 网络卡住时整条链就永久吊在那儿，
@@ -62,6 +70,11 @@ class Jar {
   str() { return [...this.map.entries()].map(([k, v]) => `${k}=${v}`).join("; "); }
 }
 
+/**
+ * 把 Jar 包成一个「只给相对路径」的小客户端（自带 UA/Cookie/代理/超时，见 panFetch）。
+ * 导出它是为了让 CLI 脚本（scripts/pan-transfer-batch.js 的 quota 查询）也能用 ——
+ * 那些脚本以前各自抄了一份 makeClient，抄的那份**没有 dispatcher、没有超时**。
+ */
 function makeClient(jar) {
   return async (pathAndQuery, opts = {}) => {
     const resp = await panFetch(jar, `${PAN}${pathAndQuery}`, {
@@ -160,11 +173,17 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
   // 3) 递归收集 fs_id（root 空时走 /share/list）
   let fsIds = [];
   let dirPaths = [];
+  // 与 fsIds 平行收集**分享内的真实相对路径**（/子目录/文件.mp4）。
+  // 用途：errno=4（全部重复转存）时百度偶发不返回 duplicated.list，
+  // 但文件其实早就在网盘里 —— 落盘路径是可以直接推出来的（转存目标目录 + 这个相对路径）。
+  // 参考实现（本机 wangpan baidu provider）在 duplicated 为空时同样按 target_dir+文件名 拼。
+  const filePaths = [];
   let zeroSize = 0;
   const collect = (entries) => {
     for (const f of entries) {
       if (Number(f.isdir) === 1) dirPaths.push(f.path);
       else if (f.fs_id) {
+        if (f.path) filePaths.push(String(f.path));
         const hasSize = f.size !== undefined && f.size !== null && f.size !== "";
         if (hasSize && Number(f.size) === 0) { zeroSize += 1; continue; }  // 显式 0 字节=占位垃圾
         fsIds.push(Number(f.fs_id));                                        // 缺 size 字段按未知保留
@@ -261,43 +280,55 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
 
   let usedDir = finalDir;
   let tBody = await transferTo(usedDir);
+  // 「这次转存到底成没成」——**不要在这里自己写判断**，统一走 transfer-outcome.js。
+  // 那段判断的另外两份拷贝（transfer.js / pan-transfer-ui.js）已经因为没跟上而把
+  // errno=4（已转存）、异步转存中、info 层真实错误都误判成失败，见该文件头注释。
+  let outcome = normalizeTransferBody(tBody);
   // errno=2：目的路径不存在。子目录建不出来时，回落到顶层目录再试一次——
   // 顶层（如 /来自资源批量转存）通常是早就存在的，能传进去。
-  if (Number(tBody.errno) === 2) {
+  if (outcome.pathMissing) {
     const fallback = `/${segments[0] || ""}`;
     if (fallback !== finalDir) {
       const retry = await transferTo(fallback);
-      if (Number(retry.errno) === 0 || Number(retry.errno) === 4) {
+      // 回落是否被接受，看的是**原始 errno**（不做 info 提升）：提升只会把 0 变成非 0，
+      // 对"这次到底成没成"没有帮助，反而会让一个 errno=0 的响应被自己的 info 层否掉。
+      const retryRaw = normalizeTransferBody(retry).rawErrno;
+      if (retryRaw === 0 || retryRaw === DUP_ERRNO) {
         tBody = retry;
+        outcome = normalizeTransferBody(retry);
         usedDir = fallback;
       }
     }
   }
   const fellBack = usedDir !== finalDir;
-  const infoErr = tBody.info && tBody.info[0] && Number(tBody.info[0].errno);
-  if (tBody.errno === 12 || tBody.errno === -10) throw Object.assign(new Error("网盘容量不足"), { fatal: true });
+  if (outcome.capacityFull) throw Object.assign(new Error("网盘容量不足"), { fatal: true });
 
   // errno=4：文件此前已转存过 → 视为成功，复用已有路径
-  if (Number(tBody.errno) === 4) {
-    const dupPaths = ((tBody.duplicated && tBody.duplicated.list) || []).map((x) => x.path).filter(Boolean);
-    const alt = (tBody.info || []).map((x) => x.path).filter(Boolean);
-    const to = dupPaths.length ? dupPaths : alt;
+  if (outcome.dup) {
+    const alt = outcome.infoPaths;
+    let to = outcome.dupPaths.length ? outcome.dupPaths : alt;
+    // duplicated/info 都没给路径时，用「转存目标目录 + 分享里的真实相对路径」拼出来盘路径。
+    // 实测里百度会偶发在 errno=4 时不返回 duplicated.list（文件确实已在网盘里），
+    // 以前这里直接抛错 → 该条每轮都被当成"失败"重来一遍（重传 + 再分享），纯属自伤。
+    if (!to.length && filePaths.length) {
+      to = filePaths.map((p) => `${usedDir}${String(p).startsWith("/") ? p : `/${p}`}`);
+    }
     if (!to.length) throw new Error("重复转存但未取得已有文件路径");
     return { toPaths: to, dup: true, usedDir, fellBack };
   }
   const createHint = createLog.length ? `（建目录返回：${createLog.join(", ")}）` : "";
-  if (Number(tBody.errno) !== 0 && !(infoErr === 0)) throw new Error(`转存 errno=${tBody.errno} ${tBody.show_msg || ""}${createHint}`);
+  // info[0].errno === 0 是「文件其实成功了」的形态 —— 此时顶层 errno 非 0 也**不许**报错，
+  // 否则会把一次真实成功判成失败（历史上就是这么把成功打成失败的）。
+  if (outcome.errno !== 0 && !outcome.infoSucceeded) throw new Error(`转存 errno=${outcome.errno} ${outcome.showMsg}${createHint}`);
 
   // 5) 权威落盘路径（extra.list 取 .to；duplicated.list 取 .path；全部字段化后合并）
-  const extraPaths = ((tBody.extra && tBody.extra.list) || []).map((x) => x && x.to).filter(Boolean);
-  const dupPaths = ((tBody.duplicated && tBody.duplicated.list) || []).map((x) => x && x.path).filter(Boolean);
-  const toPaths = extraPaths.concat(dupPaths);
+  const toPaths = outcome.extraPaths.concat(outcome.dupPaths);
   // 大文件是**异步转存**的：errno=0 但响应里没有落盘路径，`show_msg` 写着「文件转存中」。
   // 真机现场：《琉璃》4K 全集连续三轮都被报成「转存返回成功但未取得落盘路径」——
   // 我们把它当失败记档、还计进了失败数，其实文件正在转。这不是失败，是"还没转完"。
   // 返回 pending 让调用方**按"待确认"处理**：不计失败、不进黑名单，下次运行再来看
   //（到那时文件已在网盘里，百度会返回 errno=4「已转存」并给出路径）。
-  if (/转存中|正在转存/.test(String(tBody.show_msg || ""))) {
+  if (outcome.pending) {
     return { toPaths: [], pending: true, usedDir, fellBack: false, raw: tBody };
   }
 
@@ -311,4 +342,4 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
   return { toPaths, fsIds, usedDir, fellBack };
 }
 
-module.exports = { PAN, UA, TIMEOUT_MS, Jar, panFetch, processOne, nameFromShare };
+module.exports = { PAN, UA, TIMEOUT_MS, Jar, panFetch, makeClient, processOne, nameFromShare };

@@ -8,14 +8,17 @@
 
 const path = require("path");
 const fs = require("fs");
+const { chromium } = require("playwright-core");
+// require 必须在使用之前 —— 上面那行 `const cdp = readCdp(...)` 如果排在 require 前面，
+// 会因为 const 的暂时性死区直接 ReferenceError（`node --check` 查不出这种，它只管语法）。
+const { resolveDataDir, readCdp } = require("../electron/src/data-dir");
 
 const root = path.resolve(__dirname, "..");
-const cdp = fs.readFileSync(path.join(root, "运行缓存", "cdp.txt"), "utf8").trim();
-const { chromium } = require("playwright-core");
+const cdp = readCdp(resolveDataDir(root));
 
 (async () => {
   // 1) 造 1KB 测试文件
-  const testFile = path.join(root, "运行缓存", "netdisk-share-test.txt");
+  const testFile = path.join(resolveDataDir(root), "netdisk-share-test.txt");
   const content = "网盘分享链路自动化测试文件，验证后可删除。" + "x".repeat(900) + "\n";
   fs.writeFileSync(testFile, content, "utf8");
   console.log("测试文件已生成:", fs.statSync(testFile).size, "字节");
@@ -104,10 +107,11 @@ const { chromium } = require("playwright-core");
   if (share.link && share.code) {
     console.log("=== 链路验证成功 ===");
     console.log("资源行:", JSON.stringify({ 名称: fileName, 网盘链接: `${share.link} 提取码: ${share.code}` }));
-    fs.writeFileSync(path.join(root, "运行缓存", "share-test-result.json"), JSON.stringify(share, null, 2));
+    fs.writeFileSync(path.join(resolveDataDir(root), "share-test-result.json"), JSON.stringify(share, null, 2));
   } else {
-    await page.screenshot({ path: path.join(root, "运行缓存", "share-debug.png") });
-    console.log("截图已存 运行缓存/share-debug.png");
+    const shot = path.join(resolveDataDir(root), "share-debug.png");
+    await page.screenshot({ path: shot });
+    console.log("截图已存", shot);
   }
   process.exit(0);
 })().catch((e) => { console.error("FAIL:", e.message.slice(0, 160)); process.exit(1); });

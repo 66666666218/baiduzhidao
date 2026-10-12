@@ -75,6 +75,14 @@ const DEFAULTS = {
   // 搜资源：各题材的搜索词（同格式）。没给资源表时按账号绑定的题材自动搜
   searchKeywords: DEFAULT_SEARCH_KEYWORDS,
   searchPages: 1,
+  // 搜资源的**目标条数**（0=不设目标，采到多少算多少）。
+  // 用户只挑了 3 个题材来采时常常不够用，设了目标之后软件会自动加码补足：
+  // 先给每个词多翻几页 → 再多爬几个答主主页 → 最后补题材泛化词。
+  // 采集打的是知道的读接口（不占网盘额度、不写任何东西），多试几轮的代价只有时间。
+  searchTargetCount: 0,
+  // 搜资源的并发数（同时抓几个搜索页）。默认 2：并发是为了省下串行的等待时间，
+  // 但打的是同一个域名，一旦哪里返回异常页就自动降回 1，不会把事情搞坏。
+  searchConcurrency: 2,
 };
 
 const SYSTEM_PROMPT = `请生成百度知道优质回答，只输出自然连贯的回答正文。
@@ -173,6 +181,8 @@ function normalizeSettings(payload) {
   if (!String(next.topicRules || "").trim()) next.topicRules = DEFAULT_TOPIC_RULES;
   if (!String(next.searchKeywords || "").trim()) next.searchKeywords = DEFAULT_SEARCH_KEYWORDS;
   next.searchPages = clampInt(next.searchPages, 1, 50, DEFAULTS.searchPages);
+  next.searchTargetCount = clampInt(next.searchTargetCount, 0, 5000, DEFAULTS.searchTargetCount);
+  next.searchConcurrency = clampInt(next.searchConcurrency, 1, 5, DEFAULTS.searchConcurrency);
   if (!String(next.systemPrompt || "").trim()) next.systemPrompt = SYSTEM_PROMPT;
   // 活动页地址：允许覆盖但必须是合法 http(s) URL，否则回退默认（防止用户填错导致任务必败）
   const activityUrl = String(next.activityUrl || "").trim();

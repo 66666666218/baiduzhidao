@@ -13,9 +13,12 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const { findEdge, findFreePort } = require("./edge-launcher");
+// 运行数据目录只有一处定义（认 ZHIDAO_DATA_DIR，默认 <root>/运行缓存）。
+// 别在这里写 path.join(root, "运行缓存") —— 那样它就绕过环境变量，新电脑/打包后对不上。
+const { resolveDataDir } = require("./data-dir");
 
 const root = path.resolve(__dirname, "..", "..");
-const cacheDir = path.join(root, "运行缓存");
+const cacheDir = resolveDataDir(root);
 const profileDir = path.join(cacheDir, "panlay-profile");
 const portFile = path.join(cacheDir, "panlay-cdp.txt");
 

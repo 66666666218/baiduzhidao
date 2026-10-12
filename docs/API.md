@@ -154,7 +154,7 @@
 
 | 通道 | 说明 | 请求 | 响应 |
 |------|------|------|------|
-| `update:info` | 当前版本与更新能力 | — | `{ version, supported, ready, available, releasesUrl }` |
+| `update:info` | 当前版本与更新能力 | — | `{ version, supported, ready, available }`（`releasesUrl` 已移除：不向界面暴露仓库地址） |
 | `update:check` | 检查更新**并自动下载**（打包版才可用） | — | `{ currentVersion }` |
 | `update:install` | 重启并安装已下载的新版 | — | `{ ok: true }`；新版未下载完则抛错 |
 | `update:ready` | **推送通道**。新版本下载完成时发出 | — | `{ version }` |

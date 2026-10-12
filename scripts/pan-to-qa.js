@@ -16,11 +16,14 @@
  */
 
 const path = require("path");
+const { resolveDataDir } = require("../electron/src/data-dir");
+// 读 xlsx 统一走 storage/excel.js 的 readTableRows（本文件不再自己 XLSX.readFile）
+const excel = require("../electron/src/storage/excel");
 const fs = require("fs");
 const XLSX = require("xlsx");
 
 const root = path.resolve(__dirname, "..");
-const dataDir = path.join(root, "运行缓存");
+const dataDir = resolveDataDir(root);
 const srcFile = process.argv[2];
 const outFile = process.argv[3] || path.join(dataDir, "问答格式-输出.xlsx");
 
@@ -32,6 +35,9 @@ if (!srcFile || !fs.existsSync(srcFile)) {
 // ---------- 质量检查 ----------
 
 const AD_PATTERNS = /微信号|加微信|VX|vx[:：]?|公众号|二维码|代下|有偿|收费|付费获取|联系QQ|加群|引流|广告|www\.|http(s)?:\/\/(?!pan\.)/i;
+// 压缩包一律不进问答（SOP 禁止）。**这个常量以前声明了却没人用** ——
+// 下面 checkResource 里另写了一条更松的 `/.(zip|rar|7z)$/i`（点号没转义、只认结尾、漏了 tar/gz），
+// 于是「我的.zip 解压密码123」这种带后缀说明的名称会漏过去。现在统一用它。
 const BANNED_EXT = /\.(zip|rar|7z|tar|gz)\b/i;
 const CODE_PATTERNS = /提取码[:：\s]*([a-z0-9]{4,8})|pwd=([a-z0-9]{4})|访问码[:：\s]*([a-z0-9]{4,8})/i;
 
@@ -49,7 +55,9 @@ function checkResource(name, linkField) {
   const { link, code, hasCode } = extractLink(linkField);
   if (!link) issues.push("未找到网盘链接");
   if (!hasCode && link && /pan\.baidu\.com/i.test(link)) issues.push("百度网盘链接缺提取码");
-  if (/.(zip|rar|7z)$/i.test(name.trim())) issues.push("压缩包文件（SOP禁止，除安装包类内容——如属实请手动修改名称后重试）");
+  // 统一用 BANNED_EXT（见其定义处的说明）：以前这里是 `/.(zip|rar|7z)$/i`，
+  // 点号没转义、且只认"名称正好以 .zip 结尾"，带任何后缀说明的名称都会漏过去。
+  if (BANNED_EXT.test(name.trim())) issues.push("压缩包文件（SOP禁止，除安装包类内容——如属实请手动修改名称后重试）");
   if (AD_PATTERNS.test(name)) issues.push("名称含广告/引流/联系方式");
   if (AD_PATTERNS.test(linkField) && /有偿|收费|付费/.test(linkField)) issues.push("链接含付费引导");
   const cleanName = String(name || "").trim();
@@ -105,9 +113,11 @@ function buildAnswerHtml({ cleanName: name, link, code }) {
 
 // ---------- 主流程 ----------
 
-const wb = XLSX.readFile(srcFile);
-const sheet = wb.Sheets[wb.SheetNames[0]];
-const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+// 读表统一走 storage/excel.js（全仓唯一入口）。
+// ⚠️ 这里原本是默认的 raw（按原始值），但本脚本读的是**网盘资源表**，
+//    提取码列看着像数字时会被 Excel 转成数字（`0023` → `23`），属于静默丢数据。
+//    第 14 轮与其他四个资源表读取点统一成 raw:false。
+const rawRows = excel.readTableRows(srcFile, { raw: false });
 if (!rawRows.length) {
   console.error("输入表为空");
   process.exit(1);

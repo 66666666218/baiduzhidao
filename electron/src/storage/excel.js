@@ -24,11 +24,53 @@ function collectTableFiles(targetPath) {
     .sort((a, b) => a.localeCompare(b, "zh-CN"));
 }
 
-function readTableRows(filePath) {
+/**
+ * 「取工作簿的第一张表名」—— 单独拎出来是因为 **`SheetNames` 可能为空**：
+ * 直接写 `workbook.Sheets[sheetName]` 会拿到 `undefined`，再喂给 `sheet_to_json` 就是一句
+ * 无头绪的 TypeError。放在这里就能让空表退化成空结果，而不是让整条跑批崩掉。
+ * （⚠️ 实测：`XLSX.writeFile` 对无表工作簿一律抛 `Workbook is empty`，
+ *   xlsx/csv/ods/html/biff8 全试过都写不出来 —— 所以这个分支**造不出磁盘夹具**，
+ *   只能靠这个纯函数单点验证，别指望端到端构造。）
+ *
+ * @param {{SheetNames?: string[]}} [workbook]
+ * @returns {string} 空则退化成 ""
+ */
+function firstSheetName(workbook) {
+  const names = workbook && workbook.SheetNames;
+  return (names && names[0]) || "";
+}
+
+/**
+ * 读第一张表：**同时**返回表名与行。给"读完还要用表名去写输出表"的调用方用
+ * （这样只需要读一次盘；否则为了拿表名得再 `XLSX.readFile` 一遍）。
+ *
+ * @param {string} filePath
+ * @param {{raw?: boolean}} [options] 见 readTableRows
+ * @returns {{sheetName: string, rows: object[]}}
+ */
+function readFirstSheet(filePath, options) {
   const workbook = XLSX.readFile(filePath, { cellDates: false });
-  const sheetName = workbook.SheetNames[0];
-  if (!sheetName) return [];
-  return XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" });
+  const sheetName = firstSheetName(workbook);
+  if (!sheetName) return { sheetName: "", rows: [] };
+  const jsonOptions = { defval: "" };
+  if (options && options.raw !== undefined) jsonOptions.raw = options.raw;
+  return { sheetName, rows: XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], jsonOptions) };
+}
+
+/**
+ * 读第一张表的行。**这是全仓唯一该读 xlsx 的地方**（应用内核与 scripts/ 都走它）。
+ *
+ * @param {string} filePath
+ * @param {{raw?: boolean}} [options]
+ *   `raw: false` —— 让单元格按**显示文本**返回，而不是原始值。
+ *   ⚠️ 这个选项对「资源表/链接表」是**必须**的：提取码这类"看着像数字"的列，
+ *   `raw` 模式下 Excel 会把 `0023` 变成数字 `23`（前导零没了）、超长数字串还会变科学计数法
+ *   —— 直接丢数据、而且丢得悄无声息。所以第 14 轮把 scripts/ 里原本传 `{raw:false}` 的
+ *   几处统一收敛到这里，选项做成**显式参数**而不是默默统一（两种行为在仓库里同时存在过）。
+ *   不传 = 保持历史默认（按原始值），那 12 处应用内核调用行为完全不变。
+ */
+function readTableRows(filePath, options) {
+  return readFirstSheet(filePath, options).rows;
 }
 
 function pickCell(row, headers) {
@@ -169,6 +211,8 @@ module.exports = {
   BANK_HEADERS,
   isTableFile,
   collectTableFiles,
+  firstSheetName,
+  readFirstSheet,
   readTableRows,
   importRowToQuestion,
   importRowToAnswer,

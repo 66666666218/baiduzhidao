@@ -73,17 +73,71 @@ function findAccount(dataDir, name) {
   return null;
 }
 
+/**
+ * 查网盘容量（/api/quota）。
+ *
+ * ⚠️ 失败时必须说清**为什么**：以前失败一律返回 `{ valid: false }`，调用方拿不到任何原因，
+ * 只能继续显示存档里的旧数字 —— 于是账号已经登不上网盘了（errno=-6），界面上还挂着
+ * 「总 120 GB | 剩余 120 GB」这种几个月前的快照，用户看到的现象就是"容量显示不准"，
+ * 而真正的原因是登录失效。**静默保留旧值**比显示一个错数字更糟：它让人以为数据是最新的。
+ *
+ * @returns {Promise<{valid: boolean, name: string, totalGB?: number, freeGB?: number, errno: number|null, reason: string}>}
+ */
+/**
+ * 容量查询失败时，给人看的**原因**。
+ *
+ * ⚠️ errno=-6（"用户未登录"）**不能**直接翻译成"你的号登不上网盘了" —— 2026-10-12 实测：
+ *    `/api/quota` 对**所有**参数写法、所有请求头、甚至只带 BDUSS 都返回 -6；
+ *    而**同一个 Cookie** 打 `/api/list`、`/api/gettemplatevariable` 却是 errno=0。
+ *  也就是说这个接口现在就是取不到容量，**与账号登录态无关**（三个号都这样，稳定复现 3 轮）。
+ *  以前那种"看到 -6 就提示用户重新登录"的写法会**骗人**：让人白白重登一遍，而且重登完照样取不到。
+ *  所以 -6 要再拿一个**已知能用**的接口（列目录）验一次登录态，再决定怎么说。
+ *
+ * @param {number|null} errno
+ * @param {boolean} netdiskAlive 用 /api/list 验出来的"这个号网盘到底通不通"
+ */
+function describeQuotaFailure(errno, netdiskAlive) {
+  if (!netdiskAlive) return "网盘登录已失效（需重新登录提取）";
+  if (errno === -6) return "容量接口不可用（百度 errno=-6，账号登录正常）";
+  if (errno === null) return "网盘接口无响应";
+  if (errno !== 0) return "网盘接口 errno=" + errno;
+  return "响应里没有容量字段";
+}
+
+/** 用「列根目录」验证这个号的网盘到底通不通 —— quota 不可用时靠它区分"接口死"和"号真的掉了" */
+function netdiskAlive(account) {
+  var cli = clientOf(account);
+  return cli.call("/api/list?dir=%2F&web=1&num=1").then(function (j) {
+    return Boolean(j) && Number(j.errno) === 0;
+  }).catch(function () { return false; });
+}
+
 function quota(account) {
   var cli = clientOf(account);
   return cli.call("/api/quota?checkfree=1&checkexpire=1&web=1").then(function (q) {
-    if (!q || q.errno !== 0 || !q.total) return { valid: false, name: account.name };
-    var GB = 1073741824;
-    return {
-      valid: true,
-      name: account.name,
-      totalGB: Math.round((q.total / GB) * 10) / 10,
-      freeGB: Math.round(((q.total - q.used) / GB) * 10) / 10
-    };
+    if (q && Number(q.errno) === 0 && q.total) {
+      var GB = 1073741824;
+      return {
+        valid: true,
+        name: account.name,
+        errno: 0,
+        reason: "",
+        loginOk: true,
+        totalGB: Math.round((q.total / GB) * 10) / 10,
+        freeGB: Math.round(((q.total - q.used) / GB) * 10) / 10
+      };
+    }
+    var errno = q && q.errno !== undefined ? Number(q.errno) : null;
+    // 补一次列目录：把"接口取不到"和"号真的掉了"分开，别让人白重登一次
+    return netdiskAlive(account).then(function (alive) {
+      return {
+        valid: false,
+        name: account.name,
+        errno: errno,
+        loginOk: alive,
+        reason: describeQuotaFailure(errno, alive)
+      };
+    });
   });
 }
 
@@ -210,6 +264,8 @@ module.exports = {
   saveAccounts: saveAccounts,
   findAccount: findAccount,
   quota: quota,
+  netdiskAlive: netdiskAlive,
+  describeQuotaFailure: describeQuotaFailure,
   listDir: listDir,
   deleteItems: deleteItems,
   emptyRecycleBin: emptyRecycleBin,

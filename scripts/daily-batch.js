@@ -8,9 +8,10 @@
 
 const fs = require("fs");
 const path = require("path");
+const { resolveDataDir } = require("../electron/src/data-dir");
 
 const root = path.resolve(__dirname, "..");
-const dataDir = path.join(root, "运行缓存");
+const dataDir = resolveDataDir(root);
 const count = Math.max(1, Number(process.argv[2]) || 10);
 
 const { Config } = require("../electron/src/config");

@@ -7,11 +7,12 @@
  */
 
 const path = require("path");
+const { resolveDataDir } = require("../electron/src/data-dir");
 const fs = require("fs");
 const XLSX = require("xlsx");
 
 const root = path.resolve(__dirname, "..");
-const dataDir = path.join(root, "运行缓存");
+const dataDir = resolveDataDir(root);
 const srcFile = process.argv[2] || path.join(dataDir, "workbench-all-questions.xlsx");
 const limit = Math.max(1, Number(process.argv[3]) || 4900);
 
@@ -136,6 +137,9 @@ function saveTable(wb, target, log) {
     }
   };
 
+  // ⚠️ 本文件是**有意**不走 storage/excel.js 的那一个例外：
+  //    下面要用 `sheet_add_json(sheet, rows)` 把结果**写回同一个 workbook**，再 `saveTable(wb, …)`。
+  //    `readTableRows`/`readFirstSheet` 只返回行（拿不到 wb/sheet 对象），所以这里必须自己读一次。
   const wb = XLSX.readFile(srcFile);
   const sheetName = wb.SheetNames[0];
   const sheet = wb.Sheets[sheetName];

@@ -8,11 +8,12 @@
  */
 
 const path = require("path");
+const { resolveDataDir } = require("../electron/src/data-dir");
 const fs = require("fs");
 const XLSX = require("xlsx");
 
 const root = path.resolve(__dirname, "..");
-const cacheDir = path.join(root, "运行缓存");
+const cacheDir = resolveDataDir(root);
 const masterJsonl = path.join(cacheDir, "pan-resources-master.jsonl");
 
 // ---------- 质量预过滤（与 pan-to-qa 门槛一致） ----------

@@ -7,12 +7,13 @@
  */
 
 const path = require("path");
+const { resolveDataDir } = require("../electron/src/data-dir");
 const fs = require("fs");
 const XLSX = require("xlsx");
 
 const root = path.resolve(__dirname, "..");
 const keyword = process.argv[2] || "学习资料";
-const outFile = process.argv[3] || path.join(root, "运行缓存", `pansou-qa-${Date.now()}.xlsx`);
+const outFile = process.argv[3] || path.join(resolveDataDir(root), `pansou-qa-${Date.now()}.xlsx`);
 const maxWait = Math.max(10, Number(process.argv[4]) || 25) * 1000;
 
 const { launchHeadlessEdge } = require("../electron/src/edge-launcher");

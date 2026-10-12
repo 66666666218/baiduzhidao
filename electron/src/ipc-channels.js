@@ -49,6 +49,7 @@ const INVOKE_CHANNELS = [
 "auth:login-and-extract",
   "netdisk:accounts:remove",
   "netdisk:accounts:check",
+  "netdisk:accounts:refresh",
   "netdisk:list",
   "netdisk:delete",
   "netdisk:empty-recycle",

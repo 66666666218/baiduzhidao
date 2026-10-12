@@ -359,6 +359,8 @@
             <div class="field"><label>模型</label><input type="text" id="aiModel" /></div>
             <div class="field"><label>并发数</label><input type="number" id="aiConcurrency" min="1" max="8" /></div>
             <div class="field"><label>今日 token 预算上限（0=不限）</label><input type="number" id="aiDailyTokenBudget" min="0" /></div>
+            <div class="field"><label>回答最大 tokens（50~4000）</label><input type="number" id="aiMaxTokens" min="50" max="4000" placeholder="520" /></div>
+            <div class="field"><label>温度（0~2，越大越发散）</label><input type="number" id="aiTemperature" min="0" max="2" step="0.1" placeholder="0.7" /></div>
           </div>
           <div class="field"><label>回答来源表格（留空则自动使用最近一次抽题表格）</label>
             <div class="pair">
@@ -462,12 +464,20 @@
             <div class="field"><label>每窗口连续条数（轮换粒度）</label><input type="number" id="batchPerEnv" min="1" value="50" /></div>
             <div class="field"><label>转存目标目录</label><input type="text" id="batchDestDir" value="/来自资源批量转存" /></div>
             <div class="field"><label>数量上限（0=全部）</label><input type="number" id="batchLimit" min="0" value="20" /></div>
+            <div class="field"><label>转存并发（0=自动）</label><input type="number" id="batchCc" min="0" max="8" value="0" /></div>
             <div class="field"><label>输出表格名称（可自定义）</label><input type="text" id="batchOutName" placeholder="上传专用表-已转存" /></div>
           </div>
           <div class="card-actions">
             <button class="btn primary" id="startBatchTransfer">开始批量转存</button>
             <button class="btn soft" id="startSearchResources">按题材搜资源（纯协议，免浏览器）</button>
           </div>
+          <div class="field-grid">
+            <div class="field"><label>采集目标条数（0=不设目标；不够会自动加码补足）</label><input type="number" id="searchTargetCount" min="0" value="0" /></div>
+            <div class="field"><label>采集并发（同时抓几个搜索页，1~5）</label><input type="number" id="searchConcurrency" min="1" max="5" value="2" /></div>
+          </div>
+          <p class="hint">流程是<b>两段分开</b>的：先点「按题材搜资源」把资源<b>全部采集成一张表</b>（此表自动填入上面「资源表格」），再点「开始批量转存」<b>一次性</b>转存 + 生成上传专用表。
+            采集打的是百度知道的读接口可以并发；转存是网盘写接口，<b>同一 IP 并发会被降级</b>，所以那一步按账号轮换、同账号串行。</p>
+          <p class="hint">设了「目标条数」后，采集不够会自动依次加码：<b>每个词多翻几页 → 多爬几个答主主页 → 补题材泛化词</b>，每轮加了多少都写在运行日志里；实在挖不出会在日志里明说还差多少。</p>
           <p class="hint">完成后上传专用表输出到「运行数据目录/批量转存/」内，可直接用于自动提交上传。</p>
           <p class="hint">「按题材搜资源」按设置页的<b>搜索词</b> × <b>账号题材绑定</b>去百度知道搜网盘资源，产出结果自动填入上面的「资源表格」；没绑定题材就去搜资源表格，不会瞎搜。</p>
         </div>
@@ -485,10 +495,11 @@
             </div>
           </div>
           <div class="field-grid">
-            <div class="field"><label>比特环境名（该账号需有批量发布权益）</label><input type="text" id="uploadBitEnv" placeholder="账号1" /></div>
+            <div class="field" style="grid-column: 1 / -1;"><label>上传账号（每行一个，需具备批量发布权益）</label><textarea id="uploadBitEnv" rows="3" placeholder="账号1&#10;账号2"></textarea></div>
             <div class="field"><label>每批行数</label><input type="number" id="uploadBatchRows" min="1" value="500" /></div>
             <div class="field"><label>批数上限</label><input type="number" id="uploadMaxBatches" min="1" value="999" /></div>
           </div>
+          <p class="hint">⚠️ 两个按钮都只认上面<b>这个框里填的账号</b>：「开始批量上传」取<b>第一行</b>（单账号全量传），「按题材分账号上传」<b>全部参与</b>（每行按题材拆给对应账号）。<b>留空才会回落到设置页的账号列表</b> —— 想只让某个号传，就把其它行删掉。</p>
           <div class="card-actions">
             <button class="btn primary" id="startBatchUpload">开始批量上传</button>
             <button class="btn soft" id="startTopicUpload">按题材分账号上传</button>
@@ -604,10 +615,13 @@
           <div class="card-actions">
             <button class="btn primary" id="checkUpdate">检查更新</button>
             <button class="btn soft" id="installUpdate" disabled>重启并安装新版</button>
-            <button class="btn soft" id="openReleases">打开发布页（手动下载）</button>
             <span class="hint" id="updateInfo">当前版本检测中…</span>
           </div>
-          <p class="hint">新版发布后点「检查更新」即可自动下载安装，答题数据不受影响。若下载失败（国内网络波动），点「打开发布页」用浏览器手动下载安装包，直接安装即可覆盖升级。</p>
+          <!-- 「打开发布页（手动下载）」按钮已移除：它打开的是仓库发布页地址，
+               用户不希望这个地址暴露在软件里（字段 releasesUrl 也一并从 update:info 删掉）。
+               按钮与字段必须一起删 —— 只删字段的话，渲染端 $("openReleases") 还在，
+               点一下就是打开空链接、并把地址缺失暴露成一条报错。 -->
+          <p class="hint">新版发布后点「检查更新」即可自动下载安装，答题数据不受影响。若自动更新失败，用拿到的最新安装包直接覆盖安装即可升级。</p>
         </div>
 
         <div class="card">

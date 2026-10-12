@@ -23,12 +23,14 @@
  */
 
 const path = require("path");
+const { resolveDataDir } = require("../electron/src/data-dir");
 const fs = require("fs");
-const XLSX = require("xlsx");
 
 const root = path.resolve(__dirname, "..");
-const cacheDir = path.join(root, "运行缓存");
-const masterJsonl = path.join(cacheDir, "pan-resources-master.jsonl");
+const cacheDir = resolveDataDir(root);
+// 注：这里曾有一个 `masterJsonl`（pan-resources-master.jsonl）和一行 `require("xlsx")`，
+// 两者都没有任何读者 —— 落盘走的是 lib.exportXlsx(outFile)（pan-library.js 内部管 xlsx）。
+// 删掉，免得后来的人以为"这个脚本还会另外写一份 jsonl"。
 const stateFile = path.join(cacheDir, "pan-crawl-state.json");
 const PANSOU_API = "https://pansou.app/api/search";
 

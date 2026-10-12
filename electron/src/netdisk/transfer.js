@@ -20,6 +20,8 @@
 
 const PAN_API = "https://pan.baidu.com";
 const WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+// 「一次 /share/transfer 响应意味着什么」的唯一实现（info 提升 / errno=4 / 容量 / 异步转存…）
+const { normalizeTransferBody } = require("./transfer-outcome");
 
 function parseShareLink(link) {
   const m = String(link || "").match(/pan\.baidu\.com\/s\/([\w-]+)/);
@@ -241,15 +243,12 @@ async function transferFiles(exe, { shareid, from, sekey, files, destDir, bdstok
     body: body.toString(),
     referrer: sharePageUrl || `${PAN_API}/disk/main`,
   });
-  // info 层 errno 提升（首文件错误优先暴露）
-  const infoErrno = r.info && r.info[0] && Number(r.info[0].errno);
-  const errno = Number(r.errno) !== 0 ? Number(r.errno) : (infoErrno || 0);
-  // errno=4：全部文件已存在（重复转存）→ 视为成功，复用已有文件
-  if (errno === 4) {
-    return { errno: 0, dup: true, toFsIds: (r.duplicated && r.duplicated.list || []).map((x) => Number(x.fs_id)).filter(Boolean) };
-  }
-  const toFsIds = (r.extra && Array.isArray(r.extra.list) ? r.extra.list : []).map((x) => Number(x.fsid || x.fs_id)).filter(Boolean);
-  return { errno, dup: false, toFsIds, showMsg: r.show_msg || "" };
+  // info 层提升 + errno=4 判定统一走 netdisk/transfer-outcome.js（那份判断的唯一家）。
+  // 别在这里再写一遍 —— 这个仓库已经因为"三份拷贝各写一半"踩过太多次
+  //（本条路线原本就比 protocol.js 少 4 条规则，见该文件头注释）。
+  const o = normalizeTransferBody(r);
+  if (o.dup) return { errno: 0, dup: true, toFsIds: o.dupFsIds };
+  return { errno: o.errno, dup: false, toFsIds: o.extraFsIds, showMsg: o.showMsg };
 }
 
 /** 确认文件已落盘/** 确认文件已落盘：列自己的目录比对文件名 */

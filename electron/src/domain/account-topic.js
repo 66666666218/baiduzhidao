@@ -274,16 +274,44 @@ function envLabelsOf(list) {
 }
 
 /**
+ * 去重后的环境名列表（保持首次出现的顺序）。
+ *
+ * 为什么必须在各个入口都做一遍：账号列表最终会被 `.map()` 成一个账号一个 slot，
+ * 同一个名字写两遍就会生成两个同名 slot —— **那个账号会被执行两次**。
+ * 而这类重复掩盖得很深：上传有台账去重，看上去只是"传了两遍同样的链接"，
+ * 实际上额度扣了两次、平台上挂了两条重复的任务。`config.normalizeBitEnvs` 只覆盖设置页那一条路，
+ * 界面/任务 payload/来临时的 scripts 都不经过它，所以这里补最后一道。
+ *
+ * @returns {{labels: string[], duplicated: string[]}}
+ */
+function dedupeEnvLabels(list) {
+  const seen = new Set();
+  const labels = [];
+  const duplicated = [];
+  for (const item of envLabelsOf(list)) {
+    if (seen.has(item)) { duplicated.push(item); continue; }
+    seen.add(item);
+    labels.push(item);
+  }
+  return { labels, duplicated };
+}
+
+/**
  * 网盘链的账号分工：解析出「谁负责转存」和「谁负责上传」。
  *
  * 为什么要分开：转存要的是**网盘空间**，上传要的是**批量发布权益**，
  * 而现实里常常是「A 的盘还有空间但没权益，B 有权益但盘满了」——
  * 一个变量管两头时，这种账号组合就用不了。两边留空即回落到 bitEnvs。
+ *
+ * 三份列表都要去重：这两组账号最终同样会被 `.map()` 成一个名字一个 slot 传给转存/上传任务，
+ * 与 bitEnvs 是完全一样的坑（同号两遍 + 并行时两个线程共用同一出口 IP）。
+ * 以前这里只做 `envLabelsOf`（不去重），是"去重只在调用方入口做"这个假设留下的漏洞 ——
+ * 现在规则收敛到 `dedupeEnvLabels`，本函数自己就保证无重复。
  */
 function resolveNetdiskRoles(bitEnvs, { transferEnvs, uploadEnvs } = {}) {
-  const base = envLabelsOf(bitEnvs);
-  const transfer = envLabelsOf(transferEnvs);
-  const upload = envLabelsOf(uploadEnvs);
+  const base = dedupeEnvLabels(bitEnvs).labels;
+  const transfer = dedupeEnvLabels(transferEnvs).labels;
+  const upload = dedupeEnvLabels(uploadEnvs).labels;
   return {
     transferEnvs: transfer.length ? transfer : base,
     uploadEnvs: upload.length ? upload : base,
@@ -292,6 +320,7 @@ function resolveNetdiskRoles(bitEnvs, { transferEnvs, uploadEnvs } = {}) {
 
 module.exports = {
   envLabelsOf,
+  dedupeEnvLabels,
   runWithConcurrency,
   accountConcurrencyOf,
   MAX_ACCOUNT_CONCURRENCY,

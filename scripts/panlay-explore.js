@@ -7,11 +7,12 @@
  */
 
 const path = require("path");
+const { resolveDataDir } = require("../electron/src/data-dir");
 const fs = require("fs");
 const { chromium } = require("playwright-core");
 const { launchHeadedEdge, portFile } = require("../electron/src/headed-edge-launcher");
 
-const cacheDir = path.resolve(__dirname, "..", "运行缓存");
+const cacheDir = resolveDataDir(path.resolve(__dirname, ".."));
 
 (async () => {
   const { cdpUrl } = await launchHeadedEdge({ onLog: (m) => console.log(m) });

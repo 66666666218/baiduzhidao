@@ -7,11 +7,14 @@
  */
 
 const path = require("path");
+const { resolveDataDir } = require("../electron/src/data-dir");
+// 读 xlsx 统一走 storage/excel.js 的 readFirstSheet（本文件不再自己 XLSX.readFile）
+const excel = require("../electron/src/storage/excel");
 const fs = require("fs");
 const XLSX = require("xlsx");
 
 const root = path.resolve(__dirname, "..");
-const dataDir = path.join(root, "运行缓存");
+const dataDir = resolveDataDir(root);
 const srcFile = process.argv[2] || path.join(dataDir, "workbench-all-questions.xlsx");
 const envLabel = process.argv[3] || "";
 let batchRows = Math.max(1, Number(process.argv[4]) || 500);
@@ -67,10 +70,9 @@ const { createAdapter, BrowserPool } = require("../electron/src/browser");
   }
 
   // 切分已填行
-  const wb = XLSX.readFile(srcFile);
-  const sheetName = wb.SheetNames[0];
-  const sheet = wb.Sheets[sheetName];
-  const allRows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  // 读表统一走 storage/excel.js。用 readFirstSheet 是因为下面切分片要用原表名
+  //（一次读盘同时拿到表名与行）。
+  const { sheetName, rows: allRows } = excel.readFirstSheet(srcFile);
   const keys = Object.keys(allRows[0]);
   const kAnswer = keys.find((k) => k.includes("回答内容"));
   let filled = allRows.filter((r) => String(r[kAnswer] || "").trim());

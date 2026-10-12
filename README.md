@@ -20,10 +20,15 @@ npm install                # 已配 npmmirror + Electron 镜像
 npm run mock               # 可选：启动本地模拟站（无账号体验/调试）
 npm start                  # 启动桌面应用
 npm run smoke              # 冒烟自检：加载渲染端 + 点遍界面上所有按钮，抓处理器体内的错误
-npm test                   # 单元测试（33 个）
-npm run test:e2e           # 全链路 E2E（8 项，需本机有 Edge，无需账号）
+npm test                   # 单元测试（500+ 条，含"新电脑环境"守卫）
+npm run test:e2e           # 全链路 E2E（需本机有 Edge，无需账号）
 npm run selftest           # 一键自检 CLI（不开应用验证整条链路）
+npm run dist               # 打包成安装包 → dist/（改完代码**必须重打包**才生效，见下）
 ```
+
+> **改了代码但运行起来还是老样子？** `dist/` 里放的是历史构建产物（已被 .gitignore 忽略），
+> 开发时 `npm start` 直接跑源码；要让**安装版**也生效，必须重新 `npm run dist`。
+
 
 ## 功能视图（与 v1 对应）
 
@@ -122,22 +127,77 @@ node scripts/upload-by-topic.js 表.xlsx  # 只跑 ⑥⑦
 ## 网盘资源供给链路（10 万目标 · 供给端）
 
 ```
-采集（二选一或并行）
-  ├─ 方式一  scripts/panlay-login.js    panlay.com 登录（人工一次，会话常驻）
-  │          scripts/panlay-explore.js  工具页结构探测
-  │          scripts/panlay-search-qa.js（开发中）panlay 资源搜索采集
-  └─ 方式二  scripts/pan-crawl-batch.js  关键词池批量爬取（去重/断点/限速）
-                 ↓ 两列主资源库  运行缓存/pan-resources-master.xlsx
-转换（星链SOP 第2阶段）
-  └─ scripts/pan-to-qa.js               两列 → 六列问答格式（质量门槛）
-上传（星链SOP 第3阶段）
-  └─ scripts/workbench-upload-per-account.js  按账号批量上传（每日额度自适应）
+①采集（三选一或并行）
+  ├─ scripts/pan-crawl-batch.js     关键词池批量爬取（去重/断点/限速）
+  ├─ scripts/panlay-collect.js      panlay.com 投稿流 / 关键词搜索（--search 消耗 200/天配额）
+  └─ scripts/panlay-login.js        panlay.com 登录（人工一次，会话常驻）
+                 ↓ 主资源库（追加式，崩溃不丢）  <数据目录>/pan-resources-master.jsonl
+                 ↓ 导出两列表                    <数据目录>/pan-resources-master.xlsx
+②转换  scripts/pan-to-qa.js        两列 → 六列问答格式（质量门槛）
+
+③转存确权 ← 关键一步：别人的分享随时可能失效，必须转存到自己网盘、再用「自己的链接」出问答
+  └─ 四条路线，按可靠性/速度取舍（**同一批别混着跑**）：
+     · scripts/pan-transfer-batch.js     纯 HTTP 协议版 —— 最快，脚本跑批首选
+     · scripts/pan-transfer-pipeline.js  浏览器执行器版 —— 五阶段，**设计上就是串行**（共用 Cookie 罐）
+     · scripts/pan-transfer-ui.js        真 UI 点击版 —— 最可靠，API 直连被风控时用它
+     · scripts/netdisk-share-existing.js 网盘里**已有**的文件直接建分享（不转存）
+                 ↓ 上传专用表-第N批-M条.xlsx（qid / 问题标题 / 回答内容）
+
+④上传  scripts/workbench-upload-per-account.js  按账号批量上传（每日额度自适应）
 ```
 
 ```bash
-node scripts/pan-crawl-batch.js --minutes=60     # 采集 1 小时（断点续爬，可反复跑）
-node scripts/pan-to-qa.js 运行缓存/pan-resources-master.xlsx  # 转问答格式
+# 例：把一份资源表转存确权成可上传的问答表（结果会自动打印落盘目录）
+node scripts/pan-transfer-batch.js --input=资源.xlsx --limit=50
+# 采集 1 小时（断点续爬，可反复跑）
+node scripts/pan-crawl-batch.js --minutes=60
 ```
+
+**跑完去哪看结果？** 脚本结束时会自己打印，不用猜：
+- `上传专用表: <目录>` —— 产物 xlsx 的位置（默认 `<数据目录>/transfer-batch/<表名>/上传专用表/`）
+- `状态文件: <目录>/state.jsonl` —— 断点续传台账；**重跑会自动跳过已完成的**，不会重复转存或重复上传
+- 汇总行 `本轮转存成功 X | 失败 Y | 历史累计可用问答 Z`
+- 特别地，「已转存但没生成分享链接」会**单独告警**（文件在你的网盘里，但没有链接就出不了问答），
+  并指明原因（账号达每日 300 分享上限 / 该资源被百度禁止二次分享）——这不是失败，明天或换号重跑即可补上。
+
+## 出错代码（errno）速查
+
+跑批日志里出现 `errno=...` 时对照这张表；**不要**看到报错就换账号或放弃这一条：
+
+| errno / 现象 | 含义 | 该怎么做 |
+|---|---|---|
+| `2` | 目标目录不存在（偶发也会因**容量不足**误报） | 自动回落顶层目录重试；整批频繁出现先查网盘容量 |
+| `4` | 已转存过 | **视为成功**，复用已有文件（重跑不会重复占空间） |
+| `115` | 该资源**被百度禁止二次分享** | 永久性，换账号/等明天都没用 → 只放弃这一条，**别封账号** |
+| `120` / "分享次数已达上限" | 该账号**当日 300 个分享**额度用完 | 换账号，或明天重跑；**会自动封该账号本批剩余项** |
+| `12` / `-10` | 容量不足 | 只废这个账号，其余账号继续 |
+| `-6` | 登录失效 | 去软件里重新登录该账号 |
+| `-62` / `-65` / `-70` | 触发风控 | 全局暂停 10 分钟（脚本自动等），降速重跑 |
+| `-9` | **端点相关**：verify 阶段 = 提取码错误 | 看阶段；不要当成容量不足 |
+| 出现"分享页限流" | 打太快，不是链接失效 | 脚本自动冷却 3 分钟再继续 |
+| 连续 10 条失败 | 大批量异常 | 脚本自动停止，可稍后重跑续传（已完成的不会重做） |
+
+## 换电脑 / 数据放在哪
+
+所有运行时数据（题库、设置、`cdp.txt`、转存台账、导出的表格、日志）都在**一个数据目录**里：
+
+| 场景 | 数据目录 |
+|---|---|
+| 开发模式（`npm start`） | 项目里的 `运行缓存/` |
+| 打包版（安装到 C 盘） | `%APPDATA%\zhidao-answer-studio`（**是另一份数据**） |
+| 自定位置 | 设环境变量 `ZHIDAO_DATA_DIR` 指过去 |
+
+⚠️ **`运行缓存/` 被 .gitignore 忽略 —— 新电脑 clone 下来没有这个目录，里面也没有你的数据。**
+所以：
+
+- 脚本需要比特浏览器 CDP 端口（`运行缓存/cdp.txt`），这个文件由软件里的「连接比特浏览器」写入，
+  **不在 git 里**。新电脑上先开比特浏览器 → 在软件里点「连接比特浏览器」，再跑脚本。
+  找不到时脚本会给出可照着做的提示，不是裸 `ENOENT`。
+- **想让脚本直接读写打包版那份数据**，就先设：`set ZHIDAO_DATA_DIR=%APPDATA%\zhidao-answer-studio`
+  （`每日跑批.bat` 顶部有注释掉的现成一行，取消注释即可）。
+- **搬家**：把整个数据目录拷到新电脑的同一位置即可；或拷到别处再设 `ZHIDAO_DATA_DIR`。
+- **验证「换电脑能不能跑」**：`node scripts/simulate-fresh-machine.js --run`
+  —— 它把源码复制到临时目录（**不含** `运行缓存/`、`.git/`）后跑全套测试，证明不依赖本机残留。
 
 ## 用真实比特浏览器联调
 

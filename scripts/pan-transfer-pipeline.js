@@ -1,44 +1,70 @@
 "use strict";
 
 /**
- * 网盘资源转存确权管线（一键全转 · 批处理版）：
+ * 网盘资源转存确权管线（一键全转 · 浏览器执行器版）：
  *
- *   任意格式资源表 → 【五阶段并发批处理】→ 问答 xlsx
- *   ①COLLECT  并发 verify+list：解析每条分享的真实文件清单（元数据缓存）
- *   ②TRANSFER 并发转存到自己网盘（每条独立子目录，防同名覆盖）
- *   ③CONFIRM  并发确认落盘（列自己的目录比对文件名——转存成功才算数）
- *   ④SHARE    并发创建自己的永久分享（share/pset，随机提取码）
+ *   任意格式资源表 → 逐条走五阶段 → 问答 xlsx
+ *   ①COLLECT  verify+list：解析每条分享的真实文件清单（元数据缓存）
+ *   ②TRANSFER 转存到自己网盘（每条独立子目录，防同名覆盖）
+ *   ③CONFIRM  确认落盘（列自己的目录比对文件名——转存成功才算数）
+ *   ④SHARE    创建自己的永久分享（share/pset，随机提取码）
  *   ⑤EXPORT   本地生成答题模板问答 xlsx（用自己的链接）
  *
  * 核心保证：问答里填的链接 = 确认落盘之后创建的【自己的】分享链接。
  *
- * 断点续跑：state.jsonl 记录每条所处阶段，重跑自动从断点继续；
- * 风控自愈：verify errno=2 / -62 / -70 → 全局暂停 10 分钟自动恢复；
- *           容量不足 errno=12/-10 → 立即优雅停止（已完成部分完好）。
+ * ── 执行模型：**串行**，不是并发 ──────────────────────────────────────────
+ * 以前这里写着「五阶段并发批处理」并提供了 `--cc-collect/--cc-transfer/--cc-confirm/--cc-share`
+ * 四个并发参数。**那是错的，而且危险**：实际执行是 `for (const t of tasks)` 一条一条来，
+ * 四个 `--cc-*` 参数解析完就再没人读过（0 个读者），`pool()` 并发池也是死代码。
+ * 也就是说：用户按文档调 `--cc-transfer=8` 想提速 8 倍，**不会生效、不报错、不提示** ——
+ * 他只会看到它跑了一整夜还是一样慢，然后以为是"百度太慢"。
+ *
+ * 为什么现在就是串行、也不打算改回并发（这是有意的）：
+ *   本脚本走的是**真浏览器上下文**（比特浏览器），所有请求经同一个 page/context 发出，
+ *   而 verify → list → transfer 三步共用**同一个 Cookie 罐**（sekey/BDCLND 要透传）。
+ *   并发会让几条资源互相覆盖 Cookie，实测表现是 errno=-9 / 解析失败 —— 比慢更糟。
+ *   而且它与 `protocol.js`（纯协议、每条资源独立 Cookie 会话、真能并发）是**两套不同架构**，
+ *   要并发请用 `tasks/batch-transfer.js`（应用内）或 `scripts/pan-transfer-batch.js`。
+ *
+ * 所以本文件**唯一**有效的调速手段是 `--delay-min/--delay-max`（每条之间的随机间隔）。
  *
  * 用法：
  *   node scripts/pan-transfer-pipeline.js --input=<资源表.xlsx> [选项]
  *     --limit=N              本次最多处理条数（默认 100；0=全部）
- *     --cc-collect=4         阶段①并发数（默认 4）
- *     --cc-transfer=3        阶段②并发数（默认 3）
- *     --cc-confirm=5         阶段③并发数（默认 5）
- *     --cc-share=2           阶段④并发数（默认 2）
- *     --pace-ms=1500         同阶段相邻请求间隔（默认 1500，防风控）
+ *     --start=N              跳过前 N 行
  *     --dest=/目录           转存目标根目录（默认 /来自资源批量转存）
+ *     --delay-min=2          条间最小间隔秒数（默认 2，**真正生效的调速项**）
+ *     --delay-max=5          条间最大间隔秒数（默认 5）
+ *     --max-fails=10         连续失败多少条自动停（默认 10）
  *     --share-pwd=abcd       固定自有分享提取码（默认每条随机）
  *     --fresh                忽略历史状态全量重跑
+ *
+ * 断点续跑：state.jsonl 记录每条所处阶段，重跑自动从断点继续；
+ * 风控处理：verify -62/-70（transfer.js 报「触发风控」）→ 阻塞等 5 分钟后继续；
+ *           容量不足 errno=12/-10 → 立即优雅停止（已完成部分完好）；
+ *           转存 errno=2 → 复检网盘剩余空间，<5GB 则停止。
  */
 
 const path = require("path");
 const fs = require("fs");
 const XLSX = require("xlsx");
 const { chromium } = require("playwright-core");
+const { resolveDataDir, readCdp } = require("../electron/src/data-dir");
 const transfer = require("../electron/src/netdisk/transfer");
-const { createShare } = require("../electron/src/netdisk/share");
+// 4 位随机提取码也在这里（原本 pipeline / batch-transfer / netdisk-share-existing 各写一份）
+const { createShare, randomPwd } = require("../electron/src/netdisk/share");
+// 表单元格 → {link, pwd}：四份拷贝已收敛到这一处（pan-transfer-ui.js 曾因拷贝漏改而整表静默跳过）
+const { parseLinkCell } = require("../electron/src/netdisk/pan-link");
+// 「哪一列是名称/链接/提取码」：本文件原本有自己的 detectColumns，现已与另外三处合并成一份
+const { detectColumns } = require("../electron/src/netdisk/table-columns");
+// 转存台账（state.jsonl）：原本五份，收敛到一处
+const { loadLedger, appendLedger } = require("../electron/src/netdisk/state-ledger");
+// 读 xlsx 统一走 storage/excel.js 的 readTableRows（本文件不再自己 XLSX.readFile）
+const excel = require("../electron/src/storage/excel");
 const qaLib = require("../electron/src/netdisk/qa-template-lib");
 
 const root = path.resolve(__dirname, "..");
-const cacheDir = path.join(root, "运行缓存", "transfer-pipeline");
+const cacheDir = path.join(resolveDataDir(root), "transfer-pipeline");
 
 // ---------- 参数 ----------
 const args = {};
@@ -48,20 +74,26 @@ for (const a of process.argv.slice(2)) {
   else args[a.replace(/^--/, "")] = true;
 }
 if (!args.input) {
-  console.error("用法: node scripts/pan-transfer-pipeline.js --input=<资源表.xlsx> [--limit=100] [--cc-transfer=3] ...");
+  console.error("用法: node scripts/pan-transfer-pipeline.js --input=<资源表.xlsx> [--limit=100] [--delay-min=2] [--delay-max=5]");
   process.exit(1);
 }
 const inputFile = path.resolve(args.input);
 const limit = args.limit !== undefined ? Math.max(0, Number(args.limit)) : 100;
 const destRoot = args.dest || "/来自资源批量转存";
-const cc = {
-  collect: Math.max(1, Number(args["cc-collect"]) || 6),
-  transfer: Math.max(1, Number(args["cc-transfer"]) || 6),
-  confirm: Math.max(1, Number(args["cc-confirm"]) || 8),
-  share: Math.max(1, Number(args["cc-share"]) || 4),
-};
-const paceMs = Math.max(200, Number(args["pace-ms"]) || 800);
 const fixedPwd = typeof args["share-pwd"] === "string" ? args["share-pwd"] : "";
+
+// ── 已失效的参数：**必须吼出来**，不能静默忽略 ────────────────────────────────
+// 这个脚本是串行的（原因见文件头「执行模型」），`--cc-*` 与 `--pace-ms` 都没有读者。
+// 静默忽略是最坏的处理：用户以为自己在提速，实际参数被吞了，跑一夜还是那么慢，
+// 最后怪到"百度限速"头上。所以只要他显式传了，就在这里点名。
+const DEAD_FLAGS = ["cc-collect", "cc-transfer", "cc-confirm", "cc-share", "pace-ms"];
+const passedDead = DEAD_FLAGS.filter((k) => args[k] !== undefined);
+if (passedDead.length) {
+  console.log(`⚠️ 忽略无效参数：${passedDead.map((k) => `--${k}`).join("、")}`);
+  console.log("   本脚本是**串行**执行的（真浏览器 + 共用 Cookie 罐，并发会互相覆盖导致 errno=-9），"
+    + "所以并发参数没有任何效果。要调速度请用 --delay-min / --delay-max（条间间隔秒数）。");
+  console.log("   要真正的并发跑批，请用 tasks/batch-transfer.js（应用内）或 scripts/pan-transfer-batch.js（纯协议）。");
+}
 
 const baseName = path.basename(inputFile).replace(/\.xlsx$/i, "").slice(0, 40);
 const workDir = path.join(cacheDir, baseName);
@@ -69,92 +101,34 @@ const stateFile = path.join(workDir, "state.jsonl");
 const outDir = path.join(workDir, "问答输出");
 
 // ---------- 状态 ----------
-function loadState() {
-  const map = new Map();
-  try {
-    for (const line of fs.readFileSync(stateFile, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      try { const r = JSON.parse(line); map.set(r.srcLink, r); } catch { /* 跳过损坏行 */ }
-    }
-  } catch { /* 首次运行 */ }
-  return map;
-}
-function saveState(entry) {
-  fs.mkdirSync(workDir, { recursive: true });
-  fs.appendFileSync(stateFile, JSON.stringify(entry) + "\n");
-}
-function randomPwd() {
-  const chars = "abcdefghjkmnpqrstuvwxyz23456789";
-  return Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-}
+// 台账读写收敛到 netdisk/state-ledger.js（本文件原本自己抄了一份）
+const ledgerState = loadLedger(stateFile, "srcLink");
+const saveState = (entry) => appendLedger(stateFile, entry);
 const sleep = transfer.sleep;
 
-/** 并发池：按并发数处理任务列表（任务内部自己 pacing） */
-async function pool(items, concurrency, worker) {
-  let cursor = 0;
-  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (cursor < items.length) {
-      const idx = cursor++;
-      try { await worker(items[idx], idx); } catch (e) { /* worker 自捕获 */ }
-      await sleep(paceMs + Math.random() * paceMs);
-    }
-  });
-  await Promise.all(runners);
-}
+// ⚠️ 这里原本还有一份 `pool()` 并发池 + `gate`/`waitGate()`/`tripPause()` 全局限频闸门，
+// **三样都没有调用方**（死代码）。留着比删掉更糟：它让人以为「这脚本是并发的、有全局暂停机制」，
+// 于是按文档去调 `--cc-*` 参数 —— 而那些参数同样**没有读者**。详见文件头「执行模型」一节。
+// 删掉，别再误导。
 
-// ---------- 全局限频控制 ----------
-const gate = { pausedUntil: 0 };
-async function waitGate() {
-  if (gate.pausedUntil > Date.now()) {
-    const waitS = Math.ceil((gate.pausedUntil - Date.now()) / 1000);
-    console.log(`  ⏸ 全局限频暂停中，剩余 ${waitS}s…`);
-    await sleep(Math.min(gate.pausedUntil - Date.now(), 60000));
-    return waitGate();
-  }
-}
-function tripPause(minutes, reason) {
-  const until = Date.now() + minutes * 60 * 1000;
-  if (until > gate.pausedUntil) {
-    gate.pausedUntil = until;
-    console.log(`  ⏸ ${reason} → 全局暂停 ${minutes} 分钟（自动恢复）`);
-  }
-}
-
-// ---------- 表格列识别（适应任意格式） ----------
-function detectColumns(firstRow) {
-  const keys = Object.keys(firstRow);
-  const findKey = (patterns) => keys.find((k) => patterns.some((p) => k.toLowerCase().includes(p)));
-  let nameKey = findKey(["文件名", "名称", "资源名", "标题", "片名", "书名"]);
-  let linkKey = findKey(["链接", "网址", "url"]);
-  let pwdKey = findKey(["提取码", "密码", "访问码"]);
-  for (const k of keys) {
-    const v = String(firstRow[k] || "");
-    if (!linkKey && /pan\.baidu\.com\/s\//.test(v)) linkKey = k;
-    if (!pwdKey && /^[a-z0-9]{4}$/i.test(v.trim()) && k !== linkKey) pwdKey = k;
-  }
-  if (!nameKey) nameKey = keys.find((k) => k !== linkKey && k !== pwdKey) || keys[0];
-  if (!linkKey) linkKey = keys[1] || keys[0];
-  return { nameKey, linkKey, pwdKey };
-}
-function parseLinkCell(text) {
-  const s = String(text || "");
-  const link = (s.match(/https?:\/\/pan\.baidu\.com\/s\/[\w-]+(?:\?pwd=[a-z0-9]{4})?/i) || [])[0] || "";
-  let pwd = (s.match(/[?&]pwd=([a-z0-9]{4})/i) || [])[1] || "";
-  if (!pwd) pwd = (s.match(/(?:提取码|密码|访问码)[:：\s]*([a-z0-9]{4})/i) || [])[1] || "";
-  return { link, pwd };
-}
+// 注：表格列识别（detectColumns）与 4 位随机提取码（randomPwd）原本也在本文件里各有一份，
+// 第 14 轮分别收敛到 netdisk/table-columns.js 与 netdisk/share.js（都从上面 require 进来）。
 
 // ---------- 主流程 ----------
 (async () => {
   // 0) 读表 + 识别列
-  const wb = XLSX.readFile(inputFile);
-  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: false });
+  // 读表统一走 storage/excel.js（全仓唯一入口）。raw:false 不能省 —— 提取码带前导零时会丢数据。
+  const rows = excel.readTableRows(inputFile, { raw: false });
   if (!rows.length) { console.error("资源表为空"); process.exit(1); }
-  const { nameKey, linkKey, pwdKey } = detectColumns(rows[0]);
+  const { nameKey, linkKey, pwdKey, nameDegraded } = detectColumns(rows[0]);
   console.log(`资源表 ${rows.length} 行 | 列识别: 名称="${nameKey}" 链接="${linkKey}" 提取码="${pwdKey || "(自动抠取)"}"`);
+  if (nameDegraded) {
+    console.log(`⚠️ 这张表没有可用的「名称」列（现在拿"${nameKey}"凑数），资源名不可信 ——`
+      + "建议加一列「名称」或「标题」，否则出题标题会是链接/提取码。");
+  }
 
   // 1) 构建任务清单（过滤无效行 + 断点分类）
-  const state = args.fresh ? new Map() : loadState();
+  const state = args.fresh ? new Map() : ledgerState;
   const tasks = [];
   let junk = 0;
   const startIdx = Math.max(0, Number(args.start) || 0);
@@ -184,9 +158,8 @@ function parseLinkCell(text) {
   console.log(`本轮任务 ${tasks.length} 条（历史已完成 ${doneTasks.length} 条不占配额，脏数据剔除 ${junk}）| 阶段分布:`, JSON.stringify(byPhase));
 
   // 2) 连接比特浏览器（浏览器执行器 = 真实指纹过风控）
-  const cdpFile = path.join(root, "运行缓存", "cdp.txt");
-  if (!fs.existsSync(cdpFile)) { console.error("没有 运行缓存/cdp.txt（比特浏览器未连接）"); process.exit(1); }
-  const cdp = fs.readFileSync(cdpFile, "utf8").trim();
+  // 统一走 data-dir.js（原来的手工存在性检查只说了"没有"，没告诉用户去哪儿开）
+  const cdp = readCdp(resolveDataDir(root));
   const browser = await chromium.connectOverCDP(`http://${cdp}`);
   const context = browser.contexts()[0];
   let panPage = context.pages().find((p) => p.url().includes("pan.baidu.com"));
@@ -236,8 +209,9 @@ function parseLinkCell(text) {
   const qaRows = [];
   for (const t of tasks) {
     if (fatalStop) break;
+    // 注意：`tasks` 在上文已经过滤成"未完成"的条目（pendingTasks），
+    // 所以这里永远进不去 —— 留着当防御，别指望它做实际的事。
     if (t.phase === "done") { if (t.qaRow) qaRows.push(t.qaRow); continue; }
-    await waitGate();
     const entryBase = { srcLink: t.srcLink, name: t.rawName };
     try {
       // ① 采集
@@ -291,7 +265,7 @@ function parseLinkCell(text) {
         done += 1;
         consecutiveFails = 0;
         saveState({ ...entryBase, status: "done", phase: "done", ownLink: t.ownLink, ownPwd: t.ownPwd, qaRow: t.qaRow, at: new Date().toISOString() });
-        logLine(`  ✅ [${stamp()}] ${t.rawName.slice(0, 26)} → ${t.ownLink}`);
+        console.log(`  ✅ [${stamp()}] ${t.rawName.slice(0, 26)} → ${t.ownLink}`);
       }
     } catch (e) {
       failed += 1;
@@ -299,7 +273,7 @@ function parseLinkCell(text) {
       t.attempts = (t.attempts || 0) + 1;
       t.phase = t.phase === "new" ? "failed" : t.phase; // 已转存的保留阶段，重跑从断点续
       saveState({ ...entryBase, status: "failed", phase: t.phase, attempts: t.attempts, error: (e.message || "").slice(0, 120), at: new Date().toISOString() });
-      logLine(`  ✗ [${stamp()}] ${t.rawName.slice(0, 26)} → ${e.message.slice(0, 70)}`);
+      console.log(`  ✗ [${stamp()}] ${t.rawName.slice(0, 26)} → ${e.message.slice(0, 70)}`);
       if (e.fatal) { console.log("⛔ 致命错误，停止（已完成条目完好，重跑续传）"); break; }
       if (/errno=2/.test(e.message)) {
         const q = await quota();
@@ -315,8 +289,12 @@ function parseLinkCell(text) {
   }
 
   // ─── 阶段⑤ EXPORT：问答 xlsx ───
-  const doneRows = tasks.filter((t) => t.phase === "done" && t.qaRow).map((t) => t.qaRow);
-  if (!doneRows.length) doneRows.push(...[...state.values()].filter((s) => s.status === "done" && s.qaRow).map((s) => s.qaRow));
+  // 导出**一律以 state.jsonl 里的全量历史为准**，不是只看本轮 `tasks`。
+  // 原因：`tasks` 上文已被过滤成"未完成"的条目（pendingTasks），里面**永远没有** phase==="done"，
+  // 所以"先从 tasks 里取、空了再回落到 state"这种写法实际上永远走回落分支 ——
+  // 它现在能用，但纯粹是靠巧合。一旦有人改动上面的 limit/过滤逻辑，导出就会被**静默截断**
+  // （只出本轮完成的，历史累积的问答全丢，而文件照样生成、没有报错）。
+  const doneRows = [...state.values()].filter((s) => s.status === "done" && s.qaRow).map((s) => s.qaRow);
   const chunk = 5000;
   const chunks = Math.ceil(doneRows.length / chunk);
   for (let c = 0; c < chunks; c += 1) {
@@ -337,13 +315,4 @@ function parseLinkCell(text) {
   console.log(`状态文件: ${stateFile}（重跑自动断点续传）`);
   await browser.close();
   process.exit(0);
-
-  // ---------- helpers ----------
-  function updateState(t, patch) {
-    const prev = state.get(t.srcLink) || {};
-    const entry = { srcLink: t.srcLink, name: t.rawName, status: patch.phase === "done" ? "done" : "pending", ...prev, ...patch, at: new Date().toISOString() };
-    state.set(t.srcLink, entry);
-    saveState(entry);
-  }
-  function logLine(m) { console.log(m); }
 })().catch((e) => { console.error("FATAL:", (e.message || "").slice(0, 180)); process.exit(1); });

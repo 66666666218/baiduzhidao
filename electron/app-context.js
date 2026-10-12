@@ -22,7 +22,7 @@ const { makePickQuestions } = require("./src/tasks/pick");
 const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
 const { INVOKE_CHANNELS } = require("./src/ipc-channels");
-const { describeUpdateError, describeError } = require("./src/errors");
+const { describeUpdateError, describeError, scrubUrl } = require("./src/errors");
 const { resolveNetdiskRoles } = require("./src/domain/account-topic");
 const { createAutoPipeline } = require("./src/workflows/auto-pipeline");
 const { AccountManager } = require("./src/browser/account-manager");
@@ -157,6 +157,13 @@ async function startTask(name, payload, runner) {
   // 放进 tasks.start 的异常里统一处理，会给"用户连点两次"这种启动拒绝也广播一次
   // status:"failed"，把仍在正常运行的上一个任务的进度条改成"失败"并重新启用按钮。
   tasks.assertIdle();
+  // 一键全自动**不在** TaskManager 里跑（它按阶段逐个调 startTask，自己只是编排），
+  // 所以 tasks.assertIdle() 看不见它 —— 阶段之间（尤其"抽题"那一步，它根本不是任务）
+  // this.current 是空的，此时用户手点「爬题」就会被放行，两条链同时跑、抢同一批浏览器
+  // 窗口和同一份台账。这里用编排自己的 running 标志补上这把锁。
+  if (autoPipeline && autoPipeline.isRunning()) {
+    throw new Error("一键全自动正在运行中，请先点「停止当前任务」或等它结束。");
+  }
   // 脚本类工具（scripts/*.js）会另起一个 Store 写同一份 JSON，两边各持内存缓存整份覆写。
   // 主程序这边只警告不拦停：拦在 GUI 上会让人以为软件坏了，脚本那边则直接拒绝启动。
   const foreignWriter = store.detectForeignWriter();
@@ -252,7 +259,19 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   // 任务控制
   ipcMain.handle("task:stop", () => {
     if (autoPipeline) autoPipeline.abort(); // 手动停止时一并中止一键全自动的后续阶段
-    return tasks.stop();
+    const result = tasks.stop();
+    // accepted=false = 此刻没有 TaskManager 任务在跑（典型：一键全自动正停在"抽题"或阶段之间）。
+    // 以前一律只回 {ok:true}，界面那句"已发送停止请求，等待任务退出..."就成了空头承诺 ——
+    // 用户不知道到底有没有东西被停掉，也不知道要等多久才解锁。
+    if (result && result.accepted) {
+      logger.log(`已请求停止「${result.taskName}」：任务会在下一个检查点自行退出；`
+        + `若 ${Math.round((result.graceMs || 0) / 1000)} 秒内没退出来，会自动释放任务锁（之后可正常操作）。`);
+    } else if (autoPipeline && autoPipeline.isRunning()) {
+      logger.log("已请求停止一键全自动：当前阶段结束后不再启动后续阶段。");
+    } else {
+      logger.log("当前没有正在运行的任务（停止请求已忽略）。");
+    }
+    return result;
   });
   ipcMain.handle("task:pause", () => tasks.pause());
   ipcMain.handle("task:resume", () => tasks.resume());
@@ -395,11 +414,17 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     }
     const quota = await manager.quota(account).catch(() => null);
     const accounts = manager.loadAccounts(dataDir).filter((a) => a.name !== name);
+    // 网盘查不到时也要记 quotaOk=false + 原因：界面据此显示「网盘未连接」，
+    // 而不是留空让人以为是"还没查过"。字段与 netdisk:accounts:refresh 保持一致。
     accounts.push({
       ...account,
       userName: String(login.userName || ""),
+      quotaOk: Boolean(quota && quota.valid),
       totalGB: quota && quota.valid ? quota.totalGB : null,
       freeGB: quota && quota.valid ? quota.freeGB : null,
+      quotaErrno: quota && quota.valid ? 0 : (quota && quota.errno !== undefined ? quota.errno : null),
+      quotaReason: quota && quota.valid ? "" : String((quota && quota.reason) || "未知原因"),
+      quotaAt: new Date().toISOString(),
     });
     manager.saveAccounts(dataDir, accounts);
     return { valid: true, userName: String(login.userName || ""), totalGB: quota ? quota.totalGB : null, freeGB: quota ? quota.freeGB : null, netdiskOk: Boolean(quota && quota.valid) };
@@ -498,6 +523,53 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     const acc = manager.loadAccounts(dataDir).find((a) => a.name === name);
     if (!acc) throw new Error("账号不存在");
     return manager.quota(acc);
+  });
+  /**
+   * 「刷新账号」必须**真的去网盘查一次**，而不是把本地存档再读一遍。
+   *
+   * 以前的 `netdisk:accounts:list` 只返回存档，而存档里的 `totalGB/freeGB`
+   * 是**添加账号那一刻**写进去的快照 —— 之后再没更新过。于是界面上的「总容量/剩余」
+   * 永远是几个月前的数字（用户看到的现象就是"显示不准"）；更糟的是网盘登录失效之后
+   * （errno=-6，实测三个号全中），旧数字还挂在界面上，一点提示都没有 ——
+   * 这属于"看着是最新的、其实是过期的"，比显示一个错数字更有害。
+   *
+   * 所以这里逐个账号真查一次 `/api/quota`，把**结果与原因一起**写回存档并返回：
+   *   · quotaOk=true  → 实时值；
+   *   · quotaOk=false → totalGB/freeGB 置空（不再拿旧值糊弄），并带上 quotaReason；
+   * 调用方（界面）据此显示「登录已失效」这类人话，而不是一个看着很像真的旧数字。
+   */
+  ipcMain.handle("netdisk:accounts:refresh", async () => {
+    const accounts = manager.loadAccounts(dataDir);
+    if (!accounts.length) return [];
+    const out = [];
+    for (const acc of accounts) {
+      // 网盘接口是**写敏感**的（限流按请求数算），这里串行且不加额外并发；
+      // 单个账号失败不能中断整批（一个号过期不该连累其它号查不到）。
+      const q = await manager.quota(acc).catch((e) => ({
+        valid: false,
+        name: acc.name,
+        errno: null,
+        reason: "查询失败：" + String((e && e.message) || e || "").slice(0, 80),
+      }));
+      // 查不到时 totalGB/freeGB 置空（不拿旧值糊弄），但**把上一次成功的值留成快照**：
+      // 容量不会剧烈变化，上次的值仍有参考价值 —— 关键是必须标清它是"上次的"，不能当实时值摆出来。
+      const wasOk = acc.quotaOk === true && acc.totalGB != null;
+      out.push({
+        ...acc,
+        quotaOk: Boolean(q.valid),
+        totalGB: q.valid ? q.totalGB : null,
+        freeGB: q.valid ? q.freeGB : null,
+        loginOk: q.valid ? true : Boolean(q.loginOk),
+        lastTotalGB: q.valid ? acc.totalGB : (acc.lastTotalGB != null ? acc.lastTotalGB : (wasOk ? acc.totalGB : null)),
+        lastFreeGB: q.valid ? acc.freeGB : (acc.lastFreeGB != null ? acc.lastFreeGB : (wasOk ? acc.freeGB : null)),
+        lastQuotaAt: q.valid ? acc.quotaAt : (acc.lastQuotaAt || (wasOk ? acc.quotaAt : null)),
+        quotaErrno: q.valid ? 0 : (q.errno === undefined ? null : q.errno),
+        quotaReason: q.valid ? "" : String(q.reason || "未知原因"),
+        quotaAt: new Date().toISOString(),
+      });
+    }
+    manager.saveAccounts(dataDir, out);
+    return out;
   });
   ipcMain.handle("netdisk:list", async (_e, p) => {
     const name = String(p && p.name || "");
@@ -722,10 +794,15 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   // AI 用量
   ipcMain.handle("ai:usage", () => store.getUsage());
 
-  // 软件更新（GitHub Releases；仅打包版可用，开发模式直接拒绝）
+  // 软件更新（仅打包版可用，开发模式直接拒绝）
   // 下载有 20%~100% 节流日志；下载完成后退出软件即自动安装（也可在界面点「重启并安装」）。
-  // 国内直连 GitHub 不稳定，失败时日志会给出发布页链接，可用浏览器手动下载兜底。
-  const RELEASES_URL = "https://github.com/66666666218/baiduzhidao/releases/latest";
+  // ⚠️ **日志与界面一律不出现仓库地址**：electron-updater 的原始报错里带着完整的发布页 URL，
+  // 以前直接把 `e.message` 打进日志（还有一句"用浏览器打开发布页 <URL>"），等于把仓库地址
+  // 逐字印给用户看。现在：① 所有要进日志的文本先过 `errors.scrubUrl`；
+  // ② 界面上「打开发布页」按钮和 `update:info.releasesUrl` 字段都移除（按钮还在但字段没了的话，
+  // 点一下就是打开空链接 + 渲染端 `$("openReleases")` 取到 null 直接抛错）。
+  // 需要自动更新能工作时，仓库名仍然只在包内的 `resources/app-update.yml` 里（那是更新源配置，
+  // 不是日志）—— 想连这个也不留，就得把在线更新整条关掉。
   let updateReady = false; // 新版已下载完成
   let updateAvailable = ""; // 已知有新版的版本号（尚未下载）
   let wantDownload = false; // 本次检查是否顺带下载
@@ -761,8 +838,8 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       emit("task:log", `✅ 新版本 v${info.version} 下载完成。重启软件即自动安装；也可在「使用教程 → 软件更新」点「重启并安装新版」立即完成。`);
     });
     autoUpdater.on("error", (e) => {
-      emit("task:log", `⚠️ 更新失败：${e.message}`);
-      emit("task:log", `可改用手动更新：浏览器打开发布页 ${RELEASES_URL} 下载最新安装包直接安装（答题数据不受影响）。`);
+      emit("task:log", `⚠️ 更新失败：${describeUpdateError(e)}`);
+      emit("task:log", `可改用手动更新：拿到最新安装包直接覆盖安装即可（答题数据不受影响）。`);
     });
   } catch (e) {
     logger.log(`更新模块初始化失败（不影响其他功能）：${e.message}`);
@@ -798,7 +875,8 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     supported: Boolean(app.isPackaged),
     ready: updateReady, // 新版是否已下载好（界面据此启用「重启并安装新版」）
     available: updateAvailable, // 有新版但还没下载时的版本号（界面据此显示顶部提示）
-    releasesUrl: RELEASES_URL,
+    // 以前这里还返回 `releasesUrl`（仓库发布页地址），渲染端靠它开浏览器 —— 已移除，
+    // 连按钮一起删（见上面那段说明）：留着字段就是"地址还在包里，只是不显示"。
   }));
 
   // 启动静默检查：只查不下载，有新版就在界面顶部提示，由用户决定要不要下。
@@ -806,11 +884,15 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   // 开发模式（app.isPackaged=false）会直接抛错被吞掉，不会发请求。
   setTimeout(() => {
     checkForUpdates({ download: false }).catch((e) => {
-      // 只说"失败"没用：这一条最常见的两种成因是「线上根本没发布过」和「国内连不上 GitHub」，
+      // 只说"失败"没用：这一条最常见的两种成因是「线上根本没发布过」和「连不上更新服务器」，
       // 两者要处理的事完全不同。原始错误串（如 HttpError 404）用户看不懂，所以补一句人话。
-      const raw = String((e && e.message) || e).slice(0, 120);
-      emit("task:log", `启动检查更新失败（不影响使用）：${describeUpdateError(raw)}。原始错误：${raw}`);
-      emit("task:log", `可稍后在「使用教程 → 软件更新」手动重试，或用浏览器打开发布页 ${RELEASES_URL} 手动下载。`);
+      // ⚠️ 原始串**不能原样打出来**：里面带着发布页地址（见上面 `scrubUrl` 的说明），
+      // 以前这里还有一句 `原始错误：${raw}`，等于把地址又印了一遍。现在只留抹过地址的摘要。
+      const raw = String((e && e.message) || e);
+      const brief = scrubUrl(String(raw)).slice(0, 120);
+      emit("task:log", `启动检查更新失败（不影响使用）：${describeUpdateError(raw)}`);
+      if (brief) emit("task:log", `  原因摘要：${brief}`);
+      emit("task:log", `可稍后在「使用教程 → 软件更新」手动重试；或拿到最新安装包直接覆盖安装（答题数据不受影响）。`);
     });
   }, 20000).unref?.();
 

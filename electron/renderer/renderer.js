@@ -329,15 +329,9 @@ $("installUpdate").addEventListener("click", async () => {
   }
 });
 
-$("openReleases").addEventListener("click", async () => {
-  try {
-    const info = await rpc.invoke("update:info");
-    // link:open 的 handler 接收纯字符串 URL（不是对象）
-    await rpc.invoke("link:open", String(info.releasesUrl || ""));
-  } catch (error) {
-    appendLog(`打开发布页失败：${error.message}`);
-  }
-});
+// 「打开发布页」入口已整体移除（按钮在 index.html 里也删了）：它打开的正是仓库发布页地址。
+// 这里必须同步删掉监听器 —— 只删按钮的话，`$("openReleases")` 取到 null，
+// `.addEventListener` 会直接抛 TypeError，整个渲染端初始化就崩了（而且是在用户看得到的地方）。
 
 $("refreshStats").addEventListener("click", refreshBankStats);
 
@@ -430,6 +424,8 @@ $("startSubmit").addEventListener("click", async () => {
 });
 
 // 按题材搜资源：纯协议搜百度知道，产出自动填入「资源表格」，接着就能转存
+// **这一段只做采集**：先把资源全部收成一张表（不够会自动加码补足），
+// 转存+生成那是「开始批量转存」的事 —— 两个动作分开跑，各自都能单独重来。
 $("startSearchResources").addEventListener("click", async () => {
   if (!await saveSettingsQuiet()) return;
   const settings = await rpc.invoke("settings:get");
@@ -437,11 +433,18 @@ $("startSearchResources").addEventListener("click", async () => {
     appendLog("还没有账号绑定题材：请到设置页「账号题材绑定」按「账号=题材」填好（题材名要与搜索词里的题材名一致）。");
     return;
   }
+  const target = Number($("searchTargetCount").value) || 0;
   try {
-    const result = await rpc.invoke("task:search-resources", { pages: Number(settings.searchPages) || 1 });
+    appendLog(target ? `开始采集（目标 ${target} 条，不够会自动加码补足）…` : "开始采集（未设目标条数，采到多少算多少）…");
+    const result = await rpc.invoke("task:search-resources", {
+      pages: Number(settings.searchPages) || 1,
+      targetCount: target,
+      searchConcurrency: Number($("searchConcurrency").value) || 2,
+    });
     if (result && result.outputPath) {
       $("batchExcelPath").value = result.outputPath; // 自动衔接「资源表格」
-      appendLog(`搜资源完成：${result.count} 条，已自动填入「资源表格」：${result.outputPath}`);
+      appendLog(`搜资源完成：${result.count} 条${target ? `（目标 ${target} 条${result.targetReached ? "已达成" : "未达成，请增加搜索词或答主主页"}）` : ""}，已自动填入「资源表格」：${result.outputPath}`);
+      appendLog("→ 下一步点「开始批量转存」：一次性转存这批资源并生成上传专用表。");
     }
   } catch (error) {
     appendLog(`搜资源失败：${error.message}`);
@@ -487,13 +490,15 @@ $("startBatchTransfer").addEventListener("click", async () => {
   const bitEnvs = $("batchBitEnvs").value.split(/\r?\n|[,，]/).map((x) => x.trim()).filter(Boolean);
   if (!bitEnvs.length) { appendLog("请填写至少一个比特环境名（多账号每行一个）。"); return; }
   try {
-    appendLog(`批量转存启动：环境 ${bitEnvs.join("、")}，目标目录 ${$("batchDestDir").value || "/来自资源批量转存"}`);
+    appendLog(`批量转存启动：环境 ${bitEnvs.join("、")}，并发 ${ Number($("batchCc").value) || 0 ? Number($("batchCc").value) : "自动" }，目标目录 ${$("batchDestDir").value || "/来自资源批量转存"}`);
     const result = await rpc.invoke("task:batch-transfer", {
       filePath,
       bitEnvs,
       perEnv: Number($("batchPerEnv").value) || 50,
       destDir: $("batchDestDir").value.trim() || "/来自资源批量转存",
       limit: Number($("batchLimit").value) || 0,
+      // 0=自动：给每个账号配了互不相同的代理、且账号数≥2 时才并行（一线程一账号）
+      cc: Number($("batchCc").value) || 0,
       outName: $("batchOutName").value.trim(),
     });
     appendLog(`批量转存结束：本轮成功 ${result.count} 条，失败 ${result.failed} 条，历史累计 ${result.totalOk} 条。`);
@@ -525,13 +530,56 @@ $("revealUploadExcel").addEventListener("click", async () => {
   await rpc.invoke("file:reveal", { filePath });
 });
 
+/**
+ * 「批量上传」页账号框是所有上传动作的**唯一入口**。
+ *
+ * 以前「按题材分账号上传」压根不读这个框，直接用 `settings.bitEnvs`（设置页的全量账号）——
+ * 用户在框里只填了「账号2」，点下去账号1、账号2 全被传了一遍，日志里还看不出来。
+ * 现在这页的三个按钮（批量上传 / 按题材上传 / 查收录）统一从这里取。
+ */
+function readUploadEnvs() {
+  return uniqueStrings($("uploadBitEnv").value.split(/\r?\n|[,，]/).map((s) => s.trim()).filter(Boolean));
+}
+
+function uniqueStrings(list) {
+  return Array.from(new Set(Array.isArray(list) ? list : []));
+}
+
+/** 设置里的比特环境名（对象是 {label} 形式，界面上要的是裸字符串） */
+function settingEnvLabels(settings, key) {
+  return uniqueStrings((settings[key] || []).map((env) => (env && env.label) || env).filter(Boolean));
+}
+
+/**
+ * 取本次参与上传的账号。返回 { envs, source } —— source 用于把"这批账号是怎么来的"
+ * 摆到用户面前：**不知道账号列表从哪来，就不可能知道为什么多传了一个号**。
+ */
+function resolveUploadEnvs(settings) {
+  const ui = readUploadEnvs();
+  if (ui.length) return { envs: ui, source: "ui" };
+  return { envs: settingEnvLabels(settings, "bitEnvs"), source: "settings" };
+}
+
+/** 框里写了设置页没有的账号名 —— 多半是笔误，上传时才会报"未登录"，先说一声 */
+function warnUnknownEnvs(settings, envs) {
+  const known = settingEnvLabels(settings, "bitEnvs");
+  if (!known.length) return;
+  const unknown = envs.filter((env) => !known.includes(env));
+  if (unknown.length) appendLog(`⚠️ 这些账号不在设置页的账号列表里：${unknown.join("、")}（名字要与设置页一字不差，否则会报「未登录」）`);
+}
+
 $("startBatchUpload").addEventListener("click", async () => {
   if (!await saveSettingsQuiet()) return;
   const filePath = $("uploadExcelPath").value;
   if (!filePath) { appendLog("请先选择上传专用表。"); return; }
-  const bitEnv = $("uploadBitEnv").value.trim();
-  if (!bitEnv) { appendLog("请填写用于上传的比特环境名。"); return; }
+  const envs = readUploadEnvs();
+  if (!envs.length) { appendLog("请先填写上传账号（每行一个；「开始批量上传」只取第一行）。"); return; }
+  const bitEnv = envs[0];
+  if (envs.length > 1) {
+    appendLog(`本次只用框里的第一个账号「${bitEnv}」上传；要让多个账号各传自己题材，请点「按题材分账号上传」。`);
+  }
   const settings = await rpc.invoke("settings:get");
+  warnUnknownEnvs(settings, [bitEnv]);
   try {
     const result = await rpc.invoke("task:batch-upload", {
       filePath,
@@ -555,8 +603,9 @@ $("startBatchUpload").addEventListener("click", async () => {
 $("checkPublished").addEventListener("click", async () => {
   if (!await saveSettingsQuiet()) return;
   const settings = await rpc.invoke("settings:get");
-  const bitEnvs = settings.bitEnvs || [];
-  if (!bitEnvs.length) { appendLog("请先在设置页填写比特环境账号。"); return; }
+  // 与上传按钮同一入口：查的就是"刚才那批负责上传的号"，不用再到设置页确认一遍
+  const { envs: bitEnvs } = resolveUploadEnvs(settings);
+  if (!bitEnvs.length) { appendLog("请先在本页「上传账号」框或设置页填写比特环境账号。"); return; }
   try {
     const result = await rpc.invoke("task:check-published", { bitEnvs });
     for (const account of result.accounts || []) {
@@ -577,8 +626,15 @@ $("startTopicUpload").addEventListener("click", async () => {
   const filePath = $("uploadExcelPath").value;
   if (!filePath) { appendLog("请先选择上传专用表。"); return; }
   const settings = await rpc.invoke("settings:get");
-  const bitEnvs = settings.bitEnvs || [];
-  if (!bitEnvs.length) { appendLog("请先在设置页填写比特环境账号。"); return; }
+  const { envs: bitEnvs, source } = resolveUploadEnvs(settings);
+  if (!bitEnvs.length) { appendLog("请先在设置页填写比特环境账号，或在本页「上传账号」框里填（每行一个）。"); return; }
+  if (source === "settings") {
+    appendLog(`⚠️ 「上传账号」框是空的，本次回落到设置页的全部账号（${bitEnvs.length} 个）：${bitEnvs.join("、")}`
+      + " —— 只想让某几个号传，就把框里没用的行删掉。");
+  } else {
+    appendLog(`本次参与上传的账号（${bitEnvs.length} 个）：${bitEnvs.join("、")}`);
+  }
+  warnUnknownEnvs(settings, bitEnvs);
   if (!Object.keys(settings.accountTopics || {}).length) {
     appendLog("还没有账号绑定题材：请到设置页「账号题材绑定」按「账号=题材」填好（题材名要与分类规则里的分类名一致）。");
     return;
@@ -838,8 +894,17 @@ $("maskLog").addEventListener("change", async () => {
 });
 
 $("stopTask").addEventListener("click", async () => {
-  if (!await call("停止任务", "task:stop")) return;
-  appendLog("已发送停止请求，等待任务退出...");
+  const result = await call("停止任务", "task:stop");
+  if (!result) return;
+  // accepted=false 表示此刻没有 TaskManager 任务在跑（一键全自动停在"抽题"或阶段之间时如此）。
+  // 不区分的话界面只会说"等待任务退出"，而其实没有任何东西在退出 ——
+  // 用户会一直等，然后认为软件卡住了。
+  if (result.accepted) {
+    appendLog(`已请求停止「${result.taskName || "当前任务"}」，它会在下一个检查点退出；`
+      + `若 ${Math.round((result.graceMs || 0) / 1000)} 秒后仍未退出，会自动释放任务锁，之后可正常操作。`);
+  } else {
+    appendLog("已请求停止（当前没有正在运行的任务；若为「一键全自动」，后续阶段不会再启动）。");
+  }
 });
 
 // ---------- 主进程事件 ----------
@@ -874,6 +939,9 @@ async function saveSettingsQuiet() {
   patch.accountConcurrency = Number($("accountConcurrency").value) || 1; // 账号并发（1=顺序）
   patch.searchKeywords = $("searchKeywords").value; // 搜资源：按题材的搜索词
   patch.searchPages = Number($("searchPages").value) || 1;
+  // 采资源的目标条数与并发（0 份目标 = 采到多少算多少）
+  patch.searchTargetCount = Number($("searchTargetCount").value) || 0;
+  patch.searchConcurrency = Math.min(5, Math.max(1, Number($("searchConcurrency").value) || 2));
   patch.category = $("category").value;
   patch.timeoutMs = Number($("timeoutMs").value) || undefined;
   patch.verifyWaitSeconds = Number($("verifyWaitSeconds").value) || 0;
@@ -896,6 +964,12 @@ async function saveSettingsQuiet() {
   patch.aiModel = $("aiModel").value;
   patch.aiConcurrency = Number($("aiConcurrency").value) || 1;
   patch.aiDailyTokenBudget = Number($("aiDailyTokenBudget").value) || 0;
+  // 回答最大 tokens / 温度：后端（app-context 的 llm.setConfig）早就接好了，只是界面一直没入口 ——
+  // 于是这两个值恒为默认（520 / 0.7），用户想「回答更长一点」「更发散一点」根本无处可改。
+  // 温度 0 是**合法值**（确定性输出），不能被 `|| 0.7` 吃掉；只有输入框为空才回落默认。
+  patch.aiMaxTokens = Number($("aiMaxTokens").value) || 520;
+  const tempRaw = $("aiTemperature").value;
+  patch.aiTemperature = String(tempRaw).trim() === "" ? 0.7 : Number(tempRaw);
   patch.submitLimit = Number($("submitLimit").value) || 0;
   patch.accountDailyLimit = Number($("accountDailyLimit").value) || 0;
   return Boolean(await call("保存设置", "settings:save", patch));
@@ -916,12 +990,20 @@ async function loadSettings() {
   if ($("autoRunMode")) updateRunModeHint();
   $("autoTransferEnvs").value = (settings.transferEnvs || []).map((env) => env.label || env).join("\n");
   $("autoUploadEnvs").value = (settings.uploadEnvs || []).map((env) => env.label || env).join("\n");
+  // 「批量上传」页的账号框：**所见即所传**。启动时回填成真正会被用来上传的那批号
+  //（网盘链上传账号优先，否则全部账号），想去掉哪个号直接删那一行 ——
+  // 以前这里永远是空的、而后端静默回落全量账号，用户填了账号2 却被传了账号1+账号2。
+  $("uploadBitEnv").value = (settingEnvLabels(settings, "uploadEnvs").length
+    ? settingEnvLabels(settings, "uploadEnvs")
+    : settingEnvLabels(settings, "bitEnvs")).join("\n");
   $("accountTopics").value = Object.entries(settings.accountTopics || {}).map(([account, topic]) => `${account}=${topic}`).join("\n");
   $("linkRouting").value = settings.linkRouting || "strict";
   if ($("skipReviewAnswers")) $("skipReviewAnswers").checked = settings.skipReviewAnswers === true;
   $("topicRules").value = settings.topicRules || "";
   $("searchKeywords").value = settings.searchKeywords || "";
   $("searchPages").value = settings.searchPages || 1;
+  $("searchTargetCount").value = Number(settings.searchTargetCount) || 0;
+  $("searchConcurrency").value = Math.min(5, Math.max(1, Number(settings.searchConcurrency) || 2));
   $("category").value = settings.category || "情感类";
   $("timeoutMs").value = settings.timeoutMs;
   $("verifyWaitSeconds").value = settings.verifyWaitSeconds;
@@ -941,6 +1023,9 @@ async function loadSettings() {
   $("aiModel").value = settings.aiModel || "";
   $("aiConcurrency").value = settings.aiConcurrency || 2;
   $("aiDailyTokenBudget").value = settings.aiDailyTokenBudget || 0;
+  $("aiMaxTokens").value = settings.aiMaxTokens || 520;
+  // 温度用 ?? 而不是 ||：温度 0 是合法值，`0 || 0.7` 会把它显示成 0.7（用户改回 0 却看着像没存上）
+  $("aiTemperature").value = settings.aiTemperature ?? 0.7;
   $("submitLimit").value = settings.submitLimit || 0;
   $("accountDailyLimit").value = settings.accountDailyLimit || 10;
   // 同一个设置的第二个入口（「一键全自动」页）。保存时只从上面那一个读，
@@ -994,7 +1079,10 @@ function appendLog(text) {
   if (atBottom) view.scrollTop = view.scrollHeight;
 }
 
-const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "startBatchUpload", "startSearchResources", "checkPublished", "refreshAccountOverview", "refreshLocalAccounts", "fetchPassed", "runSelfTest"];
+// 「开始一键全自动」也在列：它和下面这些按钮是同一把锁（TaskManager 单任务互斥）。
+// 以前它不在列里，于是全自动跑到一半时这个按钮还是亮的，连点第二次只会换来一句
+// "一键全自动正在运行中"的报错 —— 把"正在跑"这件事做成按钮灰掉，比让它报错好。
+const ACTION_BUTTON_IDS = ["startCrawl", "randomPick", "startGenerate", "startSubmit", "startBatchTransfer", "startBatchUpload", "startSearchResources", "checkPublished", "refreshAccountOverview", "refreshLocalAccounts", "fetchPassed", "runSelfTest", "startAutoPipeline"];
 
 function setActionsEnabled(enabled) {
   for (const id of ACTION_BUTTON_IDS) {

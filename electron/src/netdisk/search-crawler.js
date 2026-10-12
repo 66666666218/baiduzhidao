@@ -159,6 +159,21 @@ function buildTopicSearchTerms(topics, keywordRules) {
 
 /**
  * 搜索采集主入口。
+ *
+ * 【为什么支持并发】原来是「关键词 → 逐页」严格串行，每个关键词每个页数都要等
+ * `pageDelayMs`（默认 1.5 秒）。3 个题材 × 2 个词 × 2 页 = 12 个请求 = 18 秒纯等待，
+ * 而每一个请求本身只花几百毫秒 —— **时间几乎全花在等，不在干活**。
+ * 但注意：并发打的是**百度知道的搜索页**（读接口，与网盘那条写接口不是一回事），
+ * 网盘转存那条路的并发降级不适用于这里。
+ *
+ * 【为什么能安全降级】`detectBlockedPage` 已经在判异常页。一旦真的撞上，
+ * 立刻把并发降回 1（只留第一个 worker 继续），而不是整批废掉 ——
+ * 宁可变慢也不白跑，这条原则与转存那条路一致。
+ *
+ * 【结果为什么仍然稳定】并行会让 push 顺序变成运气。这里按「先并行跑完、
+ * 再按关键词顺序摊平」的方式汇总，`["叶问","叶问2"]` 两个词无论谁先返回，
+ * 输出顺序都一样 —— 否则同样的输入两次跑出两份不同的表，去重/断点全跟着飘。
+ *
  * @returns {{rows:Array, stats:object}} rows: { name, link, pwd, questionUrl, source }
  */
 async function crawlSearchResources({
@@ -170,32 +185,72 @@ async function crawlSearchResources({
   shouldStop,
   fetchImpl = defaultFetch,
   pageDelayMs = 1500,
+  concurrency = 1,
+  pageStart = 0,
 } = {}) {
   const list = (Array.isArray(keywords) ? keywords : []).map((k) => String(k || "").trim()).filter(Boolean);
   if (!list.length) throw new Error("请填写至少一个搜索关键词");
-  const pageCount = Math.max(1, Number(pages) || 1);
+  const pageEnd = Math.max(1, Number(pages) || 1);
+  // 「从第几页开始」是**补足**用的：第一轮已经抓过第 0~2 页，加码时只抓第 3 页往后，
+  // 不重复请求已经看过的那些页。手上正翻着 4 页还嫌不够，再去重抓前几页纯属浪费。
+  const pageFrom = Math.min(Math.max(0, Number(pageStart) || 0), Math.max(0, pageEnd - 1));
 
-  const rows = [];
   const seenLinks = new Set();
   const homepages = new Set();   // 搜索结果里顺带收集到的答主主页（零额外请求）
   const stats = { keywords: list.length, pagesFetched: 0, failed: 0, results: 0, truncated: 0, linked: 0 };
   // 进度以「关键词 × 页」为单位上报。没有这个，搜资源阶段在界面上是完全静默的：
   // 既看不出在动，暂停/停止按钮也一直不启用。
-  const totalUnits = list.length * pageCount;
+  const totalUnits = list.length * Math.max(0, pageEnd - pageFrom);
   let doneUnits = 0;
-  const report = () => onProgress?.({ done: doneUnits, total: totalUnits, produced: rows.length });
+  const report = () => onProgress?.({ done: doneUnits, total: totalUnits, produced: rowsCount() });
+
+  // 每个关键词一份结果；汇总时按关键词顺序摊平，保证输出顺序与耗时无关
+  const perKeyword = list.map(() => []);
+  let produced = 0;
+  const rowsCount = () => produced;
+  /** 把一条链接收进来（返回是否新增） */
+  const tryPush = (bucket, row) => {
+    if (seenLinks.has(row.link)) return false;
+    seenLinks.add(row.link);
+    bucket.push(row);
+    produced += 1;
+    return true;
+  };
+
+  // 任务队列：扁平化成「关键词 × 页」的一个个小任务，worker 从里面抢。
+  // 扁平化的好处是并发粒度落在"最细的那层"上，某个关键词某页卡住不会拖住整批。
+  const jobs = [];
+  for (let ki = 0; ki < list.length; ki += 1) {
+    for (let pageIndex = pageFrom; pageIndex < pageEnd; pageIndex += 1) {
+      jobs.push({ ki, keyword: list[ki], pageIndex });
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(Math.floor(Number(concurrency) || 1) || 1, jobs.length || 1));
+  // 降级开关：任何一个 worker 撞到异常页就置 true，之后只有 worker 0 继续干活。
+  // 这样"加压 → 被拦 → 自动退回串行"是自愈的，不需要用户回来重跑。
+  let degraded = false;
+  let cursor = 0;
 
   report();
-  for (const keyword of list) {
-    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
-      if (shouldStop && shouldStop()) break;
-      if (limit && rows.length >= limit) break;
+  const takeJob = () => (cursor < jobs.length ? jobs[cursor++] : null);
+
+  async function worker(slot) {
+    while (true) {
+      if (shouldStop && shouldStop()) return;
+      if (limit && produced >= limit) return;
+      // 被降级了：只有 0 号 worker 继续，其它退出（等效于立刻回到串行）
+      if (degraded && slot > 0) return;
+      const job = takeJob();
+      if (!job) return;
+
+      const bucket = perKeyword[job.ki];
       let html;
       try {
-        html = await fetchImpl(buildSearchUrl(keyword, pageIndex), { referer: `${PAN_HOST}/` });
+        html = await fetchImpl(buildSearchUrl(job.keyword, job.pageIndex), { referer: `${PAN_HOST}/` });
       } catch (e) {
         stats.failed += 1;
-        onLog(`⚠️ 搜索失败（跳过）：${keyword} 第 ${pageIndex + 1} 页 — ${e.message}`);
+        onLog(`⚠️ 搜索失败（跳过）：${job.keyword} 第 ${job.pageIndex + 1} 页 — ${e.message}`);
         doneUnits += 1;
         report();
         continue;
@@ -205,7 +260,11 @@ async function crawlSearchResources({
       const blocked = detectBlockedPage(html);
       if (blocked) {
         stats.failed += 1;
-        onLog(`⚠️ 搜索返回异常页（${blocked}）：${keyword} 第 ${pageIndex + 1} 页`);
+        onLog(`⚠️ 搜索返回异常页（${blocked}）：${job.keyword} 第 ${job.pageIndex + 1} 页`);
+        if (!degraded && workerCount > 1) {
+          degraded = true;
+          onLog(`　→ 已自动把并发降到 1（其余线程退出），剩下的继续跑完，不用手工重来。`);
+        }
         continue;
       }
 
@@ -213,37 +272,43 @@ async function crawlSearchResources({
       for (const hp of extractAuthorHomepages(html)) homepages.add(hp);
       const results = parseSearchResults(html);
       stats.results += results.length;
-      if (!results.length) onLog(`该页没解析到结果：${keyword} 第 ${pageIndex + 1} 页`);
+      if (!results.length) onLog(`该页没解析到结果：${job.keyword} 第 ${job.pageIndex + 1} 页`);
 
       for (const item of results) {
-        if (limit && rows.length >= limit) break;
+        if (limit && produced >= limit) break;
         const { usable, truncated } = splitByShareCode(extractPanLinks(`${item.title}\n${item.snippet}`));
         stats.truncated += truncated;
         for (const { link, pwd, pwdMissing } of usable) {
-          if (seenLinks.has(link)) continue;
-          seenLinks.add(link);
           // 把"提到了码但没解析出来"这件事一路带下去：只在本行失败时留个记号，
           // 结果是"搜完就报一次总数"，用户能提前回表补码，而不是转存时才一条条撞。
           if (pwdMissing) stats.pwdMissing = (stats.pwdMissing || 0) + 1;
-          rows.push({ name: item.title, link, pwd, pwdMissing: Boolean(pwdMissing), questionUrl: item.questionUrl, source: `搜索:${keyword}` });
-          stats.linked += 1;
+          // 「搜到的链接数」只数**去重后真正入库的**，重复链接不该算进产出
+          if (tryPush(bucket, { name: item.title, link, pwd, pwdMissing: Boolean(pwdMissing), questionUrl: item.questionUrl, source: `搜索:${job.keyword}` })) {
+            stats.linked += 1;
+          }
         }
       }
       await sleep(pageDelayMs);
       doneUnits += 1;
       report();
     }
-    if (limit && rows.length >= limit) break;
   }
+
+  await Promise.all(Array.from({ length: workerCount }, (_, slot) => worker(slot)));
+
+  // 按关键词顺序摊平（并行汇总 → 顺序摊平），保证输出与耗时无关
+  const rows = [];
+  for (const bucket of perKeyword) rows.push(...bucket);
+  const finalRows = limit > 0 ? rows.slice(0, limit) : rows;
 
   if (stats.truncated) {
     onLog(`⚠️ 丢弃 ${stats.truncated} 条被摘要截断的残缺链接（分享码不足 ${MIN_SHARE_CODE} 位，转存必然失败）`);
   }
-  if (!rows.length) {
-    if (shouldStop && shouldStop()) return { rows, stats, homepages: Array.from(homepages), stopped: true };
+  if (!finalRows.length) {
+    if (shouldStop && shouldStop()) return { rows: finalRows, stats, homepages: Array.from(homepages), stopped: true };
     throw new Error("这些关键词没有搜到带网盘链接的结果（可换关键词或增加页数）");
   }
-  return { rows, stats, homepages: Array.from(homepages) };
+  return { rows: finalRows, stats, homepages: Array.from(homepages) };
 }
 
 /**

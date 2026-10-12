@@ -10,23 +10,69 @@
   function esc(s) { return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
   function sz(n) { return n > 1073741824 ? (n / 1073741824).toFixed(1) + " GB" : n > 1048576 ? (n / 1048576).toFixed(0) + " MB" : (n / 1024).toFixed(0) + " KB"; }
 
+  // ⚠️ 容量显示的三种状态必须分开，不能一律塞个数字：
+  //   ok      —— 刚查回来的实时值；
+  //   查得到原因 —— 「网盘登录已失效」这类人话（**不能**退回显示旧数字，那会让人以为是最新的）；
+  //   还没查过 —— 「未刷新」，同理不显示存档里的旧值。
+  // 以前这里写的是 `a.totalGB || "-"`：既把 0 显示成 "-"，又把几个月前的旧值当成实时值摆出来。
+  function quotaCells(a) {
+    if (a.quotaOk === true && a.totalGB != null) {
+      return { total: a.totalGB + " GB", free: (a.freeGB == null ? "—" : a.freeGB + " GB"), title: "更新于 " + String(a.quotaAt || "").slice(0, 16).replace("T", " ") };
+    }
+    if (a.quotaReason) {
+      // 上一次成功的值当**快照**附在后面（明确标注日期），不能混进"当前"那两列
+      var snap = a.lastTotalGB != null ? "（上次 " + a.lastTotalGB + " GB · " + String(a.lastQuotaAt || "").slice(5, 10) + "）" : "";
+      return { total: "—", free: esc(a.quotaReason) + snap, title: "最近一次查询：" + esc(a.quotaReason) };
+    }
+    return { total: "—", free: "未刷新（点「刷新账号」）", title: "存档里的旧值已不再显示，点刷新取实时容量" };
+  }
+
+  function renderAccounts(list) {
+    var body = document.getElementById("nmAccountsBody");
+    body.innerHTML = "";
+    var sel = document.getElementById("nmSelectAccount");
+    sel.innerHTML = "";
+    (list || []).forEach(function (a) {
+      var c = quotaCells(a);
+      var tr = document.createElement("tr");
+      tr.innerHTML = "<td>" + esc(a.name) + "</td><td title='" + c.title + "'>" + c.total + "</td><td title='" + c.title + "'>" + c.free + "</td><td><button class='btn danger outline nm-del' data-name='" + esc(a.name) + "'>删除</button></td>";
+      body.appendChild(tr);
+      var opt = document.createElement("option");
+      opt.value = a.name;
+      opt.text = a.name;
+      sel.appendChild(opt);
+    });
+  }
+
   async function loadAccounts() {
     try {
       var list = await rpc.invoke("netdisk:accounts:list");
-      var body = document.getElementById("nmAccountsBody");
-      body.innerHTML = "";
-      var sel = document.getElementById("nmSelectAccount");
-      sel.innerHTML = "";
-      list.forEach(function (a) {
-        var tr = document.createElement("tr");
-        tr.innerHTML = "<td>" + esc(a.name) + "</td><td>" + (a.totalGB || "-") + " GB</td><td>" + (a.freeGB != null ? a.freeGB + " GB" : "-") + "</td><td><button class='btn danger outline nm-del' data-name='" + esc(a.name) + "'>删除</button></td>";
-        body.appendChild(tr);
-        var opt = document.createElement("option");
-        opt.value = a.name;
-        opt.text = a.name;
-        sel.appendChild(opt);
-      });
+      renderAccounts(list);
     } catch (e) { appendLog("账号加载失败：" + e.message); }
+  }
+
+  // 「刷新」必须真的去网盘查一次（netdisk:accounts:refresh），不是把本地存档再读一遍。
+  // 返回值里带着每个号的成功/失败原因，失败的号**要点名**（静默失败是本项目最高频的坑：
+  // 用户会以为"刷新过了、数字就是最新的"，而其实那号早就登不上网盘了）。
+  async function refreshAccounts(silent) {
+    var btn = document.getElementById("nmRefreshAccounts");
+    var oldText = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "刷新中…"; }
+    try {
+      var list = await rpc.invoke("netdisk:accounts:refresh");
+      renderAccounts(list);
+      var bad = (list || []).filter(function (a) { return a.quotaOk !== true; });
+      if (bad.length) {
+        appendLog("⚠️ 刷新完成，但 " + bad.length + " 个账号查不到网盘容量：" + bad.map(function (a) { return a.name + "（" + a.quotaReason + "）"; }).join("、")
+          + "。这些号只影响转存，答题链不受影响。");
+      } else if (!silent) {
+        appendLog("✅ 已刷新 " + (list || []).length + " 个账号的网盘容量（实时值）。");
+      }
+    } catch (e) {
+      appendLog("刷新网盘容量失败：" + e.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = oldText || "刷新账号"; }
+    }
   }
 
   async function browse(dirPath) {
@@ -45,7 +91,10 @@
         body.appendChild(tr);
       });
       var q = await rpc.invoke("netdisk:accounts:check", { name: nmAccount }).catch(function () { return null; });
-      if (q && q.valid) document.getElementById("nmQuota").textContent = "总 " + q.totalGB + " GB | 剩余 " + q.freeGB + " GB";
+      // 查不到就**说原因**，别留着上一次的旧文本（那会让人以为是最新的）
+      document.getElementById("nmQuota").textContent = q && q.valid
+        ? "总 " + q.totalGB + " GB | 剩余 " + q.freeGB + " GB"
+        : "查不到容量：" + ((q && q.reason) || "未知原因");
     } catch (e) { appendLog("浏览失败：" + e.message); }
   }
 
@@ -91,7 +140,9 @@
     if (!name) name = "账号" + new Date().toISOString().slice(5, 16).replace(/[-:T]/g, "");
     try {
       var q = await rpc.invoke("netdisk:accounts:add", { name: name, bduss: creds.bduss, stoken: creds.stoken });
-      appendLog("✅ " + name + " 添加成功（总 " + q.totalGB + " GB | 剩余 " + q.freeGB + " GB）");
+      // netdiskOk=false 时 totalGB/freeGB 是 null —— 以前这里照样拼成「总 null GB | 剩余 null GB」
+      appendLog("✅ " + name + " 添加成功"
+        + (q && q.netdiskOk ? "（网盘总 " + q.totalGB + " GB | 剩余 " + q.freeGB + " GB）" : "（网盘未连接，只影响转存；答题链可用）"));
       document.getElementById("nmCookie").value = "";
       loadAccounts();
     } catch (e) { appendLog("添加账号失败：" + e.message); }
@@ -184,7 +235,9 @@
     } catch (e) { appendLog("登录提取失败：" + e.message); }
   });
 
-  document.getElementById("nmRefreshAccounts").addEventListener("click", loadAccounts);
+  // ⚠️ 以前这里绑的是 `loadAccounts` —— 那个只重读本地存档，等于"点了刷新、什么都没查"。
+  // 界面上写着「刷新账号」，用户自然以为看到的是实时容量，实际是添加账号那一刻的快照。
+  document.getElementById("nmRefreshAccounts").addEventListener("click", function () { refreshAccounts(false); });
   document.getElementById("nmAccountsBody").addEventListener("click", function (e) {
     var btn = e.target.closest(".nm-del");
     if (btn) removeAccount(btn.dataset.name);
@@ -227,6 +280,9 @@
 
   loadAccounts();
   loadRecords();
+  // 打开界面后**自动补一次实时查询**：先用存档秒开（上面那步），再慢慢换成实时值。
+  // 这样"网盘登录已失效"这种状态不用等用户点刷新才会暴露。
+  refreshAccounts(true);
 
   window.netdiskManager = { loadAccounts: loadAccounts, browse: browse, loadRecords: loadRecords };
 })();
