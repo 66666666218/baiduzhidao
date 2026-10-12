@@ -243,6 +243,15 @@ function createAutoPipeline(deps) {
      * 记一条"勾选了但没跑成"的跳过。必须在 report 里留痕：
      * 不留痕的话它就不会出现在结果表里，而结论又只看 failure —— 于是变成"成功"。
      */
+    /**
+     * 前序阶段失败时，后续阶段的跳过原因 —— 必须**点名是哪个阶段失败**。
+     * 只写"前序失败"用户还得回头翻日志；写清楚"因为「网盘转存」失败"，一眼就知道该修哪一步。
+     */
+    const skipReasonForFailure = (label = "本阶段") => {
+      const failed = report.find((r) => !r.ok && !r.skipped);
+      return `前一阶段「${failed ? failed.label : "未知阶段"}」失败，${label}未执行`;
+    };
+
     const skipStage = (name, label, reason) => {
       // 已经在停止途中：这一阶段不是"没跑成"，而是"用户不让跑了"。
       // 不加这一层的话，停止后每个阶段都会挂上一条误导性的原因（比如"没有抽题产物"）。
@@ -333,6 +342,9 @@ function createAutoPipeline(deps) {
       }
 
       // 3) 生成答案
+      // 上游失败时这里**不补跳过**：失败那一行的 ❌ 已经是结论，
+      // 再给下游每个阶段各挂一条"跳过"只是啰嗦（这条约定是第 8 轮定下的，别改回去）。
+      // 唯一例外是最后的「上传」—— 它的输入可能跟失败的那一步无关，见下面第 6 段。
       if (enabled.has("generate") && !failure) {
         if (!pickFile) {
           // 以前这里是**静默跳过**：没抽到表就不进分支，report 里没有这一项，
@@ -397,7 +409,10 @@ function createAutoPipeline(deps) {
       // 权益门只针对**上传账号**：批量发布权益管的是"能不能把表传上工作台"，
       // 跟"资源能不能转进网盘"无关（后者看的是网盘空间）。也只在真要跑上传阶段时才查，
       // 免得白开一轮浏览器。
-      if (enabled.has("upload") && !failure && !aborted) {
+      // ⚠️ 这里**不看 failure**：转存失败后上传仍可能要跑（它读的是上传专用表），
+      // 那时权益门必须已经查过，否则 uploadEnvs 是没被收窄的原始名单 ——
+      // 会把没有权益的号也放上去。
+      if (enabled.has("upload") && !aborted) {
         const checked = await runStage("checkPermission", "确认批量发布权益", () =>
           startTask("check-published", { bitEnvs: uploadEnvsConfigured, withReasons: false }, (c) => taskRunners.checkPublished(c, taskDeps()))
         );
@@ -485,14 +500,29 @@ function createAutoPipeline(deps) {
       }
 
       // 6) 按题材分账号上传（用转存产出，或调用方指定的现成表）
-      if (enabled.has("upload") && !failure) {
+      //
+      // ⚠️ 这里**不再因为前序失败而整段消失**（原来是 `&& !failure`）。
+      // 转存失败 ≠ 上传不能做：上传读的是「上传专用表」，只要用户指定过现成的表
+      //（或上一轮留下过），这一步照样能跑 —— 为了一个不相干的失败把最后一步也砍掉，
+      // 用户看到的就只剩"2/3 个阶段成功（在网盘转存中断）"，而他要的正是上传。
+      // 判据只有一条：**这一步的输入具不具备**，而不是前面有没有人失败。
+      if (enabled.has("upload")) {
         if (!uploadEnvs.length) {
           // 以前这里是静默跳过：所有上传账号都被权益门拦掉时，整段不执行也不进 report，
           // 结论依旧是"全部阶段成功" —— 而用户等的恰恰是上传。
           skipStage("upload", "按题材上传", "没有可用上传账号（都不具备「批量发布权益」或未登录）");
         } else if (!uploadTable || !fs.existsSync(uploadTable)) {
-          skipStage("upload", "按题材上传", "没有可用的上传专用表（请先跑转存，或指定一张现成的表）");
+          skipStage("upload", "按题材上传", failure
+            ? `${skipReasonForFailure("按题材上传")}，且没有可用的上传专用表`
+            : "没有可用的上传专用表（请先跑转存，或指定一张现成的表）");
         } else {
+          // 前序有失败但仍然要跑：必须把"为什么还继续"说清楚，
+          // 否则结果表里一个 ✅ 上传 会让人以为前面也没事。
+          if (failure) {
+            const failedLabel = (report.find((r) => !r.ok && !r.skipped) || {}).label || "未知阶段";
+            emit("task:log", `⏩ 前面「${failedLabel}」失败了，但上传读的是现成的上传专用表，本次继续上传。`
+              + "（若你不希望这样，请把「上传专用表」留空。）");
+          }
           const uploaded = await runStage("upload", "按题材上传", () =>
             startTask("upload-by-topic", {
               filePath: uploadTable,

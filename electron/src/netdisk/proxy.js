@@ -16,10 +16,45 @@
  * 这里按代理地址缓存 Agent —— 每次请求新建会白白多一轮 TLS 握手。
  */
 
-const { ProxyAgent } = require("undici");
+/**
+ * ⚠️ undici 的版本被**运行环境钉死在 6.x**，不要升级到 7/8。
+ *
+ * 实测（2026-10-12）：Electron 33.4.11 内置的是 **Node 20.18.3**，它的
+ * `require("node:worker_threads")` **没有** `markAsUncloneable`（那个 API 是 Node 22 才加的）。
+ * 而 undici ≥ 7 的 `lib/web/webidl/index.js` 第一行就是
+ * `const { markAsUncloneable } = require("node:worker_threads")`，随后调用它 ——
+ * 于是 **只要 `require("undici")` 就抛 `webidl.util.markAsUncloneable is not a function`**。
+ * 表现是：一键全自动跑到「网盘转存」阶段立刻 FAILED，整条链断掉
+ * （因为转存要给网盘账号取 dispatcher，是这个模块唯一的 require 点）。
+ *
+ * 守卫在 `tests/unit/round16-undici-compat.test.js`：package.json 里 undici 主版本必须 ≤ 6。
+ */
+const { ProxyAgent } = requireUndici();
+
+/**
+ * 兜底加载：undici 万一在目标环境里加载不了（版本不兼容 / 打包漏文件），
+ * 这里**绝不能把异常抛给调用方** —— 那会直接炸掉整个任务
+ * （本次事故就是这样：一个代理功能把转存阶段连带整条链一起送走）。
+ * 正确做法是退化成直连并**大声说明**，绝不能静默失效。
+ */
+let proxyUnavailableReason = "";
+function requireUndici() {
+  try {
+    return require("undici");
+  } catch (error) {
+    proxyUnavailableReason = String((error && error.message) || error);
+    console.warn(`[proxy] undici 加载失败，账号代理功能本次不可用（全部直连）：${proxyUnavailableReason}`);
+    return {};
+  }
+}
 
 /** 代理地址 -> Agent（复用连接，别每次重建） */
 const cache = new Map();
+
+/** 给调用方（日志/预检）用：代理功能当前是否可用、不可用是因为什么 */
+function proxyStatus() {
+  return { ok: !proxyUnavailableReason, reason: proxyUnavailableReason };
+}
 
 /**
  * 取得该代理地址对应的 dispatcher；没配代理或地址非法时返回 undefined（= 直连）。
@@ -28,6 +63,7 @@ const cache = new Map();
 function dispatcherFor(proxyUrl) {
   const url = String(proxyUrl || "").trim();
   if (!url) return undefined;
+  if (typeof ProxyAgent !== "function") return undefined; // undici 没加载起来：直连（已在 requireUndici 里告警）
   if (cache.has(url)) return cache.get(url);
   let agent;
   try {
@@ -75,4 +111,4 @@ function resetProxyCache() {
   cache.clear();
 }
 
-module.exports = { dispatcherFor, parseAccountProxies, resetProxyCache };
+module.exports = { dispatcherFor, parseAccountProxies, resetProxyCache, proxyStatus };
