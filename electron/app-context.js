@@ -22,7 +22,7 @@ const { makePickQuestions } = require("./src/tasks/pick");
 const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
 const { INVOKE_CHANNELS } = require("./src/ipc-channels");
-const { describeUpdateError, describeError, scrubUrl } = require("./src/errors");
+const { describeUpdateError, describeError, scrubUrl, isProxyError } = require("./src/errors");
 const { resolveNetdiskRoles, envLabelsOf } = require("./src/domain/account-topic");
 const { createAutoPipeline } = require("./src/workflows/auto-pipeline");
 const { AccountManager } = require("./src/browser/account-manager");
@@ -876,11 +876,56 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     wantDownload = Boolean(download);
     autoUpdater.autoDownload = wantDownload;
     lastProgressLog = 0;
-    await autoUpdater.checkForUpdates();
+    try {
+      await autoUpdater.checkForUpdates();
+    } catch (error) {
+      // 开着系统代理时，electron 的网络栈走那套代理设置，代理连不上就整条更新链路失败
+      //（实测：net::ERR_PROXY_CONNECTION_FAILED）。"网络问题"这四个字对用户没用 ——
+      // git/curl 走代理能通，不代表 electron 的 net 栈也认同一套配置。
+      // 所以命中代理错误就**绕开代理再试一次**，真不行才把原始错误抛出去。
+      if (!isProxyError(error)) throw error;
+      if (!(await checkForUpdatesDirect())) throw error;
+    }
     return { currentVersion: app.getVersion() };
   }
 
-  ipcMain.handle("update:check", () => checkForUpdates({ download: true }));
+  /**
+   * 暂时把默认会话切成直连，重试一次检查更新，然后**必须还原**。
+   *
+   * ⚠️ 还原这一步是硬要求：`setProxy` 改的是**整个默认会话**，不还原的话之后
+   * 爬题/提交/网盘全变成直连 —— 用户配代理恰恰是为了不走直连（出口 IP 会被关联）。
+   * 所以还原放在 finally 里，成功失败都执行。
+   *
+   * @returns {Promise<boolean>} 直连重试是否成功
+   */
+  async function checkForUpdatesDirect() {
+    let switched = false;
+    try {
+      const { session } = require("electron");
+      await session.defaultSession.setProxy({ mode: "direct" });
+      switched = true;
+      emit("task:log", "⚠️ 系统代理连不上，已临时改为**直连**重试一次（用完会还原成你原来的代理设置）…");
+      const { autoUpdater } = require("electron-updater");
+      await autoUpdater.checkForUpdates();
+      emit("task:log", "✅ 直连重试成功。");
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (switched) {
+        try {
+          const { session } = require("electron");
+          await session.defaultSession.setProxy({ mode: "system" });
+        } catch { /* 还原失败也要继续：总比把代理永久改成直连强 */ }
+      }
+    }
+  }
+
+  // 界面上直接显示原始报错是没有意义的（`net::ERR_PROXY_CONNECTION_FAILED` 这种谁也看不懂），
+  // 这里抛一句人话；完整原因由上面的 `autoUpdater.on("error")` 打进运行日志。
+  ipcMain.handle("update:check", () => checkForUpdates({ download: true }).catch((e) => {
+    throw new Error(`${describeUpdateError(e)}（详细原因见运行日志）`);
+  }));
   ipcMain.handle("update:install", () => {
     if (!updateReady) throw new Error("新版尚未下载完成，请先「检查更新」并等待下载完成。");
     const { autoUpdater } = require("electron-updater");

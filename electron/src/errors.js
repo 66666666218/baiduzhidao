@@ -42,9 +42,32 @@ function describeUpdateError(error) {
   if (/404|not found|latest\.yml|no release|no published|not published|没有发布/i.test(text)) {
     return "线上可能还没有发布任何版本";
   }
+  // 开着系统代理时，electron 的网络栈会走那套代理设置；代理连不上就整条更新链路失败
+  //（实测 2026-10-12：`net::ERR_PROXY_CONNECTION_FAILED`）。
+  // 这里**必须区分开**：它被归到"网络问题"里，用户只会反复重连网络，
+  // 而真正要动的是"代理"那一项（或让软件自己绕开代理重试）。
+  if (isProxyError(text)) {
+    return "系统代理连不上（软件的网络栈走了你电脑的代理设置）";
+  }
   // ⚠️ 这里**不提**具体是哪个站点：用户明确要求不要把仓库地址暴露出去，
   //   而"国内访问 XX 不稳定"这句话本身就会把人引到那个地址上。
   return "可能是网络问题（更新服务器连不上）";
+}
+
+/**
+ * 这个错误是不是"代理连不上"。
+ *
+ * 单独抽出来是因为它有**两个**消费者，判定规则必须只有一份：
+ *   1. `describeUpdateError` —— 把报错翻译成人话；
+ *   2. `app-context.js` 的 `checkForUpdates` —— 命中就**绕开代理重试一次**。
+ * 写成两处的话，哪天新出现一种代理错误码，必然只改到一处（本仓库的老毛病）。
+ *
+ * 注意别用宽松的 /proxy/i：错误信息里出现 "proxy" 字样的场景很多，
+ * 误判会把"真的连不上服务器"也当成代理问题，白白多试一次还误导用户。
+ */
+function isProxyError(error) {
+  const text = String((error && error.message) || error || "");
+  return /ERR_PROXY[A-Z_]*|ERR_TUNNEL_CONNECTION_FAILED|ERR_NO_SUPPORTED_PROXIES|proxy[_ ]?connection/i.test(text);
 }
 
 /**
@@ -69,4 +92,4 @@ function scrubUrl(text) {
   return out.trim();
 }
 
-module.exports = { classifyError, describeError, describeUpdateError, scrubUrl, LABELS };
+module.exports = { classifyError, describeError, describeUpdateError, isProxyError, scrubUrl, LABELS };
