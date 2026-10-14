@@ -204,92 +204,256 @@ test("B5 index.html 必须先加载 update-banner.js（顺序反了 window.Updat
  * 主进程在 `autoUpdater.on("error")` 里把 `downloading` 清了，但界面用的是自己那份
  * `updateState` —— 只有收到推送才会重画。于是下载到 42% 撞上代理断掉之后，
  * 提示条会**永远**停在「⬇️ 下载中 42%」，一动不动，而且不报错。
- * 用户的环境（开着系统代理）恰恰最容易撞上这条路径。
+ *
+ * ⚠️ 2.0.48 起，"上次没成功"这件事**只有一份状态**：`lastCheckOk / lastCheckWhy / lastCheckAt`
+ *（原来是渲染端自己攒的 `error` 字段，主进程不认它，界面一刷新就没了）。
+ * 所以下面几条都从这三个字段读。
  */
 test("C1 ★ 上次失败：提示条回到可重试形态，而且点一下真的会重试", () => {
-  const s = updateBannerState({ currentVersion: "2.0.45", availableVersion: "2.0.46", error: "下载超时" });
+  const s = updateBannerState({
+    currentVersion: "2.0.46", availableVersion: "2.0.48",
+    lastCheckOk: false, lastCheckWhy: "可能是网络问题（更新服务器连不上）",
+  });
   assert.equal(s.visible, true);
   assert.equal(s.mode, "available");
-  assert.match(s.text, /v2\.0\.46/);
-  assert.match(s.text, /没下载成功/, "必须承认上次失败了，不能装作什么都没发生");
-  assert.match(s.text, /下载超时/, "要带上原因，否则用户只能反复重试");
+  assert.match(s.text, /v2\.0\.48/);
+  assert.match(s.text, /没成功/, "必须承认上次失败了，不能装作什么都没发生");
   assert.match(s.text, /点这里重试/);
-  // 关键：这一刻点它**确实**会重试（缓存命中就直接 ready，没命中就重下）——
+  // 关键：这一刻点它**确实**会重试（缓存命中就直接 ready，没命中就重下；检查本身也会重试两种方式）——
   // 所以写"点这里重试"是真话，不是安慰话术。
   assert.equal(bannerAction(s.mode), "check");
 });
 
 test("C2 ★ 失败原因要截断：不能把一整段报错塞进提示条，也不能留半截括号", () => {
   const long = "x".repeat(200);
-  const s = updateBannerState({ availableVersion: "9", error: long });
-  assert.ok(s.text.length < 140, `提示条被撑爆了（${s.text.length} 字）：${s.text}`);
+  const s = updateBannerState({ availableVersion: "9", lastCheckOk: false, lastCheckWhy: long });
+  assert.ok(s.text.length < 160, `提示条被撑爆了（${s.text.length} 字）：${s.text}`);
   assert.match(s.text, /…/, "超长的原因要截断并留省略号");
-  const line = updateInfoLine({ availableVersion: "9", error: long });
-  assert.ok(line.length < 140, `更新页那行也被撑爆了：${line}`);
+  const line = updateInfoLine({ availableVersion: "9", lastCheckOk: false, lastCheckWhy: long });
+  assert.ok(line.length < 160, `更新页那行也被撑爆了：${line}`);
 
   // 真实报错长这样（`describeUpdateError` 的输出），括号在**中段**：截断容易把它切成一半。
   // 半截括号看着像手滑；而调用处若再用括号把原因包起来，就成了 `（网络代理连不上（net::…`
   // 这种嵌套。两条都拿真实字符串钉住。
   const real = "网络代理连不上（net::ERR_PROXY_CONNECTION_FAILED），已尝试绕开代理但仍失败，请检查代理设置或稍后再试";
-  const bannerText = updateBannerState({ availableVersion: "9", error: real }).text;
+  const bannerText = updateBannerState({ availableVersion: "9", lastCheckOk: false, lastCheckWhy: real }).text;
   assert.ok(!/（[^）]*$/.test(bannerText), `提示条里有没闭合的括号：${bannerText}`);
   assert.ok(!/（[^（]*（/.test(bannerText), `提示条里括号套括号：${bannerText}`);
   assert.match(bannerText, /网络代理连不上/, bannerText);
 });
 
-test("C3 没有 error 时不能凭空写出「没下载成功」", () => {
-  const s = updateBannerState({ currentVersion: "2.0.45", availableVersion: "2.0.46" });
-  assert.ok(!/没下载成功|失败/.test(s.text), s.text);
-  assert.ok(!/失败/.test(updateInfoLine({ availableVersion: "2.0.46" })));
+test("C3 没查过（lastCheckOk=null）时不能凭空写出「失败」", () => {
+  const s = updateBannerState({ currentVersion: "2.0.46", availableVersion: "2.0.48" });
+  assert.ok(!/没成功|失败/.test(s.text), s.text);
+  const line = updateInfoLine({ availableVersion: "2.0.48", lastCheckOk: null });
+  assert.ok(!/没成功|失败/.test(line), line);
+  assert.ok(!/上次检查/.test(line), "没查过就不该出现「上次检查」这一段");
 });
 
 test("C4 「软件更新」那行说明也要说出上次失败（否则用户只能自己猜）", () => {
-  const line = updateInfoLine({ currentVersion: "2.0.45", availableVersion: "2.0.46", error: "代理连不上" });
+  const line = updateInfoLine({ currentVersion: "2.0.46", availableVersion: "2.0.48", lastCheckOk: false, lastCheckWhy: "代理连不上" });
   assert.match(line, /没成功/);
   assert.match(line, /代理连不上/);
-  assert.match(line, /重试/);
   // 失败原因优先级必须低于"正在下载"：又下起来了就该报进度，而不是还挂着旧错误
-  const again = updateInfoLine({ availableVersion: "2.0.46", percent: 7, error: "代理连不上" });
+  const again = updateInfoLine({ availableVersion: "2.0.48", percent: 7, lastCheckOk: false, lastCheckWhy: "代理连不上" });
   assert.match(again, /正在下载/);
+  assert.ok(!/代理连不上/.test(again), "正在下载时不该再挂着上次的失败原因");
 });
 
-test("C5 update:error 必须同时在 ipc-channels 与 preload 里（漏一边 = 主进程发了界面收不到且不报错）", () => {
+test("C5 update:error 与 update:checked 都必须同时在 ipc-channels 与 preload 里", () => {
   const channels = read("electron/src/ipc-channels.js");
   const preload = read("electron/preload.js");
-  assert.match(channels, /LISTENER_CHANNELS\s*=\s*\[[^\]]*"update:error"/,
-    "契约里没有 update:error");
-  assert.match(preload, /listenerChannels\s*=\s*new Set\(\[[^\]]*"update:error"/,
-    "preload 的 listenerChannels 没有 update:error —— 界面会永远停在某个下载百分比上（且不报错）");
+  for (const ch of ["update:error", "update:checked"]) {
+    assert.match(channels, new RegExp(`LISTENER_CHANNELS\\s*=\\s*\\[[^\\]]*"${ch}"`), `契约里没有 ${ch}`);
+    assert.match(preload, new RegExp(`listenerChannels\\s*=\\s*new Set\\(\\[[^\\]]*"${ch}"`),
+      `preload 的 listenerChannels 没有 ${ch} —— 主进程发了、界面收不到，且两边都不报错`);
+  }
 });
 
-test("C6 ★ 主进程失败时必须显式推 update:error，只清自己的状态是不够的", () => {
+test("C6 ★ 两次都没成时，主进程必须显式推 update:error（只清自己的状态是不够的）", () => {
   const src = stripComments(read("electron/app-context.js"));
-  // 区段 = 从 error 分支开始，到下一个真实代码标记（检查更新函数）为止。
-  const handler = section(src, "autoUpdater.on(\"error\"", "async function checkForUpdates({ download })");
-  assert.match(handler, /emit\("update:error",\s*\{/,
-    "error 分支只改了主进程的 downloading/downloadPercent，没通知界面 —— "
-    + "界面用的是自己那份 updateState，会永远停在「下载中 N%」");
+  const handler = section(src, 'autoUpdater.on("error"', "async function checkForUpdates(");
   assert.match(handler, /downloading = false/, "失败后主进程也要退出「下载中」状态");
+  assert.match(handler, /checkRetryDepth > 0/, "重试序列里必须静音，否则一次失败会被播报好几遍");
+  // 最终失败的那一次由 checkForUpdates 负责播报（它在重试序列外，且知道是第几次）
+  const body = section(src, "async function checkForUpdates(", "async function withProxyMode");
+  assert.match(body, /emit\("update:error",\s*\{/,
+    "两次都没成时没有推 update:error —— 界面会永远停在「下载中 N%」（且不报错）");
+  // 成与不成都要推 update:checked：只推失败那一边的话，用户点完检查更新、界面却停在
+  // "当前版本 vX"（没有"上次检查 … 成功"），就又回到"我点了到底查了没"那个问题上
+  assert.match(body, /emit\("update:checked",\s*\{\s*ok:\s*true/, "成功那一路没有推 update:checked");
+  assert.match(body, /emit\("update:checked",\s*\{\s*ok:\s*false/, "失败那一路没有推 update:checked");
 });
 
-test("C7 渲染端要订阅 update:error，并清掉 percent（只改文案不清状态 = 下次还会接着显示旧百分比）", () => {
+test("C7 ★ 渲染端要订阅 update:checked / update:error，并清掉 percent", () => {
   const src = stripComments(read("electron/renderer/renderer.js"));
-  const handler = section(src, 'rpc.on("update:error"', '$("updateBanner").addEventListener');
-  assert.match(handler, /percent:\s*null/, "收到失败必须把 percent 清掉，否则提示条还停在「下载中 42%」");
-  assert.match(handler, /renderUpdateUi\(\)/, "收到失败要重画界面");
+  const checked = section(src, 'rpc.on("update:checked"', 'rpc.on("update:error"');
+  assert.match(checked, /lastCheckAt:/, "update:checked 要记下检查时刻");
+  assert.match(checked, /lastCheckOk:/, "update:checked 要记下成败");
+  const failed = section(src, 'rpc.on("update:error"', '$("updateBanner").addEventListener');
+  assert.match(failed, /percent:\s*null/, "收到失败必须把 percent 清掉，否则提示条还停在「下载中 42%」");
+  assert.match(failed, /renderUpdateUi\(\)/, "收到失败要重画界面");
 });
 
-test("C8 新进度/新版本/已就绪都要把上一次的失败提示收掉（旧错误不能盖在新状态上）", () => {
+test("C8 新进度 / 已就绪要把上一次的失败提示收掉（旧错误不能盖在新状态上）", () => {
   const src = stripComments(read("electron/renderer/renderer.js"));
-  const zones = [
+  for (const [from, to] of [
+    ['rpc.on("update:progress"', 'rpc.on("update:checked"'],
     ['rpc.on("update:ready"', 'rpc.on("update:available"'],
-    ['rpc.on("update:available"', 'rpc.on("update:progress"'],
-    ['rpc.on("update:progress"', 'rpc.on("update:error"'],
-  ];
-  for (const [from, to] of zones) {
-    assert.match(section(src, from, to), /error:\s*""/, `${from} 这一段没有清掉 error`);
+  ]) {
+    assert.match(section(src, from, to), /lastCheckWhy:\s*""/, `${from} 这一段没有清掉 lastCheckWhy`);
   }
   // 手动点「检查更新」失败时，上一次的"下载中"也必须清掉
   const check = section(src, '$("checkUpdate").addEventListener', '$("installUpdate").addEventListener');
   assert.match(check, /percent:\s*null/, "检查失败后 percent 没清 → 界面会一直显示上次的下载进度");
+  // 而且不要手写文案：失败原因由 update:checked 推过来，统一由 renderUpdateUi 画，
+  // 手写一份只会把原因和时间丢掉（用户还得去翻日志）
+  assert.ok(!/updateInfo"\)\.textContent = "检查失败/.test(check),
+    "不要手写检查失败的文案 —— 原因与时刻要走 update:checked 推过来的那份状态");
+});
+
+// ------------------------------------------------------ D 组：一次检查要有答案（2.0.48 补）
+
+/**
+ * 用户 17:55 贴的日志：更新检查报 `net::ERR_CONNECTION_RESET`，**同一分钟里连百度知道的
+ * 请求也在挂**（`⚠️ 搜索失败（跳过）… — fetch failed`）——整台机器的网络当时在抖。
+ * 两件事要修：
+ *   ① 一次失败就彻底放弃 → 现在"当前设置 → 临时直连"各试一次，启动那次失败还会 10 分钟后再试一次；
+ *   ② 界面上**看不出来**失败过 → 现在记"上次检查 HH:MM 成功/没成功（原因）"，并随 update:info 复原。
+ */
+test("D1 ★ 启动时的自动检查失败后要自动再试一次，而且只再试一次", () => {
+  const src = stripComments(read("electron/app-context.js"));
+  assert.match(src, /function scheduleStartupCheck\(/, "启动检查要有个可自我重排的函数");
+  const body = section(src, "function scheduleStartupCheck(", "scheduleStartupCheck({ first: true })");
+  assert.match(body, /if\s*\(first\)/, "要区分第一次和重试，否则会无限重排下去");
+  assert.match(body, /scheduleStartupCheck\(\{\s*first:\s*false\s*\}\)/, "第一次失败后要排一次重试");
+  // 重试那一支里**不许**再排下一次 —— 网络真断了的时候，隔十分钟弹一次是骚扰
+  const retryBranch = body.slice(body.indexOf("} else {"), body.indexOf("});"));
+  assert.ok(!/scheduleStartupCheck\(/.test(retryBranch), "重试分支里不能再排重试，会无限循环");
+  // 间隔常量可能写成算式（`10 * 60 * 1000`），所以求值而不是抠数字
+  const rhs = src.match(/STARTUP_RETRY_DELAY_MS\s*=\s*([^;]+);/)[1];
+  const ms = Function(`"use strict"; return (${rhs});`)();
+  assert.ok(ms >= 60000, `重试间隔太短（${ms}ms，应在分钟级）`);
+});
+
+test("D2 ★ 一次失败不能报两遍（electron-updater 既 emit 又 throw，实测）", () => {
+  const src = stripComments(read("electron/app-context.js"));
+  const startup = section(src, "function scheduleStartupCheck(", "scheduleStartupCheck({ first: true })");
+  // 启动那一路以前把原因又抄了一遍（`启动检查更新失败：…` + `原因摘要：…`），
+  // 于是用户贴过来的日志里一次失败出现两遍，看着像坏了两次。
+  assert.ok(!/原因摘要/.test(startup), "启动路径不该再重复报一遍原因 —— checkForUpdates 已经写过了");
+  assert.match(startup, /describeUpdateError/, "启动路径只需要补一句「不影响使用 + 稍后会再试」");
+});
+
+test("D3 ★ update:info 要带 lastCheck，界面刷新后能复原「上次检查」", () => {
+  const src = stripComments(read("electron/app-context.js"));
+  assert.match(src, /lastCheck:\s*\{\s*at:\s*lastCheckAt/, "update:info 没带 lastCheck");
+  const r = stripComments(read("electron/renderer/renderer.js"));
+  assert.match(r, /i\.lastCheck/, "渲染端没从 update:info 里读 lastCheck");
+  assert.match(r, /lastCheckAt:\s*check\.at/, "渲染端没复原检查时刻");
+});
+
+test("D4 「上次检查 HH:MM 成功/没成功」两种都要能显示出来", () => {
+  assert.match(updateInfoLine({ currentVersion: "2.0.47", lastCheckAt: "17:58", lastCheckOk: true }),
+    /上次检查 17:58 成功/);
+  assert.match(updateInfoLine({ currentVersion: "2.0.47", lastCheckAt: "17:55", lastCheckOk: false, lastCheckWhy: "网络问题" }),
+    /上次检查 17:55 没成功：网络问题/);
+  // 关键：**没有新版本、也没在下载**的时候也要显示 —— 这正是"我点了检查更新，它到底查了没"的场景
+  assert.match(updateInfoLine({ currentVersion: "2.0.47", lastCheckAt: "17:58", lastCheckOk: true }),
+    /当前版本 v2\.0\.47/);
+  // ⚠️ 原因自己就带括号（`可能是网络问题（更新服务器连不上）`），尾巴**不能**再用括号包它，
+  // 否则就是括号套括号（之前正是这么显示的）
+  const real = updateInfoLine({ currentVersion: "2.0.47", lastCheckAt: "17:55", lastCheckOk: false, lastCheckWhy: "可能是网络问题（更新服务器连不上）" });
+  assert.ok(!/（[^（）]*（/.test(real), `括号套括号了：${real}`);
+  assert.match(real, /更新服务器连不上/);
+});
+
+test("D5 ★ 取「时:分」不能用切下标（zh-CN 的月日不补零，只在每月 1~9 号出错）", () => {
+  const { nowTimeText, nowText } = require("../../electron/src/config.js");
+  assert.match(nowTimeText(), /^\d{1,2}:\d{2}$/, `nowTimeText 输出不像时刻：${nowTimeText()}`);
+  // ⚠️ 这条规则只在**每月 1~9 号**才会出错（月日不补零 → 字符串短一位 → 下标整体错位），
+  // 所以必须拿那一天来测，否则平时怎么跑都是绿的。nowTimeText(text) 就是为此留的口子。
+  assert.equal(nowTimeText("2026/10/4 7:55:36"), "7:55", "月日不补零的那天取错了");
+  assert.equal(nowTimeText("2026/10/14 17:55:36"), "17:55");
+  // 小时不补零时也不能靠"取前 5 个字符"（`7:55:` 就是这么切出来的，写完自测当场踩到）
+  assert.notEqual(nowTimeText("2026/10/4 7:55:36"), "7:55:", "又用 slice(0,5) 硬切了 —— 小时不补零时会多出一个冒号");
+  // 传进来的根本不是时间 → 空串，不许把日期当时刻拼进文案
+  assert.equal(nowTimeText("2026/10/4"), "");
+  // 顺便把"切下标为什么错"钉在测试里：同一天，两种写法结果不同
+  assert.notEqual(nowTimeText("2026/10/4 7:55:36"), "2026/10/4 7:55:36".slice(11, 16),
+    "切下标的写法在月日不补零时应该给出错误结果 —— 如果这里相等了，说明假数据没起到作用");
+  const src = read("electron/app-context.js");
+  assert.ok(!/nowText\(\)\.slice\(11/.test(src), "又用 nowText().slice(11,16) 硬切时刻了");
+  // 同时钉住 nowText 确实是那个"不补零"的格式，免得以后有人以为它补零而删掉这个口子
+  assert.match(nowText(), /^\d{4}\/\d{1,2}\/\d{1,2} \d{1,2}:\d{2}:\d{2}$/, nowText());
+});
+
+// ------------------------------------------------------ E 组：文案不许括号套括号（2.0.48 补）
+
+/**
+ * 「把一句自带括号的话再套一层括号」这个坑，本仓库已经踩了**三次**：
+ *   ① 提示条：`（网络代理连不上（net::ERR_PROXY_CONNECTION_FAILED）`
+ *   ② 更新页那行：同上
+ *   ③ 启动日志：`本次启动的自动检查没成功（可能是网络问题（更新服务器连不上））`
+ * 三次都是同一个成因：`describeUpdateError()` 的输出**自己就带全角括号**
+ *（它的文案就是 `可能是网络问题（更新服务器连不上）` / `系统代理连不上（…）`），
+ * 调用处再包一层就套上了。所以改成机械检查：更新这一整块里，
+ * **不许出现"用括号把 describeUpdateError/why/message 包起来"的写法**。
+ */
+test("E1 ★ 更新相关文案不许把 describeUpdateError 的输出再用括号包一层", () => {
+  const src = stripComments(read("electron/app-context.js"));
+  const patterns = [
+    [/（\$\{describeUpdateError/, "（${describeUpdateError(...)}）"],
+    [/（\$\{why\}/, "（${why}）"],
+    [/（\$\{message\}/, "（${message}）"],
+  ];
+  for (const [re, shown] of patterns) {
+    assert.ok(!re.test(src), `又出现括号套括号的写法：${shown} —— describeUpdateError 的文案自带括号，请改用「：」引出`);
+  }
+});
+
+test("E2 describeUpdateError 的文案本身真的带括号（E1 这条规则的前提，别以后被改掉）", () => {
+  // 如果哪天这些文案改成不带括号了，E1 那条规则就该重新考虑 —— 所以把前提钉住
+  const { describeUpdateError } = require("../../electron/src/errors");
+  assert.match(describeUpdateError("net::ERR_PROXY_CONNECTION_FAILED"), /（[^）]+）/,
+    "代理错误的人话里带括号 —— 这正是调用处不能用括号包它的原因");
+  assert.match(describeUpdateError("ETIMEDOUT"), /（[^）]+）/,
+    "网络错误的人话里也带括号");
+});
+
+test("E3 源码里所有「上次检查」的尾巴都用「：」引出原因", () => {
+  // ⚠️ 必须剥注释再扫：这个模块的 JSDoc 里**正当地**举了反面例子（`没成功（…）`），
+  // 不剥的话守卫会咬自己的手（本仓库已经因为这点误报过 4 次）。
+  const src = stripComments(read("electron/src/update-banner.js"));
+  assert.match(src, /没成功\$\{why \? `：\$\{why\}`/, "lastCheckTail 应该用「：」引出原因");
+  assert.ok(!/没成功（/.test(src), "lastCheckTail 又用括号包原因了");
+});
+
+// ------------------------------------------------------ F 组：发版门禁（2.0.48 补）
+
+/**
+ * 之前每轮发版我都是手敲一段 `node -e` 来核对 sha512/版本号/指纹，结果这一轮被 shell
+ * 吃掉反斜杠吃了两次（`\s` 变成 `s`，脚本直接语法错误）。既然是**每轮必做**的固定动作，
+ * 就该是个脚本、而且是能一键跑的门禁。
+ */
+test("F1 发版校验脚本要在，而且要挂在 npm scripts 上", () => {
+  const pkg = JSON.parse(read("package.json"));
+  assert.equal(pkg.scripts["verify:release"], "node scripts/verify-release.js",
+    "npm run verify:release 必须存在 —— 这是每轮发版必做的三条硬校验");
+  assert.ok(fs.existsSync(path.join(ROOT, "scripts", "verify-release.js")), "找不到 scripts/verify-release.js");
+});
+
+test("F2 发版校验脚本要真的查那三件事（sha512 / 版本号 / 三件套指纹）", () => {
+  const src = read("scripts/verify-release.js");
+  assert.match(src, /sha512/, "要核对 sha512 —— 对不上就是「发了但更新不了」且不报错");
+  assert.match(src, /sha256/, "要打出三件套指纹，用来和 GitHub 的 assets[].digest 比对");
+  assert.match(src, /pkg\.version/, "版本号要取自 package.json（不 bump 版本号客户端会认为已是最新）");
+  assert.match(src, /latest\.yml/, "要读 latest.yml");
+});
+
+test("F3 发版校验脚本不许把仓库地址打出来（用户明确要求地址不外泄）", () => {
+  const src = stripComments(read("scripts/verify-release.js"));
+  assert.ok(!/github\.com\/[A-Za-z0-9]/.test(src),
+    "脚本里不许出现真实的仓库坐标（提示性文字里写 <owner>/<repo> 这种占位是允许的）");
+  assert.ok(!/66666666218/.test(src), "不许出现仓库所有者");
 });

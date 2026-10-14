@@ -275,7 +275,7 @@ $("refreshAccountOverview").addEventListener("click", async () => {
 const U = window.UpdateBanner;
 let updateSupported = false;
 // ready 是主进程的权威布尔值（"已下载好"这件事只有它知道），readyVersion 只用来显示版本号。
-let updateState = { currentVersion: "", availableVersion: "", ready: false, readyVersion: "", percent: null, transferred: 0, total: 0, error: "" };
+let updateState = { currentVersion: "", availableVersion: "", ready: false, readyVersion: "", percent: null, transferred: 0, total: 0, lastCheckAt: "", lastCheckOk: null, lastCheckWhy: "" };
 
 /**
  * 按当前状态重画"与更新有关的一切"。任何一处状态变化都只调它，
@@ -303,6 +303,7 @@ function applyUpdateInfo(info) {
   const i = info || {};
   updateSupported = Boolean(i.supported);
   const downloading = Boolean(i.downloading);
+  const check = i.lastCheck || {};
   updateState = {
     currentVersion: i.version || "",
     // 下载完成后主进程会把 available 清空并置 ready —— 两者互斥，界面不会自相矛盾
@@ -312,9 +313,11 @@ function applyUpdateInfo(info) {
     percent: downloading && Number.isFinite(i.percent) ? i.percent : null,
     transferred: 0,
     total: 0,
-    // 失败原因不持久化（主进程不记它，`update:info` 也没有这个字段）：
-    // 界面刷新一次就该回到"可以重试"的干净状态。
-    error: "",
+    // 「上次检查更新」是**主进程记着的权威事实**，刷新界面时要复原它 ——
+    // 否则界面一刷新就退回"当前版本 vX"，检查失败过也看不出来。
+    lastCheckAt: check.at || "",
+    lastCheckOk: check.ok === true ? true : check.ok === false ? false : null,
+    lastCheckWhy: check.why || "",
   };
   renderUpdateUi();
 }
@@ -335,7 +338,7 @@ rpc.on("update:ready", (info) => {
     readyVersion: (info && info.version) || updateState.readyVersion,
     availableVersion: "",
     percent: null,
-    error: "",
+    lastCheckWhy: "",
   };
   renderUpdateUi();
 });
@@ -345,7 +348,7 @@ rpc.on("update:available", (info) => {
   const version = info && info.version;
   if (!version) return;
   // 又发现了一个新版本：之前那个"已下载好"的就不再是最新的了，状态一并复位
-  updateState = { ...updateState, availableVersion: version, ready: false, readyVersion: "", percent: null, error: "" };
+  updateState = { ...updateState, availableVersion: version, ready: false, readyVersion: "", percent: null };
   renderUpdateUi();
 });
 
@@ -359,17 +362,37 @@ rpc.on("update:progress", (p) => {
     transferred: Number(progress.transferred) || 0,
     total: Number(progress.total) || 0,
     // 又有进度了 = 这次重试活过来了，把上一次的失败提示收掉
-    error: "",
+    lastCheckWhy: "",
   };
   renderUpdateUi();
 });
 
-// 下载中途失败（代理断了 / 网络抖了）—— 主进程必须推这一条，否则界面会永远停在
+// 「一次检查结束了」——成败都推。这是"我点了检查更新，它到底查了没"的答案：
+// 以前界面永远只有一句"当前版本 vX"，检查失败过也看不出来，用户只能来问（17:55 那次）。
+rpc.on("update:checked", (info) => {
+  const i = info || {};
+  updateState = {
+    ...updateState,
+    lastCheckAt: i.at || updateState.lastCheckAt,
+    lastCheckOk: i.ok === true,
+    lastCheckWhy: i.why || "",
+  };
+  renderUpdateUi();
+});
+
+// 更新过程出错（检查失败或下载失败）—— 主进程必须推这一条，否则界面会永远停在
 // "⬇️ 下载中 42%"：主进程那边的 `downloading` 清了，界面这份 updateState 却没人通知。
-// 清掉 percent 之后提示条会自动回到「🔔 发现新版本…点这里下载并安装」——
-// 这句话是**真的**（再点一次确实会重下或直接命中已下好的缓存），不是安慰话术。
+// 清掉 percent 之后提示条会自动回到「⚠️ 上次没成功…点这里重试」——
+// 这句话是**真的**（再点一次确实会重试），不是安慰话术。
 rpc.on("update:error", (info) => {
-  updateState = { ...updateState, percent: null, transferred: 0, total: 0, error: (info && info.message) || "未知原因" };
+  updateState = {
+    ...updateState,
+    percent: null,
+    transferred: 0,
+    total: 0,
+    lastCheckOk: false,
+    lastCheckWhy: (info && info.message) || updateState.lastCheckWhy,
+  };
   renderUpdateUi();
 });
 
@@ -400,9 +423,12 @@ $("checkUpdate").addEventListener("click", async () => {
     updateState = { ...updateState, currentVersion: (r && r.currentVersion) || updateState.currentVersion };
     renderUpdateUi();
   } catch (error) {
-    // 检查本身失败（比如代理连不上）：percent 一定要清掉，否则上一次"下载中 42%"会一直留着
-    updateState = { ...updateState, percent: null, transferred: 0, total: 0, error: error.message };
-    $("updateInfo").textContent = "检查失败，详见运行日志";
+    // 检查本身失败（两种方式都没连上）：percent 一定要清掉，否则上一次"下载中 42%"会一直留着。
+    // ⚠️ 这里**不再手写** `updateInfo` 的文案 —— 失败原因与时刻由主进程的 `update:checked`
+    //（`ok:false` + 原因）推过来，统一由 `renderUpdateUi` 画。手写一份的话：
+    // 那一刻界面显示"检查失败，详见运行日志"，但把原因、时间全丢了，用户还是得去翻日志。
+    updateState = { ...updateState, percent: null, transferred: 0, total: 0, lastCheckOk: false, lastCheckWhy: error.message };
+    renderUpdateUi();
     appendLog(`检查更新失败：${error.message}`);
   } finally {
     $("checkUpdate").disabled = !updateSupported;

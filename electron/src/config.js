@@ -290,6 +290,30 @@ function nowText() {
   return new Date().toLocaleString("zh-CN", { hour12: false });
 }
 
+/**
+ * 只要「时:分」（形如 `17:55` / `7:55`），给界面上的"上次检查 17:55"这类文案用。
+ *
+ * ⚠️ 有两个坑，都踩过（第 18-C 轮）：
+ *   ① 不能用 `nowText().slice(11, 16)` 硬切下标：`toLocaleString("zh-CN")` 的**月日不补零**
+ *     （`2026/10/4 …` 比 `2026/10/14 …` 短一位），下标一切就整体错位 ——
+ *     而且只在每月 1~9 号出错，属于"上线那天才发现"的坑。
+ *   ② 也不能靠"取前 5 个字符"：**小时不补零**（`7:55:36` 只有 7 位），
+ *     `slice(0,5)` 会切出 `7:55:`。所以按 `:` 分段取前两段。
+ *     （这一条是写完自测当场发现的：拿 `2026/10/4 7:55:36` 一跑就露馅了。）
+ *
+ * @param {string} [text] 只给测试用：传一个时间字符串就解析它，不传才取当前时间。
+ *   有这个口子，测试才能拿"月日不补零 + 小时不补零"的那一天来验 ——
+ *   不然这两条规则平时怎么跑都是绿的。
+ */
+function nowTimeText(text) {
+  const clock = String(text === undefined ? nowText() : text).split(" ").pop();
+  const segments = clock.split(":");
+  // 取不到时分（比如传进来的根本不是时间）就返回空串：宁可不显示，
+  // 也不要把 `2026/10/4` 当成时刻拼进"上次检查 … 成功"里
+  if (segments.length < 2) return "";
+  return `${segments[0]}:${segments[1]}`;
+}
+
 module.exports = {
   Config,
   DEFAULTS,
@@ -298,6 +322,7 @@ module.exports = {
   ALL_CATEGORY,
   LINK_ROUTING_MODES,
   normalizeCategories,
+  nowTimeText,
   normalizeCategory,
   normalizeAccountTopicsSetting,
   normalizeBitEnvs,

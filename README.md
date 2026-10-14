@@ -25,6 +25,7 @@ npm run test:e2e           # 全链路 E2E（需本机有 Edge，无需账号）
 npm run selftest           # 一键自检 CLI（不开应用验证整条链路）
 npm run dist               # 打包成安装包 → dist/（改完代码**必须重打包**才生效，见下）
 npm run verify:package     # ⚠️ 发版必跑：验真产物（版本号 / 生产依赖是否真在包里 / undici ≤6）
+npm run verify:release     # ⚠️ 发版必跑：验 latest.yml 的 sha512/版本号是否与安装包一致 + 三件套指纹
 ```
 
 > **改了代码但运行起来还是老样子？** `dist/` 里放的是历史构建产物（已被 .gitignore 忽略），
@@ -35,6 +36,12 @@ npm run verify:package     # ⚠️ 发版必跑：验真产物（版本号 / �
 > （Node 会退到 `index.js`）、全部单测全绿，但 electron-builder 收集依赖靠的就是那个 `package.json` ——
 > 于是**连着好几个安装包里都没有 undici**，代理功能静默退化成直连。单测守不住这种事（它跑在源码树上），
 > 只有直接查 asar 才看得见。
+>
+> **为什么还要 `npm run verify:release`**：`latest.yml` 里的 `sha512` 一旦和安装包对不上，
+> 客户端下载完**校验会失败** —— 表现就是用户说的"点了更新但是更新不了"，而且**不报错**。
+> 另外版本号不 bump 的话，客户端按版本比较会直接认为"已是最新"（也不会报错）。
+> 这两条都是"发了等于没发"，所以固定在发版尾巴上跑一遍，顺带打出三件套 sha256
+> 用来和 GitHub 线上的 `assets[].digest` 逐一比对（比下载 85MB 回来再算快得多）。
 
 
 ## 功能视图（与 v1 对应）

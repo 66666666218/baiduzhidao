@@ -3,7 +3,7 @@
 const { app, BrowserWindow } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { Config, nowText, CATEGORIES } = require("./src/config");
+const { Config, nowText, nowTimeText, CATEGORIES } = require("./src/config");
 const { Logger } = require("./src/log");
 const { Store } = require("./src/storage/store");
 const excel = require("./src/storage/excel");
@@ -22,7 +22,10 @@ const { makePickQuestions } = require("./src/tasks/pick");
 const { EventBus } = require("./src/events/bus");
 const { AuditLogger } = require("./src/audit/logger");
 const { INVOKE_CHANNELS } = require("./src/ipc-channels");
-const { describeUpdateError, describeError, scrubUrl, isProxyError } = require("./src/errors");
+// ⚠️ `isProxyError` 不在这里 require：第 18-C 轮起"重试"不再按错误类型分支
+//（当前设置 → 临时直连，两种都试），所以它只剩一个消费者 = `describeUpdateError`
+// 内部的文案判定 —— 判定规则本来就住在 `errors.js`，这里再 import 一次就是死绑定。
+const { describeUpdateError, describeError, scrubUrl } = require("./src/errors");
 const { resolveNetdiskRoles, envLabelsOf } = require("./src/domain/account-topic");
 const { createAutoPipeline } = require("./src/workflows/auto-pipeline");
 // 「一键全自动跑着的时候外部任务不许开工」这条规则唯一的一份实现。
@@ -870,6 +873,17 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   let downloadPercent = null;
   let lastProgressLog = 0;
   let lastProgressEmit = 0;
+  // 「上一次检查更新是什么时候、成没成、为什么没成」——原来这份信息只进日志文件，
+  // 界面上永远只有一句"当前版本 vX"。于是"我点过检查更新了吗？它到底查了没？"
+  // 这个问题在界面上根本没法回答（用户 17:55 那次就是这么来问的）。
+  let lastCheckAt = ""; // "HH:MM" 形式，只给人看，不参与判断
+  let lastCheckOk = null; // null=还没查过 / true=成功 / false=失败
+  let lastCheckWhy = ""; // 失败原因（人话，已过 scrubUrl）
+  // >0 表示"正在重试序列里"。此时 `autoUpdater.on("error")` 不单独播报 ——
+  // 一次失败会被 electron-updater 既 emit("error") 又 throw（AppUpdater.checkForUpdates 的
+  // .catch 就是这么写的，实测）、再叠上重试序列，一次网络抖动能刷出三四条"⚠️ 更新失败"，
+  // 用户会以为坏了三次。播报统一由 checkForUpdates 那边负责（它知道是第几次、下一步换什么方式）。
+  let checkRetryDepth = 0;
   try {
     const { autoUpdater } = require("electron-updater");
     autoUpdater.autoInstallOnAppQuit = true;
@@ -937,7 +951,16 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       downloading = false;
       downloadPercent = null;
       const message = describeUpdateError(e);
+      if (checkRetryDepth > 0) {
+        // 还在重试序列里 —— 由 checkForUpdates 统一播报（它知道是第几次尝试、下一步换什么方式）。
+        // 这里再播一遍就是"一次失败报三遍"，见上面 checkRetryDepth 的说明。
+        return;
+      }
+      lastCheckAt = nowTimeText();
+      lastCheckOk = false;
+      lastCheckWhy = message;
       emit("update:error", { message });
+      emit("update:checked", { ok: false, why: message, at: lastCheckAt });
       logger.log(`⚠️ 更新失败：${message}`);
       logger.log("可改用手动更新：拿到最新安装包直接覆盖安装即可（答题数据不受影响）。"
         + "若你已经在下载中途失败过，再点一次「检查更新」会接着重下。");
@@ -946,6 +969,9 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     logger.log(`更新模块初始化失败（不影响其他功能）：${e.message}`);
   }
 
+  /** 重试序列里两次尝试之间的等待：给瞬时故障（代理刚重连、WiFi 刚起来、线路抖动）一点时间 */
+  const UPDATE_RETRY_DELAY_MS = 1500;
+
   /**
    * 检查更新。
    * download=true 顺带下载（用户主动点「检查更新」）；
@@ -953,6 +979,17 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
    *
    * 必须按调用设置 autoDownload：它是全局开关，一直开着的话启动静默检查
    * 会在用户毫不知情的情况下把 85MB 下下来。
+   *
+   * ── 为什么要"失败后换一种方式再试一次"（2026-10-14 17:55 那次）──
+   * 用户贴的日志是 `net::ERR_CONNECTION_RESET`（连接被对端重置），而**同一分钟里
+   * 连百度知道的请求也在挂**（`⚠️ 搜索失败（跳过）… — fetch failed`）—— 也就是他那会儿
+   * 整台机器的网络都不稳。这类错误绝大多数是**瞬时**的，原来"一次就放弃、只留一句手动更新的建议"
+   * 等于把用户直接赶到手动安装上去。
+   * 现在的策略是**两种方式各试一次**：
+   *   ① 按当前网络设置（通常是系统代理）—— 线路抖动能自愈；
+   *   ② 临时直连 —— 代理本身坏了的情况。
+   * 两种都失败才真报失败，而且日志里会写清"是第几次、用的哪种方式、为什么失败"。
+   * 这样下次再看日志，一眼就能区分"是代理的问题"还是"两条路都不通"。
    */
   async function checkForUpdates({ download }) {
     if (!app.isPackaged) throw new Error("开发模式不支持在线检查更新（仅打包版可用）。");
@@ -960,49 +997,92 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     wantDownload = Boolean(download);
     autoUpdater.autoDownload = wantDownload;
     lastProgressLog = 0;
+    lastProgressEmit = 0;
+
+    const plan = [
+      { label: "按当前网络设置", mode: null },
+      { label: "临时直连", mode: "direct" },
+    ];
+    let lastError = null;
+    checkRetryDepth += 1;
     try {
-      await autoUpdater.checkForUpdates();
-    } catch (error) {
-      // 开着系统代理时，electron 的网络栈走那套代理设置，代理连不上就整条更新链路失败
-      //（实测：net::ERR_PROXY_CONNECTION_FAILED）。"网络问题"这四个字对用户没用 ——
-      // git/curl 走代理能通，不代表 electron 的 net 栈也认同一套配置。
-      // 所以命中代理错误就**绕开代理再试一次**，真不行才把原始错误抛出去。
-      if (!isProxyError(error)) throw error;
-      if (!(await checkForUpdatesDirect())) throw error;
+      for (let i = 0; i < plan.length; i += 1) {
+        const step = plan[i];
+        const isLast = i === plan.length - 1;
+        if (i > 0) {
+          logger.log(`等待 ${UPDATE_RETRY_DELAY_MS / 1000} 秒后换「${step.label}」再试一次…`);
+          await sleep(UPDATE_RETRY_DELAY_MS);
+        }
+        try {
+          await withProxyMode(step.mode, () => autoUpdater.checkForUpdates());
+          lastCheckAt = nowTimeText();
+          lastCheckOk = true;
+          lastCheckWhy = "";
+          if (i > 0) logger.log(`✅ 换用「${step.label}」后检查成功了。`);
+          emit("update:checked", { ok: true, why: "", at: lastCheckAt });
+          return { currentVersion: app.getVersion() };
+        } catch (error) {
+          lastError = error;
+          const why = describeUpdateError(error);
+          logger.log(isLast
+            ? `检查更新失败（${step.label}）：${why}。已试过两种方式，不再自动重试。`
+            : `检查更新失败（${step.label}）：${why}。`);
+          if (isLast) {
+            // 原始串（如 net::ERR_CONNECTION_RESET）只在这里出现**一次**：
+            // `describeUpdateError` 翻成人话后就不带它了，而排查时恰恰靠它区分故障类型。
+            const brief = scrubUrl(String((error && error.message) || error)).slice(0, 120);
+            if (brief) logger.log(`  原因摘要：${brief}`);
+            lastCheckAt = nowTimeText();
+            lastCheckOk = false;
+            lastCheckWhy = why;
+            emit("update:checked", { ok: false, why, at: lastCheckAt });
+          }
+        }
+      }
+    } finally {
+      checkRetryDepth -= 1;
     }
-    return { currentVersion: app.getVersion() };
+    // 到这里说明两次都没成。抛出去让上层（手动检查 → 界面；启动检查 → 稍后再试）各自处理。
+    // ⚠️ 上面循环里最后一次的失败**没有**走 `autoUpdater.on("error")` 的播报（那段在
+    //   checkRetryDepth>0 时故意静音），所以"⚠️ 更新失败"这一条由这里负责补齐，不能两头都不说。
+    if (lastError) {
+      const why = describeUpdateError(lastError);
+      emit("update:error", { message: why });
+      logger.log(`⚠️ 更新失败：${why}`);
+    }
+    throw lastError || new Error("检查更新失败");
   }
 
   /**
-   * 暂时把默认会话切成直连，重试一次检查更新，然后**必须还原**。
+   * 临时把默认会话换成别的代理模式，跑一段异步操作，然后**必须还原**。
    *
    * ⚠️ 还原这一步是硬要求：`setProxy` 改的是**整个默认会话**，不还原的话之后
    * 爬题/提交/网盘全变成直连 —— 用户配代理恰恰是为了不走直连（出口 IP 会被关联）。
    * 所以还原放在 finally 里，成功失败都执行。
    *
-   * @returns {Promise<boolean>} 直连重试是否成功
+   * @param {string|null} mode "direct" 才切换；传 null 表示"就用用户当前那套，别动"
    */
-  async function checkForUpdatesDirect() {
+  async function withProxyMode(mode, run) {
+    if (!mode) return run();
+    const { session } = require("electron");
     let switched = false;
     try {
-      const { session } = require("electron");
-      await session.defaultSession.setProxy({ mode: "direct" });
+      await session.defaultSession.setProxy({ mode });
       switched = true;
-      logger.log("⚠️ 系统代理连不上，已临时改为**直连**重试一次（用完会还原成你原来的代理设置）…");
-      const { autoUpdater } = require("electron-updater");
-      await autoUpdater.checkForUpdates();
-      logger.log("✅ 直连重试成功。");
-      return true;
-    } catch {
-      return false;
+      logger.log(`⚠️ 已临时把网络切成**${mode === "direct" ? "直连" : mode}**试一次（用完会还原成你原来的代理设置）…`);
+      return await run();
     } finally {
       if (switched) {
         try {
-          const { session } = require("electron");
           await session.defaultSession.setProxy({ mode: "system" });
         } catch { /* 还原失败也要继续：总比把代理永久改成直连强 */ }
       }
     }
+  }
+
+  /** 小睡一会儿（重试之间用）。用 setTimeout 而不是忙等，避免卡住主线程。 */
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   // 界面上直接显示原始报错是没有意义的（`net::ERR_PROXY_CONNECTION_FAILED` 这种谁也看不懂），
@@ -1029,28 +1109,58 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     available: updateAvailable, // 有新版但还没下载时的版本号（界面据此显示顶部提示）
     downloading, // 是否正在下载（界面据此把顶部提示条显示成进度）
     percent: downloadPercent, // 已下载百分比（null = 还不知道）
+    // 「上次检查更新」的结果 —— 界面刷新（或刚启动）后要能复原它。
+    // 没有这份信息的话，界面上永远只有一句"当前版本 vX"：**检查失败过也看不出来**，
+    // 用户以为"已是最新"，其实我们根本没问到过服务器。
+    lastCheck: { at: lastCheckAt, ok: lastCheckOk, why: lastCheckWhy },
     // 以前这里还返回 `releasesUrl`（仓库发布页地址），渲染端靠它开浏览器 —— 已移除，
     // 连按钮一起删（见上面那段说明）：留着字段就是"地址还在包里，只是不显示"。
   }));
 
-  // 启动静默检查：只查不下载，有新版就在界面顶部提示，由用户决定要不要下。
-  // 延后 20 秒是避开启动时的初始化与自检，别去抢带宽和主线程。
-  // 开发模式（app.isPackaged=false）会直接抛错被吞掉，不会发请求。
-  setTimeout(() => {
-    checkForUpdates({ download: false }).catch((e) => {
-      // 只说"失败"没用：这一条最常见的两种成因是「线上根本没发布过」和「连不上更新服务器」，
-      // 两者要处理的事完全不同。原始错误串（如 HttpError 404）用户看不懂，所以补一句人话。
-      // ⚠️ 原始串**不能原样打出来**：里面带着发布页地址（见上面 `scrubUrl` 的说明），
-      // 以前这里还有一句 `原始错误：${raw}`，等于把地址又印了一遍。现在只留抹过地址的摘要。
-      const raw = String((e && e.message) || e);
-      const brief = scrubUrl(String(raw)).slice(0, 120);
-      // 同样走 logger.log：这是"启动时静默检查失败"，用户八成不会主动说，
-      // 而排查时这三行往往是唯一的线索 —— 只发界面不进文件，等于事后查不到。
-      logger.log(`启动检查更新失败（不影响使用）：${describeUpdateError(raw)}`);
-      if (brief) logger.log(`  原因摘要：${brief}`);
-      logger.log("可稍后在「使用教程 → 软件更新」手动重试；或拿到最新安装包直接覆盖安装（答题数据不受影响）。");
-    });
-  }, 20000).unref?.();
+  /**
+   * 启动时的自动检查更新：只查不下载，有新版就在界面顶部提示，由用户决定要不要下。
+   *
+   * 延后 20 秒是避开启动时的初始化与自检，别去抢带宽和主线程。
+   * 开发模式（app.isPackaged=false）会直接抛错被吞掉，不会发请求。
+   *
+   * ── 失败为什么还要**自动再试一次**（用户 17:55 那次的教训）──
+   * 那次的现场是：软件刚起来，用户同时点着"按题材搜索"，而整台机器的网络在抖
+   * （更新检查报 `net::ERR_CONNECTION_RESET`，同一分钟里连百度知道的请求也在 `fetch failed`）。
+   * 以前的做法是**这一次失败就彻底不再查了** —— 于是那台机器上"有没有新版本"这个问题，
+   * 直到用户自己想起来去点「检查更新」才有答案。而用户根本不知道要去点。
+   * 现在：第一次失败 → 10 分钟后再自动试一次（这时启动高峰已经过去、网络也多半好了）；
+   * 第二次还失败 → 才交给用户，并说清"可以点哪里手动重试"。
+   * 只重试**一次**，不会再往后排 —— 网络真的断了的时候，隔十分钟弹一次是骚扰。
+   */
+  const STARTUP_CHECK_DELAY_MS = 20000;
+  const STARTUP_RETRY_DELAY_MS = 10 * 60 * 1000;
+
+  function scheduleStartupCheck({ first }) {
+    const wait = first ? STARTUP_CHECK_DELAY_MS : STARTUP_RETRY_DELAY_MS;
+    const timer = setTimeout(() => {
+      checkForUpdates({ download: false }).catch((e) => {
+        // ⚠️ 这里**不再重复报原因**：`checkForUpdates` 内部已经把每次尝试都写进日志了
+        //（包括那句 `原因摘要：net::ERR_CONNECTION_RESET`）。之前这里又抄了一遍
+        // `启动检查更新失败：…` + `原因摘要：…`，于是**一次失败在日志里出现两遍**，
+        // 用户贴过来时看着像坏了两次。
+        const why = describeUpdateError(e);
+        // ⚠️ 原因用「：」引出，**不能**用括号包 —— `describeUpdateError` 的输出自己就带括号
+        //（`可能是网络问题（更新服务器连不上）`），一套起来就是括号套括号。这个坑本仓库
+        //已经踩了三次（提示条、更新页那行、这里），所以加了机械守卫：见 round18 的 E3。
+        if (first) {
+          logger.log(`本次启动的自动检查没成功：${why} —— 不影响使用，`
+            + `${Math.round(STARTUP_RETRY_DELAY_MS / 60000)} 分钟后会自动再试一次。`);
+          scheduleStartupCheck({ first: false });
+        } else {
+          logger.log(`自动检查（含 10 分钟后的重试）都没成功：${why}。`
+            + "之后请点「使用教程 → 软件更新 → 检查更新」手动重试，或拿到最新安装包直接覆盖安装（答题数据不受影响）。");
+        }
+      });
+    }, wait);
+    timer.unref?.();
+  }
+
+  scheduleStartupCheck({ first: true });
 
   // 数据目录
   ipcMain.handle("app:data-dir", () => dataDir);

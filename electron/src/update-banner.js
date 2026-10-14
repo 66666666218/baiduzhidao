@@ -96,7 +96,9 @@
    * @param {number} [state.percent] 下载百分比（没有就是还没开始下）
    * @param {number} [state.transferred] 已下载字节
    * @param {number} [state.total] 总字节
-   * @param {string} [state.error] 上一次下载/检查失败的原因（渲染端收到 `update:error` 时记下来）
+   * @param {string} [state.lastCheckAt] 上次检查更新的时刻（"17:55"）
+   * @param {boolean|null} [state.lastCheckOk] 上次检查成没成（null = 还没查过）
+   * @param {string} [state.lastCheckWhy] 上次没成的原因（人话，已过 scrubUrl）
    * @returns {{visible:boolean, mode:"none"|"available"|"downloading"|"ready", text:string}}
    */
   function updateBannerState(state) {
@@ -127,14 +129,17 @@
     }
 
     // ③ 只查到有新版本，还没开始下。
-    //    注意"上次失败过"也要走这一支：此时 percent 是空的、确实没在下，而**
-    //    点一下确实会重试**（缓存命中就直接 ready，没命中就重下）—— 所以"点这里重试"是真话。
+    //    注意"上次没成功"也走这一支：此时 percent 是空的、确实没在下，而**
+    //    点一下确实会重试**（缓存命中就直接 ready，没命中就重下；检查本身也会重试）——
+    //    所以"点这里重试"是真话。
     if (available) {
-      if (briefError(s.error)) {
+      const why = briefError(s.lastCheckWhy);
+      // 文案对"检查失败"和"下载失败"都成立，所以不写死是哪种：两种情况下这句话都是真的
+      if (s.lastCheckOk === false && why) {
         return {
           visible: true,
           mode: "available",
-          text: `⚠️ 新版 v${available} 上次没下载成功：${briefError(s.error)} —— 点这里重试`,
+          text: `⚠️ 新版 v${available} 上次没成功：${why} —— 点这里重试`,
         };
       }
       return {
@@ -155,12 +160,32 @@
   }
 
   /**
+   * 「上次检查更新」的尾巴：`· 上次检查 17:55 没成功（…）`。
+   *
+   * 为什么值得占一行：界面上原来永远只有一句"当前版本 vX" —— **检查失败过也看不出来**。
+   * 于是用户会以为"已是最新"，其实我们压根没问到过服务器（2026-10-14 17:55 那次就是：
+   * `net::ERR_CONNECTION_RESET`，界面上什么都看不出来，用户只能来问）。
+   *
+   * @param {object} s 状态（读 lastCheckAt / lastCheckOk / lastCheckWhy）
+   */
+  function lastCheckTail(s) {
+    const ok = s.lastCheckOk;
+    // null / undefined = 还没查过（或不知道），那就不该出现"上次检查"这一段
+    if (ok !== true && ok !== false) return "";
+    const at = str(s.lastCheckAt);
+    if (ok === true) return at ? `　·　上次检查 ${at} 成功` : "";
+    // ⚠️ 原因用「：」引出，**不用括号包** —— 原因自己常常就带括号
+    //（`可能是网络问题（更新服务器连不上）`），套起来就成了括号套括号。
+    const why = briefError(s.lastCheckWhy);
+    return `　·　上次检查${at ? ` ${at}` : ""} 没成功${why ? `：${why}` : ""}`;
+  }
+
+  /**
    * 「软件更新」那一页的说明文字（原来只有 applyUpdateInfo/update:ready 两处各写一份，
    * 下载中那一整段时间是空白的）。
    *
-   * `state.error` 是"上一次下载/检查失败的原因"（渲染端收到 `update:error` 时记下来的）。
-   * 有它的时候必须说出来 —— 否则用户看到提示条从"下载中 42%"变回"发现新版本"，会以为
-   * 是自己看错了，然后再点一次、再失败一次。报错要短（太长的原因留给运行日志）。
+   * `state.lastCheck*` 是"上一次检查更新的时间与结果"（渲染端从 `update:checked` 收到、
+   * 刷新时从 `update:info` 复原）。有它才答得上"我点了检查更新，它到底查了没"。
    */
   function updateInfoLine(state, extra) {
     const s = state || {};
@@ -172,16 +197,23 @@
 
     if (e.supported === false) return `${base}（开发模式不支持在线更新）`;
     if (s.ready || ready) {
-      return `新版${ready ? ` v${ready}` : ""}已下载完成：点右边「重启并安装新版」，或直接关闭软件（下次打开就是新版）`;
+      return `新版${ready ? ` v${ready}` : ""}已下载完成：点右边「重启并安装新版」，或直接关闭软件（下次打开就是新版）`
+        + lastCheckTail(s);
     }
     const percent = percentOf(s.percent);
+    // 下载中那一档不挂"上次检查"：这一刻用户在等的就是进度，多一句只会稀释重点
     if (available && percent !== null) return `正在下载 v${available}：${percent}%${sizeText(s)}`;
     if (available) {
-      const why = briefError(s.error);
-      if (why) return `上次下载 v${available} 没成功：${why} —— 点「检查更新」重试`;
-      return `发现新版本 v${available}，点「检查更新」开始下载（约 85MB）`;
+      // 正文只说"能做什么"，**原因与时刻统一交给 lastCheckTail** ——
+      // 之前想在正文里再写一遍原因，结果正文那一支忘了拼尾巴，时间与原因就整段丢了
+      //（测试当场抓到：显示成「发现新版本 v2.0.48，点「检查更新」重试下载」，
+      // 用户还是不知道上次为什么没成）。一处说一件事，别两头都写。
+      const failed = s.lastCheckOk === false && Boolean(briefError(s.lastCheckWhy));
+      return (failed
+        ? `发现新版本 v${available}，点「检查更新」重试下载`
+        : `发现新版本 v${available}，点「检查更新」开始下载（约 85MB）`) + lastCheckTail(s);
     }
-    return base;
+    return base + lastCheckTail(s);
   }
 
   return { updateBannerState, bannerAction, updateInfoLine };
