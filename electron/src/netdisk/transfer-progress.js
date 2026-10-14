@@ -1,7 +1,11 @@
 "use strict";
 
 /**
- * 批量转存的「这批到底怎么跑、还要跑多久」规则（纯函数，全仓唯一一份）。
+ * 跑批的「这批到底怎么跑、还要跑多久」规则（纯函数，全仓唯一一份）。
+ *
+ * 覆盖面：批量转存（进度 / ETA / 分步耗时 / 额度与 IP 坎告知）+ AI 生成阶段的节奏播报。
+ * 生成阶段（tasks/generate.js）只复用这里的 formatDuration / measurePace / progressLine /
+ * shouldReportPace，**不在本地另算一份「秒/条」** —— 两个"还剩多久"互相不一致，比没有更糟。
  *
  * 为什么值得单独一个文件：
  * 用户拿着一张 **11164 行**的资源表跑批量转存，界面上刷出来的是
@@ -20,6 +24,11 @@
 
 /** 进度播报的默认节奏：每 N 条报一次（少了是噪音，多了用户又不知道在动） */
 const PROGRESS_EVERY = 25;
+/**
+ * AI 生成阶段的节奏播报节奏：同样每 N 条一次，但用 10 而不是 25 ——
+ * 生成一批通常只有几十条（抽题默认 20），25 条一报等于整批一次都不报。
+ */
+const PACE_EVERY = 10;
 /** 上传专用表增量落盘的默认节奏 */
 const QA_FLUSH_EVERY = 25;
 const QA_FLUSH_MIN_GAP_MS = 15 * 1000;
@@ -125,6 +134,42 @@ function progressLine({ done, total, perItemMs }) {
   const tail = est ? `剩余约 ${est.remainingText}` : "";
   const inner = [paceText, tail].filter(Boolean).join("，");
   return `📈 进度 ${n}/${all}${inner ? `（${inner}）` : ""}`;
+}
+
+/**
+ * 该不该播报一次「进度 + 秒/条 + 还剩多久」（AI 生成阶段用；转存那边用 PROGRESS_EVERY 自己的节奏）。
+ *
+ * 为什么样本至少 2 条才报：单条生成耗时的波动能到一倍以上（题目长短、供应商排队），
+ * 拿 1 条去除以 1 得到的"秒/条"和 ETA 是在骗人 —— 本项目在"界面/日志给一个拍脑袋数字"
+ * 上栽过的跟头足够写成一页，所以这里宁可少报一次。
+ *
+ * 收尾那一行不归这里管：generate.js 的总结论自带实测节奏，不需要 progressLine 再报一次
+ * "51/51" 这种没有信息量的行。
+ */
+function shouldReportPace({ done, every = PACE_EVERY } = {}) {
+  const n = Number(done);
+  if (!Number.isFinite(n) || n < 2) return false;
+  const step = Math.max(1, Math.floor(Number(every) || PACE_EVERY));
+  return n % step === 0;
+}
+
+/**
+ * AI 生成阶段的收尾节奏文案：`（并发 6，实测 2.6 秒/条，共 2 分钟）`。
+ *
+ * 为什么放在这里而不是 generate.js：那句里的「秒/条」口径**只许有一个家**
+ * （round19 的 E7 守着这件事：全仓扫 "秒/条"，只允许本文件出现）。
+ * generate.js 拿到的是别处算好的 pace，它确实不该再拼第二份文案 ——
+ * 两个"秒/条"各自四舍五入，用户同一天看到 2.6 和 2.7，就会怀疑数字是编的。
+ *
+ * 没有样本（pace <= 0）时返回空串：不说"0 秒/条"——0 的含义是"算不出来"，
+ * 而显示 0 会被读成"瞬间跑完"。
+ */
+function generatePaceTail({ concurrency, perItemMs, elapsedMs }) {
+  const pace = Number(perItemMs);
+  if (!Number.isFinite(pace) || pace <= 0) return "";
+  const cc = Math.max(1, Math.floor(Number(concurrency) || 1));
+  const total = formatDuration(elapsedMs);
+  return `（并发 ${cc}，实测 ${(pace / 1000).toFixed(1)} 秒/条${total ? `，共 ${total}` : ""}）`;
 }
 
 /**
@@ -304,6 +349,7 @@ function phaseLine(acc) {
 
 module.exports = {
   PROGRESS_EVERY,
+  PACE_EVERY,
   QA_FLUSH_EVERY,
   QA_FLUSH_MIN_GAP_MS,
   QA_FLUSH_MAX_GAP_MS,
@@ -317,6 +363,8 @@ module.exports = {
   formatDuration,
   measurePace,
   estimateRemaining,
+  shouldReportPace,
+  generatePaceTail,
   progressLine,
   batchScaleNotice,
   shareQuotaNotice,

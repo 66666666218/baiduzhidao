@@ -1184,7 +1184,9 @@ async function loadSettings() {
   $("aiBaseUrl").value = settings.aiBaseUrl || "";
   $("aiApiKey").value = settings.aiApiKey || "";
   $("aiModel").value = settings.aiModel || "";
-  $("aiConcurrency").value = settings.aiConcurrency || 2;
+  // 与 config.js 的 DEFAULTS.aiConcurrency 保持一致（settings:get 已经合并过默认值，
+  // 这个 `|| 6` 只是防御性兜底，正常走不到）。
+  $("aiConcurrency").value = settings.aiConcurrency || 6;
   $("aiDailyTokenBudget").value = settings.aiDailyTokenBudget || 0;
   $("aiMaxTokens").value = settings.aiMaxTokens || 520;
   // 温度用 ?? 而不是 ||：温度 0 是合法值，`0 || 0.7` 会把它显示成 0.7（用户改回 0 却看着像没存上）

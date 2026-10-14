@@ -52,7 +52,12 @@ const DEFAULTS = {
   aiBaseUrl: "https://api.siliconflow.cn/v1/chat/completions",
   aiApiKey: "",
   aiModel: "deepseek-ai/DeepSeek-V3",
-  aiConcurrency: 2,
+  // AI 生成的并发数（同时发几条请求）。默认 6，不是 2 —— 依据是 2026-10-09 一次真机跑批：
+  // 51 题、并发 2，共 135 秒（= 2.65 秒/题，单次请求约 5.3 秒）。同一条批在 6 条并发下约 45 秒。
+  // 为什么敢默认给到 6：供应商（硅基流动）返 429 时 LlmClient 会自动退避重试
+  // （2s/4s/6s，最多 3 次），失败只让那一题重试，不会烧号、也不会静默丢答案。
+  // 上限 8（见下面 clampInt）；界面设置页同一个范围，用户可自己调回 1。
+  aiConcurrency: 6,
   aiMaxTokens: 520,
   aiTemperature: 0.7,
   aiDailyTokenBudget: 0,
