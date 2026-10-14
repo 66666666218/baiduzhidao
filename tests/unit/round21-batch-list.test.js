@@ -220,3 +220,107 @@ test("N2 突变脚本拒绝含糊的替换（找不到 / 命中多处都当场�
   assert.match(src, /hits === 0/);
   assert.match(src, /hits > 1/);
 });
+
+// --------------------------------------------- O 组：发版校验的第②条必须**真的**去查
+
+const VERIFY_RELEASE = "scripts/verify-release.js";
+
+test("O1 发版校验的比对规则是真函数：一致 / 指纹不符 / 资产缺失 / tag 不对", () => {
+  // 为什么单独立一条（2026-10-14 抓到的**假守卫**）：`verify:release` 的第②条原先写着
+  //「与 GitHub API 的 assets[].digest 逐一比对」，实际只是把本地 sha256 打印出来、再打一句
+  //「比对方式：查 releases/latest 看 digest」，最后**照样宣布「三件套指纹都齐了」**。
+  // 比没有校验更糟 —— 它会让人放心地**不去手工核对**。现在规则提成纯函数，测试直接喂假数据。
+  const { compareRelease } = require(path.join(ROOT, VERIFY_RELEASE));
+  assert.equal(typeof compareRelease, "function");
+
+  const local = { "a.exe": "aa", "latest.yml": "bb", "a.exe.blockmap": "cc" };
+  const digest = (x) => `sha256:${x}`;
+  const rel = (tag, map) => ({
+    tag_name: tag,
+    assets: Object.keys(map).map((n) => ({ name: n, digest: digest(map[n]) })),
+  });
+
+  // ① 全一致 → 无失败
+  assert.deepEqual(compareRelease({ version: "1.2.3", localDigests: local, release: rel("v1.2.3", local) }).failures, []);
+  // ② 指纹不符（上传损坏/传了旧文件）→ 必须点名是哪个文件
+  const bad = compareRelease({ version: "1.2.3", localDigests: local, release: rel("v1.2.3", { ...local, "a.exe": "ff" }) });
+  assert.equal(bad.failures.length, 1);
+  assert.match(bad.failures[0], /a\.exe/);
+  assert.match(bad.failures[0], /不一致/);
+  // ③ 资产缺失 → 必须说"下不到"
+  const miss = compareRelease({ version: "1.2.3", localDigests: local, release: rel("v1.2.3", { "a.exe": "aa" }) });
+  assert.equal(miss.failures.length, 2, "另外两个资产都要报缺失");
+  assert.ok(miss.failures.every((f) => /缺少资产/.test(f)));
+  // ④ tag 不对 → 客户端会拿到旧版
+  const tag = compareRelease({ version: "1.2.3", localDigests: local, release: rel("v1.2.2", local) });
+  assert.equal(tag.tagOk, false);
+  assert.match(tag.failures[0], /v1\.2\.2/);
+  // ⑤ 拿不到 release 数据 → 不能装作没事
+  assert.equal(compareRelease({ version: "1.2.3", localDigests: local, release: null }).tagOk, false);
+  assert.equal(compareRelease({}).failures.length, 1);
+
+  // stripQuotes：app-update.yml 里 owner 的值是带引号的，不剥会让请求变 404（真踩过）
+  const { stripQuotes } = require(path.join(ROOT, VERIFY_RELEASE));
+  assert.equal(stripQuotes('"66666666218"'), "66666666218");
+  assert.equal(stripQuotes("'abc'"), "abc");
+  assert.equal(stripQuotes(" abc "), "abc");
+});
+
+test("O2 被 require 时不许跑主流程（否则测试会真发网络请求 / 直接 process.exit）", () => {
+  const raw = fs.readFileSync(path.join(ROOT, VERIFY_RELEASE), "utf8");
+  const src = stripComments(raw);
+  // 主流程必须收进函数，且**只**被 require.main 条件调用
+  assert.match(src, /const main = \(\) => \{/);
+  assert.match(src, /if \(require\.main === module\) main\(\);/, "只有作为脚本直接跑时才执行主流程");
+  const calls = src.match(/main\(\)/g) || [];
+  assert.equal(calls.length, 1, "main() 只许出现一次（那次调用），别在别处再调");
+  assert.match(src, /module\.exports = \{ compareRelease, stripQuotes, ymlField, planOnlineCheck, verdictLine \};/);
+  // 必须能被当**脚本**编译（守卫 D2 的口径）—— 2026-10-14 就是这条抓到我的：
+  // 为了让"被 require 时不跑主流程"用了模块顶层 `return`，CommonJS 合法，
+  // 但 `vm.Script` 把它当脚本编译，顶层 return 是 SyntaxError。
+  const vm = require("node:vm");
+  assert.doesNotThrow(() => new vm.Script(raw), "顶层 return / 其它非脚本语法会让守卫 D2 红");
+  // 真的 require 一次，确认拿到的是纯函数而不是噪音
+  const m = require(path.join(ROOT, VERIFY_RELEASE));
+  assert.equal(typeof m.compareRelease, "function");
+});
+
+test("O3 「要不要查线上」与「结尾怎么下结论」都必须真调函数（不许扫文本）", () => {
+  // ⚠️ 这条最初写成扫文本（断言源码里有 https.get / 有"未校验"），
+  // 结果突变把 `fetchLatestRelease(...)` 换成抛异常 —— **测试照样全绿**：
+  // `https.get` 那几个字还在源码里，可它永远不会被调用。
+  // 又验证了一次"扫文本守不住逻辑"，所以这两条规则也提成了纯函数。
+  const { planOnlineCheck, verdictLine } = require(path.join(ROOT, VERIFY_RELEASE));
+
+  // 三种"查不了"都要明说，而且**不算通过**
+  const noRepo = planOnlineCheck({ repoCoords: null, token: "t" });
+  assert.equal(noRepo.can, false);
+  assert.match(noRepo.reason, /取不到仓库坐标/);
+  assert.match(noRepo.reason, /不算通过/);
+  const noToken = planOnlineCheck({ repoCoords: { owner: "o", repo: "r" }, token: "" });
+  assert.equal(noToken.can, false);
+  assert.match(noToken.reason, /GH_TOKEN/);
+  assert.match(noToken.reason, /不算通过/);
+  // 两者齐备才真去查
+  assert.equal(planOnlineCheck({ repoCoords: { owner: "o", repo: "r" }, token: "t" }).can, true);
+  assert.equal(planOnlineCheck({}).can, false, "空入参不能当成'能查'");
+
+  // 结尾结论：没查过 → 必须说"未校验"，且**绝不许**出现"全部核对"
+  const notChecked = verdictLine(false);
+  assert.match(notChecked, /未校验/);
+  assert.doesNotMatch(notChecked, /全部核对/, "没查线上就不能说『全部核对』—— 这就是那个假守卫的实质");
+  assert.match(verdictLine(true), /全部核对/);
+  assert.doesNotMatch(verdictLine(true), /未校验/);
+});
+
+test("O4 脚本里必须真的发请求（https.get 存在，且 fetch 失败有分支）", () => {
+  const src = stripComments(fs.readFileSync(path.join(ROOT, VERIFY_RELEASE), "utf8"));
+  assert.match(src, /https\.get\(/, "必须真的发请求，不能只是打印本地哈希");
+  assert.match(src, /api\.github\.com/);
+  assert.match(src, /catch \(e\) \{[\s\S]*?未校验：查线上 release 失败/, "查失败要说『未校验』而不是静默");
+  // 接线也要钉（逻辑有 O3 的纯函数守，这里只守"接上了没"）：
+  // 把 `await fetchLatestRelease(...)` 换成抛异常 = 源码里 https.get 还在、但永远不查，
+  // 这种突变只有"真的有人调它"能挡住。
+  assert.match(src, /await fetchLatestRelease\(repoCoords, token\)/, "必须真的去查线上 release");
+  assert.match(src, /compareRelease\(\{ version, localDigests, release: rel \}\)/, "查到的结果必须喂给比对规则");
+});
