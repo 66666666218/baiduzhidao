@@ -274,3 +274,14 @@ test("E8 「额度用尽」的那句话必须挂在 countDone 里（唯一漏斗
   // 依此断言"不自动停"：这一刻不许出现 fatalStop
   assert.doesNotMatch(body, /fatalStop = true/);
 });
+
+test("E9 界面必须说清「数量上限」到底是前 N 行，并写明 300/账号 的额度上限", () => {
+  const html = read("electron/renderer/index.html");
+  // 「数量上限」原来的说明只有"0=全部"，用户会读成"本次跑 N 条"，而多天递增跑靠的正是这个语义
+  assert.match(html, /数量上限（0=全部；从头数前 N 行，已跑过的秒跳过）/);
+  // 额度这个最关键的操作事实必须出现在转存卡片里（只在日志里说等于没说）
+  assert.match(html, /每个账号每日最多创建 300 个分享链接/);
+  assert.match(html, /最多创建 300 个分享链接<\/b>[\s\S]{0,200}账号数 × 300/);
+  // ⚠️ index.html 不渲染 markdown：加了 ** 会原样显示出来（本轮差点犯）
+  assert.doesNotMatch(html, /\*\*/);
+});
