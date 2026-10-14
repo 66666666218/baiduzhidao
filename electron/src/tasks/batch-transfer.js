@@ -29,6 +29,8 @@ const excel = require("../storage/excel");
 const qaLib = require("../netdisk/qa-template-lib");
 const { credentialHint } = require("../netdisk/manager");
 const { envLabelsOf, dedupeEnvLabels } = require("../domain/account-topic");
+// 「这批多大 / 还差多久 / 最多能出多少条」——文案与判据的唯一一份（纯函数，可单测）
+const progress = require("../netdisk/transfer-progress");
 
 
 // 打包后 __dirname 在 asar 内且安装目录不可写：数据一律放用户数据目录（%AppData%\zhidao-answer-studio）
@@ -247,7 +249,9 @@ async function runBatchTransferTask(ctx, deps) {
   const outName = outNameRaw || "上传专用表-已转存";
 
   // 读表 / 链接清单
-  const XLSX = require("xlsx");
+  // 注：本文件**不再自己 require("xlsx")** —— 读表走 storage/excel.readTableRows，
+  // 写表走 storage/excel.writeWorkbook / writeWorkbookSafe，全仓各一处（第 19 轮清掉的死绑定：
+  // 原来这里 require 的 XLSX 只被"建完就丢"的临时工作簿用到，等于每条成功都多建一遍整表）。
   let rows;
   if (/\.txt$/i.test(filePath)) {
     const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/).map((x) => x.trim()).filter((x) => x && !x.startsWith("#"));
@@ -358,23 +362,16 @@ async function runBatchTransferTask(ctx, deps) {
 
   const total = limit > 0 ? Math.min(limit, rows.length - startIdx) : rows.length - startIdx;
   log(`开始纯协议批量转存：目标 ${total} 条 | 并发 ${cc}（${creds.length} 个账号） | 目标目录 ${destRoot}`);
-  if (makeShare) {
-    // 百度硬限制：单账号每日最多 300 个分享链接。超大批（全量采集常见 >300）若每条都建分享，
-    // 超出部分的资源会建不出分享。提前把话说清楚，免得用户以为"那些条转存失败了"。
-    const shareCap = creds.length * SHARE_DAILY_LIMIT;
-    if (total > shareCap) {
-      log(`⚠️ 本次要转存 ${total} 条、每条都会建分享，但百度限制**单账号每日最多 ${SHARE_DAILY_LIMIT} 个分享链接**`
-        + `（共 ${creds.length} 个账号 ≈ 上限 ${shareCap} 条）。超出部分的资源会照常转存进网盘，但建不了分享、`
-        + `也不会进上传专用表；可换号 / 次日 / 在网盘内手动生成分享链接补足。`);
-    }
-  }
+  // 开工先回答用户一定会问的三个问题：这是不是批量、为什么一条一条走、这批能出多少条。
+  // 这些数字全部能从本函数已有的变量算出来，以前只是**没有任何地方算**（见 transfer-progress.js 头注释）。
+  for (const line of progress.batchScaleNotice({
+    total, accounts: creds.length, cc, shareDailyLimit: SHARE_DAILY_LIMIT, destRoot,
+  })) log(line);
   if (cc > 1) {
-    log(`${cc} 条链并行：**每个线程固定一个账号**，账号之间靠「账号代理」错开出口 IP，单个账号内部仍然严格串行。`);
     log(`提示这里为什么安全：以前那条"并发 2 就 100% 失败"的实验结论，前提是**两个线程抢同一个账号**`
       + `（那时光标轮换下两者几乎必然同时拿到 creds[0]）——它验的是同 IP 并发，不是多账号并发。`);
   } else if (creds.length > 1 && ccRequested <= 0) {
     // 把"为什么没并起来"说清楚，否则用户只会觉得软件慢，而不知道慢是自己没配代理导致的。
-    log(`串行模式：${creds.length} 个账号轮流处理，同一时刻只有一条链在跑。`);
     log(`　想并行到 ${Math.min(creds.length, MAX_TRANSFER_PARALLELISM)} 条，去设置页「账号代理」给每个账号配一条**互不相同**的代理 ——`
       + `线程数已经被硬性限制为不超过账号数，所以不会退化成"同一个号同时发两个请求"那种必失败的形态。`);
   }
@@ -414,6 +411,56 @@ async function runBatchTransferTask(ctx, deps) {
   let lastShareLimitPauseAt = 0;   // 上次因限流暂停的时刻（避免每条失败都触发一次暂停，把整批拖成慢动作）
   let shareLimitPauses = 0;        // 本批一共停了几次（用于结尾给个"这批花了多久在等"的账）
   const qaRows = [];
+
+  // ── 上传专用表的**增量落盘** + 进度播报 ──
+  //
+  // 为什么必须增量（用户 2026-10-14 的疑问"为什么还是一行一行"的另一半原因）：
+  // 这张表以前只在整批结束时写一次。11164 条 × 实测 9 秒/条 ≈ **28 小时**，
+  // 也就是"跑到第二天下午才第一次看到问答表格"；这期间用户打开数据目录只看得到 state.jsonl，
+  // 自然会以为"根本没生成问答表 / 是不是没在批量跑"。现在每约 25 条（≥15 秒节流）刷一次。
+  const qaTablePath = path.join(outDir, `${outName}.xlsx`);
+  const startedAt = Date.now();
+  let lastFlushAt = startedAt;
+  let flushedQaRows = 0;           // 上次落盘时表里有多少行（qaRows.length 会随续跑瞬间跳变，所以单独记）
+  let qaFlushDisabled = false;     // 表被 Excel 打开 → 只保留结束时的备份写入，避免刷出一堆"_备份_时间戳"文件
+  let shareExhaustedAnnounced = false;  // "所有账号分享额度都用尽了"只喊一次（那一刻之后本批不再产出问答行）
+  function flushQaTable(why) {
+    if (qaFlushDisabled || !qaRows.length) return;
+    try {
+      // 这里刻意用**会抛**的 writeWorkbook 而不是 writeWorkbookSafe：
+      // 增量阶段被占用时应当"跳过这一次"，而不是每 4 分钟生成一个备份文件。
+      excel.writeWorkbook(qaTablePath, qaRows, "百度知道问答", ["qid", "问题标题", "回答内容"]);
+      lastFlushAt = Date.now();
+      flushedQaRows = qaRows.length;
+      log(`📄 上传专用表已更新：${qaRows.length} 条（${why}）—— 不等整批结束就能打开看/直接拿去上传。`);
+    } catch (e) {
+      qaFlushDisabled = true;
+      log(`⚠️ 上传专用表暂时写不进去（${(e.message || "").slice(0, 80)}）—— 多半是这个表正被 Excel 打开。`
+        + "已改为**整批结束时写一次**；台账 state.jsonl 不受影响，转存进度一条都不会丢。");
+    }
+  }
+  /**
+   * 成功一条就调这里（不是 `done += 1`）：把"计数 → 增量落表 → 进度播报"绑在同一个动作上，
+   * 以后新增任何一条"算成功"的路径都不会漏掉播报（以前 4 个 done+=1 分散在各分支里）。
+   */
+  function countDone() {
+    done += 1;
+    const now = Date.now();
+    if (progress.shouldFlushQa({ done: qaRows.length, flushedRows: flushedQaRows, lastFlushAt, now })) {
+      flushQaTable("进度自动保存");
+    }
+    if (done % progress.PROGRESS_EVERY === 0) {
+      log(progress.progressLine({ done, total, perItemMs: progress.measurePace({ done, elapsedMs: now - startedAt }) }));
+    }
+    // 分享额度全部用尽的那一刻，必须说一次：从这儿起本批不再产出问答行。
+    // **不自动停** —— 用户要的可能本来就是"把资源存进自己网盘"，替他把决定做了反而更糟。
+    if (progress.shouldAnnounceShareExhausted({
+      blockedAccounts: shareBlocked.size, accounts: creds.length, announced: shareExhaustedAnnounced,
+    })) {
+      shareExhaustedAnnounced = true;
+      log(progress.shareExhaustedNotice({ remaining: total - done, accounts: creds.length, shareDailyLimit: SHARE_DAILY_LIMIT }));
+    }
+  }
 
   // 每条完整链（独立 Jar 会话，并发安全）；窗口按轮换粒度切换
   // 【并发修复】游标与名额必须跨 worker 共享：此前每个 worker 各持 cursor=0，
@@ -562,7 +609,7 @@ async function runBatchTransferTask(ctx, deps) {
           const sfEntry = { srcLink, name: rawName, status: "share_failed", phase: "done", toPaths, ownLink: "", ...shareRetryFields(retry, share), error: share.shareErrMsg.slice(0, 200), at: new Date().toISOString() };
           state.set(srcLink, sfEntry);
           saveState(sfEntry);
-          done += 1;
+          countDone();
           transferredNoShare += 1;
           const statusText = share.shareLimited
             ? "已转存（达每日分享上限，仅转存）"
@@ -585,7 +632,7 @@ async function runBatchTransferTask(ctx, deps) {
         // 落盘真实文件名乱码 → 不进问答表（资源已转存，人工可在网盘处理）
         if (qaLib.isGarbledName(decodeURIComponent((toPaths[0] || "").split("/").pop() || ""))) {
           saveState({ srcLink, name: displayName, status: "done", phase: "done", toPaths, ownLink, note: "文件名乱码跳过问答", at: new Date().toISOString() });
-          done += 1;
+          countDone();
           ctx.emitItem({ ...itemBase, status: "已转存（文件名乱码，跳过问答）" });
           log(`⚠️ ${rawName.slice(0, 24)} 落盘文件名乱码，跳过问答`);
           continue;
@@ -594,7 +641,7 @@ async function runBatchTransferTask(ctx, deps) {
           displayName = decodeURIComponent((toPaths[0] || "").split("/").pop() || "").replace(/\[([^\]]*)\]/g, "$1").trim();
           if (qaLib.reject(displayName, ownLink)) {
             saveState({ srcLink, name: rawName, status: "done", phase: "done", toPaths, ownLink, note: "名称不合规跳过问答", at: new Date().toISOString() });
-            done += 1;
+            countDone();
             ctx.emitItem({ ...itemBase, status: "已转存（名称不合规跳过问答）", ownLink });
             log(`⚠️ [${done}/${total}] ${rawName.slice(0, 24)} 名称不合规，已转存分享但不进问答表`);
             continue;
@@ -611,7 +658,7 @@ async function runBatchTransferTask(ctx, deps) {
         if (doneKey && doneKey.length >= 2) seenKeys.add(doneKey);
         saveState(okEntry);
         qaRows.push(qaRow);
-        done += 1;
+        countDone();
         consecutiveFails = 0;   // 成功一条，全局连败清零
         ctx.emitItem({ ...itemBase, status: "已转存分享", ownLink });
         ctx.report({ done, total, status: "running" });
@@ -701,17 +748,16 @@ async function runBatchTransferTask(ctx, deps) {
 
   ctx.report({ done, total, status: (fatalStop || ctx.shouldStop()) ? "stopped" : "done" });
 
-  // 导出上传专用表
+  // 导出上传专用表（整批结束时的最终一次写入；增量过程中一直在往**同一个路径**写）
   fs.mkdirSync(outDir, { recursive: true });
   let outputPath = "";
   if (qaRows.length) {
-    outputPath = path.join(outDir, `${outName}.xlsx`);
-    const excel = require("../storage/excel");
-    const ws = XLSX.utils.json_to_sheet(qaRows, { header: ["qid", "问题标题", "回答内容"] });
-    const wbOut = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wbOut, ws, "百度知道问答");
+    outputPath = qaTablePath;
+    // 最终一次用 writeWorkbookSafe：被 Excel 占用时另存备份，保证"东西一定在"。
+    // （增量阶段用的是会抛的 writeWorkbook，为的是不刷出一堆备份文件，见 flushQaTable）
     const used = excel.writeWorkbookSafe(outputPath, qaRows, "百度知道问答", ["qid", "问题标题", "回答内容"], log);
     if (used !== outputPath) outputPath = used; // 表格被占用时自动备份
+    if (qaFlushDisabled) log("（增量过程中这张表一直被占用，所以只写了最后这一份；下次跑之前建议先关掉 Excel）");
   }
   const totalOk = [...state.values()].filter((s) => s.status === "done").length;
   log(`=== 批量转存完成 === 本轮转存成功 ${done}（其中分享未建成 ${transferredNoShare}）| 失败 ${failed} | 历史累计 ${totalOk}`);
