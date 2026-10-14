@@ -7,6 +7,8 @@ const { buildQualityGate } = require("../quality/gate");
 // 不在本地另写一份 pace / formatDuration / 收尾文案 —— 两个"还剩多久"互相不一致比没有更糟。
 //（这行的字面量口径也要避开那个词：扫文本守卫按"全仓只许一处"判，注释里写一遍也算一处。）
 const { progressLine, measurePace, shouldReportPace, generatePaceTail } = require("../netdisk/transfer-progress");
+// 配额用尽后的熔断判据（与"普通 429 退避重试"是相反的处理，别混在一起）
+const { planQuotaStop } = require("../llm/rate-limit");
 
 /** 质检重复度比对窗口大小（条） */
 const DUPLICATE_WINDOW = 300;
@@ -100,6 +102,13 @@ const total = slots.length;
   async function worker() {
     while (true) {
       if (ctx.shouldStop() || budgetExhausted) return;
+      // 熔断：一旦确认是"配额用尽"（供应商给了几小时后的重置时间），剩下的条目**一条都不再送**。
+      // 不熔断的后果很具体：64 并发 × 6 次退避 = 384 次注定失败的请求，
+      // 用户要等整批跑完才知道白等了，而且这些请求还会把额度窗口拖得更久。
+      // 判据是纯函数 `planQuotaStop()`，测试直接喂假数据在 `generate.js` 之外验证（round24 Q 组）。
+      if (planQuotaStop({ quotaExhausted: Boolean(llm.usage && llm.usage.quotaExhausted), remaining: total - done }).stop) {
+        return;
+      }
       await ctx.pausePoint?.("生成·题间检查点");
       const slot = uniqueWork[done];
       if (!slot) return;

@@ -3,6 +3,9 @@
 const { nowText } = require("../config");
 const { createOpenAiCompatibleProvider, describeProvider } = require("./providers/openai-compatible");
 const { createAnswerStrategy, buildChat, cleanAnswer, applyTemplate } = require("./strategies/answer");
+// 429 有两种含义（速率限制 / 配额用尽），处理方式相反 —— 判据单开一个纯函数模块，
+// 别混进重试逻辑里：这里扫文本读不出来，测试必须能真调它（见 round24 的 L5/L6）。
+const { classifyRateLimit } = require("./rate-limit");
 
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 const RETRYABLE_ERROR = /fetch failed|network|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ECONNRESET|timeout|超时/i;
@@ -89,7 +92,13 @@ class LlmClient {
       : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     this.onUsage = typeof options.onUsage === "function" ? options.onUsage : null;
     this.semaphore = new Semaphore(options.concurrency || 1);
-    this.usage = { calls: 0, promptTokens: 0, completionTokens: 0, rateLimited: 0 };
+    // rateLimited = 撞 429 的次数（调并发数的依据）；quotaExhausted = 其中属于"配额用尽"的
+    // （这种重试没用，必须早停）。quotaResetText 是供应商原文里的重置时刻，直接播报不重新推算。
+    this.usage = {
+      calls: 0, promptTokens: 0, completionTokens: 0, rateLimited: 0, quotaExhausted: false, quotaResetText: "",
+    };
+    // 配额用尽只喊一次：64 条并发会同时撞到，刷屏反而看不清重点
+    this.quotaNoticeShown = false;
     this.strategy = createAnswerStrategy({
       systemPrompt: options.systemPrompt,
       titleTemplate: options.titleTemplate,
@@ -201,6 +210,20 @@ class LlmClient {
           const rateLimited = lastError.status === RATE_LIMIT_STATUS;
           if (rateLimited) {
             this.usage.rateLimited += 1;
+            const verdict = classifyRateLimit(lastError.message);
+            if (verdict.quotaExhausted) {
+              // ⚠️ 这是「配额用尽」，不是「慢一点」—— 供应商自己说了要几小时后才重置，
+              // 而我们整套退避梯加起来才约 60 秒，**等不到**。这时候重试不但救不回这一题，
+              // 还会把后面所有题目一条条送进同一个 429（64 并发下 = 384 次注定失败的请求），
+              // 并且把额度窗口拖得更久。所以：立刻停手，把"几点恢复"和"怎么立刻继续"说清楚。
+              this.usage.quotaExhausted = true;
+              if (verdict.resetText) this.usage.quotaResetText = verdict.resetText;
+              if (onLog && !this.quotaNoticeShown) {
+                this.quotaNoticeShown = true;
+                onLog(quotaExhaustedLine(verdict.resetText));
+              }
+              break;
+            }
             // 撞到 429 才放宽：把循环上限顶到 RATE_LIMIT_MAX_ATTEMPTS。
             maxAttempts = RATE_LIMIT_MAX_ATTEMPTS;
           }
@@ -227,6 +250,22 @@ class LlmClient {
       this.semaphore.release();
     }
   }
+}
+
+/**
+ * 配额用尽时给用户的那一行。
+ *
+ * 两个信息缺一不可：①**几点恢复**（供应商原文里的重置时刻，直接抄过来，不重新推算）；
+ * ②**怎么立刻继续**（换模型 / 换 Key —— 这也是供应商自己在那条报错里给的出口）。
+ * 只说"失败了"会让人反复点重试，而重试在这里**永远**没用。
+ *
+ * @param {string} resetText 「2026-10-15 15:35:22 UTC+8」这种原样时刻，可能为空
+ * @returns {string}
+ */
+function quotaExhaustedLine(resetText) {
+  const when = resetText ? `${resetText} 之后才会恢复，` : "要等配额重置后才会恢复，";
+  return `🛑 供应商配额已用尽（HTTP 429）：${when}现在重试没有意义，已停止本批生成。`
+    + "想立刻继续：在设置页「AI 生成答案」里换一个模型（或换一个 API Key）。";
 }
 
 function normalizeError(error) {

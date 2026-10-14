@@ -23,6 +23,7 @@ const path = require("node:path");
 const FILES = [
   ["electron/src/config.js", "electron/src/config.js"],
   ["electron/src/llm/client.js", "electron/src/llm/client.js"],
+  ["electron/src/llm/rate-limit.js", "electron/src/llm/rate-limit.js"],
   ["electron/src/netdisk/transfer-progress.js", "electron/src/netdisk/transfer-progress.js"],
   ["electron/src/tasks/generate.js", "electron/src/tasks/generate.js"],
   ["electron/renderer/index.html", "electron/renderer/index.html"],

@@ -237,3 +237,137 @@ test("O2 并发上限只在一个地方定义（不许在别处再写一个 64�
   assert.match(read(CONFIG), /clampInt\(next\.aiConcurrency, 1, AI_CONCURRENCY_MAX,/,
     "后端夹取必须用导出的常量，不写死数字");
 });
+
+// --------------------------------------------- P 组：429 的两种含义必须分开处理
+//
+// 起因是用户 2026-10-15 实际撞到的那条报错原文：
+//   「429 您的使用量已超出频率限制，将在 2026-10-15 15:35:22 UTC+8 重置，
+//     您也可以切换其他模型继续使用。」
+// 这不是"慢一点就好"，是**配额用尽、几小时后才恢复**。而第一版 429 处理
+// （6 次尝试 × 2/4/8/15/30 秒 = 合计约 60 秒）对这种情况**完全无效**，
+// 在 64 并发下还会放大成 384 次注定失败的请求。所以：判成配额用尽 → 立刻停手 + 说清几点恢复。
+
+const { classifyRateLimit, planQuotaStop } = require("../../electron/src/llm/rate-limit");
+
+test("P1 区分「速率限制」与「配额用尽」", () => {
+  // 配额用尽：供应商给了明确重置时间
+  const quota = classifyRateLimit(
+    "429 您的使用量已超出频率限制，将在 2026-10-15 15:35:22 UTC+8 重置，您也可以切换其他模型继续使用。",
+  );
+  assert.equal(quota.quotaExhausted, true, "给了重置时间就一定是配额用尽");
+  assert.equal(quota.resetText, "2026-10-15 15:35:22 UTC+8", "重置时刻要原样带出来，不重新推算");
+
+  // 速率限制：只说太频繁，不给几小时后的时间
+  const burst = classifyRateLimit("429 Too Many Requests");
+  assert.equal(burst.quotaExhausted, false, "普通速率限制不该被当成配额用尽");
+  assert.equal(burst.resetText, "");
+
+  // 空/异常输入不炸，且不误判
+  for (const bad of ["", null, undefined, 0]) {
+    assert.equal(classifyRateLimit(bad).quotaExhausted, false, `输入 ${JSON.stringify(bad)} 不该判成配额用尽`);
+  }
+});
+
+test("P2 配额用尽的 429 不重试（等 60 秒也等不到几小时后）", async () => {
+  const seen = [];
+  const client = new LlmClient({
+    apiKey: "k", baseUrl: "http://127.0.0.1:1/v1/chat/completions", model: "m",
+    concurrency: 2,
+    fetchImpl: async () => {
+      seen.push(1);
+      return {
+        ok: false,
+        status: RATE_LIMIT_STATUS,
+        text: async () => JSON.stringify({
+          message: "您的使用量已超出频率限制，将在 2026-10-15 15:35:22 UTC+8 重置，您也可以切换其他模型继续使用。",
+        }),
+      };
+    },
+    sleepImpl: async () => {},
+    onUsage: () => {},
+  });
+
+  const logs = [];
+  await assert.rejects(
+    () => client.generateAnswer({ title: "T" }, { onLog: (m) => logs.push(m) }),
+    /配额|频率限制|429|限额/,
+    "配额用尽时这一题应当直接失败",
+  );
+  assert.equal(seen.length, 1, "配额用尽只发一次请求，不该再退避重试 5 次");
+  assert.equal(client.usage.quotaExhausted, true);
+  assert.equal(client.usage.quotaResetText, "2026-10-15 15:35:22 UTC+8");
+  assert.equal(client.semaphore.running, 0, "名额必须归还");
+
+  // 那一行必须同时给出"几点恢复"和"怎么立刻继续"
+  const line = logs.find((m) => String(m).includes("配额已用尽"));
+  assert.ok(line, "必须明确告诉用户配额用尽了");
+  assert.match(line, /2026-10-15 15:35:22 UTC\+8/, "要把供应商给的重置时刻原样说出来");
+  assert.match(line, /换一个模型|切换.*模型|API Key/, "要给出立刻继续的出路");
+});
+
+test("P3 熔断判据：配额没用尽就继续，用尽就停", () => {
+  assert.deepEqual(planQuotaStop({ quotaExhausted: false, remaining: 500 }), { stop: false, remaining: 500 });
+  assert.deepEqual(planQuotaStop({ quotaExhausted: true, remaining: 500 }), { stop: true, remaining: 500 });
+  assert.deepEqual(planQuotaStop({ quotaExhausted: true, remaining: 0 }), { stop: true, remaining: 0 });
+  assert.deepEqual(planQuotaStop({}), { stop: false, remaining: 0 }, "空输入不炸，默认继续");
+});
+
+test("P4 熔断真的接在 worker 循环里（锚点唯一）", () => {
+  const src = read("electron/src/tasks/generate.js");
+  // 起止标记必须唯一，否则切片会圈进无关代码 → 守卫变假绿（第 22 轮 S3 的教训）
+  // `async function worker()` 声明在 2 空格缩进处，所以它的收尾大括号就是第一个 "\n  }\n"。
+  // `while`/`if` 的收尾都在更深缩进，不会误匹配。
+  const start = "async function worker() {";
+  const from = src.indexOf(start);
+  assert.ok(from >= 0, "找不到 worker 函数");
+  assert.equal(src.indexOf(start, from + 1), -1, "worker 函数只应有一处（锚点必须唯一）");
+  // ⚠️ 本仓库**混用 LF / CRLF**（连同一个文件里都可能两样），所以必须用正则容忍 \r?\n，
+  // 不能拿 indexOf 拼死字符串（第 24 轮在这里白卡了一次）。
+  const close = /\n {2}\}\r?\n/.exec(src.slice(from));
+  assert.ok(close, "找不到 worker 函数结尾");
+  const block = src.slice(from, from + close.index);
+  assert.match(block, /planQuotaStop\(\{/, "worker 循环里必须调熔断判据");
+  assert.match(block, /llm\.usage && llm\.usage\.quotaExhausted/, "必须读客户端记的配额用尽标记");
+  assert.match(read("electron/src/tasks/generate.js"), /require\("\.\.\/llm\/rate-limit"\)/,
+    "必须 require 那个纯函数模块，不许本地再抄一份");
+});
+
+test("P5 普通 429（速率限制）仍然重试到满 6 次——别把熔断扩大化", async () => {
+  // 熔断只针对"配额用尽"。普通速率限制必须照旧重试，否则并发一高就大面积判废，
+  // 又回到用户抱怨的那件事上。
+  let seen = 0;
+  const client = new LlmClient({
+    apiKey: "k", baseUrl: "http://127.0.0.1:1/v1/chat/completions", model: "m",
+    concurrency: 1,
+    fetchImpl: async () => {
+      seen += 1;
+      if (seen <= RATE_LIMIT_MAX_ATTEMPTS - 1) {
+        return { ok: false, status: RATE_LIMIT_STATUS, text: async () => JSON.stringify({ message: "Too Many Requests" }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ choices: [{ message: { content: "恢复后的回答" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }),
+      };
+    },
+    sleepImpl: async () => {},
+    onUsage: () => {},
+  });
+  const answer = await client.generateAnswer({ title: "T" });
+  assert.equal(answer, "恢复后的回答");
+  assert.equal(seen, RATE_LIMIT_MAX_ATTEMPTS, "普通 429 应重试到第 6 次才成功");
+  assert.equal(client.usage.quotaExhausted, false, "普通速率限制不得误判成配额用尽");
+});
+
+// --------------------------------------------- Q 组：退避梯单调性（把 L4 的判据补严）
+
+test("Q1 退避梯严格递增且长度 = 尝试次数 - 1", () => {
+  assert.equal(RATE_LIMIT_DELAYS_MS.length, RATE_LIMIT_MAX_ATTEMPTS - 1,
+    "6 次尝试之间只有 5 次等待：梯子多一档就永远走不到最后一档");
+  for (let i = 1; i < RATE_LIMIT_DELAYS_MS.length; i += 1) {
+    assert.ok(RATE_LIMIT_DELAYS_MS[i] > RATE_LIMIT_DELAYS_MS[i - 1], "退避梯必须严格递增");
+  }
+  // 总时长要"够长但不荒唐"：能盖住常见的限流窗口，又不会让人以为卡死
+  const totalSec = RATE_LIMIT_DELAYS_MS.reduce((a, b) => a + b, 0) / 1000;
+  assert.ok(totalSec >= 30 && totalSec <= 120, `退避总时长应在 30~120 秒之间，实测 ${totalSec}s`);
+});
