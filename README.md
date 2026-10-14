@@ -24,10 +24,17 @@ npm test                   # 单元测试（500+ 条，含"新电脑环境"守�
 npm run test:e2e           # 全链路 E2E（需本机有 Edge，无需账号）
 npm run selftest           # 一键自检 CLI（不开应用验证整条链路）
 npm run dist               # 打包成安装包 → dist/（改完代码**必须重打包**才生效，见下）
+npm run verify:package     # ⚠️ 发版必跑：验真产物（版本号 / 生产依赖是否真在包里 / undici ≤6）
 ```
 
 > **改了代码但运行起来还是老样子？** `dist/` 里放的是历史构建产物（已被 .gitignore 忽略），
 > 开发时 `npm start` 直接跑源码；要让**安装版**也生效，必须重新 `npm run dist`。
+
+> **为什么必须有 `npm run verify:package`**：`require("undici")` 能跑通**不等于**它被打进了安装包。
+> 2026-10-14 实测过这一幕：`node_modules/undici` 的 `package.json` 丢了，源码里 `require` 照样成功
+> （Node 会退到 `index.js`）、全部单测全绿，但 electron-builder 收集依赖靠的就是那个 `package.json` ——
+> 于是**连着好几个安装包里都没有 undici**，代理功能静默退化成直连。单测守不住这种事（它跑在源码树上），
+> 只有直接查 asar 才看得见。
 
 
 ## 功能视图（与 v1 对应）

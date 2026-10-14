@@ -1143,6 +1143,10 @@ $("pauseTask").addEventListener("click", async () => {
     $("pauseTask").hidden = true;
     $("resumeTask").hidden = false;
     appendLog("已请求暂停，任务将在下一个检查点挂起...");
+  } else if (!result) {
+    // 主进程没回应：以前这里完全静默，用户点了暂停看不到任何反馈（连"没成功"都不知道）。
+    // accepted=false 那种情况由主进程写日志（"当前没有可暂停的任务…"），不必在这里重复。
+    appendLog("暂停请求没有送达主进程，请重试；若界面已无响应，可直接点「停止当前任务」。");
   }
 });
 

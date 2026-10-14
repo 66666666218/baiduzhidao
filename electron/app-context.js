@@ -25,6 +25,10 @@ const { INVOKE_CHANNELS } = require("./src/ipc-channels");
 const { describeUpdateError, describeError, scrubUrl, isProxyError } = require("./src/errors");
 const { resolveNetdiskRoles, envLabelsOf } = require("./src/domain/account-topic");
 const { createAutoPipeline } = require("./src/workflows/auto-pipeline");
+// 「一键全自动跑着的时候外部任务不许开工」这条规则唯一的一份实现。
+// 放在 src/workflows/pipeline-guard.js 而不是直接写在本文件里，是因为本文件 require("electron")、
+// 测试加载不起来 —— 规则写在那边就只能"扫文本"验证，而扫文本读不出逻辑（2.0.44 就是这么翻的车）。
+const { pipelineBlocksTask, pipelineBlockedMessage, pipelineStartTask } = require("./src/workflows/pipeline-guard");
 const { AccountManager } = require("./src/browser/account-manager");
 // 「从比特窗口提取 Cookie」这条通道要连 CDP 取 Cookie，所以主进程仍然需要 chromium。
 // （2026-10-10：查收录/权益检查已搬到 src/tasks/check-published.js，且**优先用「账号凭证」里存的
@@ -152,7 +156,15 @@ logger.log(`软件版本 v${app.getVersion()}（${app.isPackaged ? "安装版" :
 
 // ---------- 任务包装 ----------
 
-async function startTask(name, payload, runner) {
+/**
+ * @param {object} [options]
+ * @param {boolean} [options.fromPipeline] 这次调用是不是「一键全自动」编排发起的。
+ *   只有编排注入的那一份（见 pipelineStartTask）会带上它 —— 界面上手点的、脚本调的都不带。
+ *   ⚠️ 少了这个区分就是 2.0.44 的 P0 回归：编排自己也是通过 startTask 逐个启动阶段，
+ *   那把"一键全自动正在运行中"的锁会把编排自己的第一个阶段挡在门外，
+ *   整条链瞬间以「0/2 个阶段成功」结束（用户看到的就是这个）。
+ */
+async function startTask(name, payload, runner, options = {}) {
   // 互斥检查必须在这里、且在下面的 try 之前做：
   // 放进 tasks.start 的异常里统一处理，会给"用户连点两次"这种启动拒绝也广播一次
   // status:"failed"，把仍在正常运行的上一个任务的进度条改成"失败"并重新启用按钮。
@@ -160,9 +172,18 @@ async function startTask(name, payload, runner) {
   // 一键全自动**不在** TaskManager 里跑（它按阶段逐个调 startTask，自己只是编排），
   // 所以 tasks.assertIdle() 看不见它 —— 阶段之间（尤其"抽题"那一步，它根本不是任务）
   // this.current 是空的，此时用户手点「爬题」就会被放行，两条链同时跑、抢同一批浏览器
-  // 窗口和同一份台账。这里用编排自己的 running 标志补上这把锁。
-  if (autoPipeline && autoPipeline.isRunning()) {
-    throw new Error("一键全自动正在运行中，请先点「停止当前任务」或等它结束。");
+  // 窗口和同一份台账。这里用编排自己的状态补上这把锁。
+  // 判据的三条分支（含"编排自己发起的必须放行""已点停止的必须放行"）都在
+  // pipeline-guard.js 里，只有一份 —— 那边是纯函数，单测能直接打真逻辑。
+  if (pipelineBlocksTask({
+    pipelineRunning: Boolean(autoPipeline && autoPipeline.isRunning()),
+    pipelineAborted: Boolean(autoPipeline && autoPipeline.isAborted()),
+    fromPipeline: Boolean(options.fromPipeline),
+  })) {
+    // 被拒也必须留痕：以前这层只在渲染端弹出"爬取失败：…"，而渲染端的日志面板不进日志文件，
+    // 用户导出的日志里就一点痕迹都没有 —— 看起来像"我点了，但什么都没发生"。
+    logger.log(`⛔ 已拒绝启动「${name}」：${pipelineBlockedMessage()}`);
+    throw new Error(pipelineBlockedMessage());
   }
   // 脚本类工具（scripts/*.js）会另起一个 Store 写同一份 JSON，两边各持内存缓存整份覆写。
   // 主程序这边只警告不拦停：拦在 GUI 上会让人以为软件坏了，脚本那边则直接拒绝启动。
@@ -290,8 +311,22 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     }
     return result;
   });
-  ipcMain.handle("task:pause", () => tasks.pause());
-  ipcMain.handle("task:resume", () => tasks.resume());
+  ipcMain.handle("task:pause", () => {
+    const result = tasks.pause();
+    // accepted=false = 此刻没有 TaskManager 任务（一键全自动停在"抽题"或阶段之间就是这样）。
+    // 以前这里什么都不说，界面那句"已请求暂停"也就不会出现 —— 用户点了暂停**一点反应都没有**，
+    // 而他要的是"先停下别往下跑"。停止按钮上一轮已经区分了这种情况（见上面 task:stop），
+    // 暂停/恢复这两个入口是同一类问题，一起补上。
+    if (!result || !result.accepted) {
+      logger.log("当前没有可暂停的任务（一键全自动停在阶段之间时就是这样）—— 若想让它别再往下跑，请点「停止当前任务」。");
+    }
+    return result;
+  });
+  ipcMain.handle("task:resume", () => {
+    const result = tasks.resume();
+    if (!result || !result.resumed) logger.log("当前没有处于暂停状态的任务（恢复请求已忽略）。");
+    return result;
+  });
   ipcMain.handle("task:history", () => ({ current: tasks.currentState(), history: tasks.historyList() }));
 
   // 账号档案（本地状态）：让"连续失败自动标记需人工检查"这件事**看得见、解得开**。
@@ -627,7 +662,12 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
    */
   autoPipeline = createAutoPipeline({
     config,
-    startTask,
+    // ⚠️ 注入的**必须是** pipelineStartTask(startTask)，不能是裸 startTask。
+    // 编排也是用 startTask 启动它自己每一个阶段的，而上面那把互斥锁只该锁"外部"调用 ——
+    // 注入裸 startTask 就等于让编排把自己锁在门外（2.0.44 的 P0 回归，见 pipeline-guard.js 顶部）。
+    // 用包装函数而不是让 auto-pipeline.js 自己传标记：编排拿到的就是这个函数，
+    // 它里面任何阶段（含将来新增的）都只能调这一个，结构上不可能漏带标记。
+    startTask: pipelineStartTask(startTask),
     taskDeps: deps,
     pickQuestions,
     emit,
