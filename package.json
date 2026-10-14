@@ -1,7 +1,7 @@
 {
   "name": "zhidao-answer-studio",
   "productName": "百度知道答题助手 v2",
-  "version": "2.0.46",
+  "version": "2.0.47",
   "description": "百度知道活动页答题助手（v2 重构版）：题目爬取、随机抽题、AI 生成回答、自动提交",
   "main": "electron/main.js",
   "private": true,

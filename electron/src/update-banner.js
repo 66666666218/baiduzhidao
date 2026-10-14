@@ -50,6 +50,42 @@
   }
 
   /**
+   * 失败原因压成一小段。
+   *
+   * 渲染端拿到的已经是 `describeUpdateError()` 翻译过的人话，但完整原因可能很长
+   *（比如带上路径与 URL），提示条塞不下，所以按长度截断，完整版在运行日志里。
+   *
+   * ⚠️ 两个坑（都是拿真实报错跑出来才看见的）：
+   *   ① **截断可能把括号切成一半**：`网络代理连不上（net::ERR_PROXY_CONNECTE` —— 半截括号
+   *      看着像手滑。所以截断后要退回到最后一个"括号配平"的位置。
+   *   ② 所以调用处**不再用括号把原因包起来**（原因自己常常就带括号，套起来就是
+   *      `（网络代理连不上（net::ERR_…）` 这种嵌套），改用「：」分隔。
+   */
+  function briefError(error) {
+    const text = str(error).replace(/\s+/g, " ");
+    if (!text) return "";
+    if (text.length <= 40) return text;
+    return `${text.slice(0, balancedCut(text, 40))}…`;
+  }
+
+  /**
+   * 从左往右数括号，返回"到哪个位置为止括号是配平的"。
+   * 多出来的右括号（`）`走在 `（` 前面）直接忽略，它们不会造成半截括号的观感。
+   */
+  function balancedCut(text, limit) {
+    const OPEN = "（(【";
+    const CLOSE = "）)】";
+    const stack = [];
+    for (let i = 0; i < limit; i += 1) {
+      const ch = text[i];
+      if (OPEN.includes(ch)) stack.push(i);
+      else if (CLOSE.includes(ch)) stack.pop();
+    }
+    // 有没闭合的开括号 → 退到它前面，宁可少说几个字也不留半截括号
+    return stack.length ? stack[0] : limit;
+  }
+
+  /**
    * 顶部提示条该显示什么。
    *
    * @param {object} state
@@ -60,6 +96,7 @@
    * @param {number} [state.percent] 下载百分比（没有就是还没开始下）
    * @param {number} [state.transferred] 已下载字节
    * @param {number} [state.total] 总字节
+   * @param {string} [state.error] 上一次下载/检查失败的原因（渲染端收到 `update:error` 时记下来）
    * @returns {{visible:boolean, mode:"none"|"available"|"downloading"|"ready", text:string}}
    */
   function updateBannerState(state) {
@@ -89,8 +126,17 @@
       };
     }
 
-    // ③ 只查到有新版本，还没开始下
+    // ③ 只查到有新版本，还没开始下。
+    //    注意"上次失败过"也要走这一支：此时 percent 是空的、确实没在下，而**
+    //    点一下确实会重试**（缓存命中就直接 ready，没命中就重下）—— 所以"点这里重试"是真话。
     if (available) {
+      if (briefError(s.error)) {
+        return {
+          visible: true,
+          mode: "available",
+          text: `⚠️ 新版 v${available} 上次没下载成功：${briefError(s.error)} —— 点这里重试`,
+        };
+      }
       return {
         visible: true,
         mode: "available",
@@ -111,6 +157,10 @@
   /**
    * 「软件更新」那一页的说明文字（原来只有 applyUpdateInfo/update:ready 两处各写一份，
    * 下载中那一整段时间是空白的）。
+   *
+   * `state.error` 是"上一次下载/检查失败的原因"（渲染端收到 `update:error` 时记下来的）。
+   * 有它的时候必须说出来 —— 否则用户看到提示条从"下载中 42%"变回"发现新版本"，会以为
+   * 是自己看错了，然后再点一次、再失败一次。报错要短（太长的原因留给运行日志）。
    */
   function updateInfoLine(state, extra) {
     const s = state || {};
@@ -126,7 +176,11 @@
     }
     const percent = percentOf(s.percent);
     if (available && percent !== null) return `正在下载 v${available}：${percent}%${sizeText(s)}`;
-    if (available) return `发现新版本 v${available}，点「检查更新」开始下载（约 85MB）`;
+    if (available) {
+      const why = briefError(s.error);
+      if (why) return `上次下载 v${available} 没成功：${why} —— 点「检查更新」重试`;
+      return `发现新版本 v${available}，点「检查更新」开始下载（约 85MB）`;
+    }
     return base;
   }
 

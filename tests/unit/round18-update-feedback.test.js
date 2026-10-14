@@ -196,3 +196,100 @@ test("B5 index.html 必须先加载 update-banner.js（顺序反了 window.Updat
   assert.ok(iBanner > 0, "index.html 没有挂 src/update-banner.js");
   assert.ok(iBanner < iRenderer, "update-banner.js 必须排在 renderer.js 之前");
 });
+
+// ------------------------------------------------------ C 组：失败也要说话（2.0.47 补）
+
+/**
+ * 2.0.46 修完"下载中没有任何反馈"之后，**同一个病换了张脸**冒出来：
+ * 主进程在 `autoUpdater.on("error")` 里把 `downloading` 清了，但界面用的是自己那份
+ * `updateState` —— 只有收到推送才会重画。于是下载到 42% 撞上代理断掉之后，
+ * 提示条会**永远**停在「⬇️ 下载中 42%」，一动不动，而且不报错。
+ * 用户的环境（开着系统代理）恰恰最容易撞上这条路径。
+ */
+test("C1 ★ 上次失败：提示条回到可重试形态，而且点一下真的会重试", () => {
+  const s = updateBannerState({ currentVersion: "2.0.45", availableVersion: "2.0.46", error: "下载超时" });
+  assert.equal(s.visible, true);
+  assert.equal(s.mode, "available");
+  assert.match(s.text, /v2\.0\.46/);
+  assert.match(s.text, /没下载成功/, "必须承认上次失败了，不能装作什么都没发生");
+  assert.match(s.text, /下载超时/, "要带上原因，否则用户只能反复重试");
+  assert.match(s.text, /点这里重试/);
+  // 关键：这一刻点它**确实**会重试（缓存命中就直接 ready，没命中就重下）——
+  // 所以写"点这里重试"是真话，不是安慰话术。
+  assert.equal(bannerAction(s.mode), "check");
+});
+
+test("C2 ★ 失败原因要截断：不能把一整段报错塞进提示条，也不能留半截括号", () => {
+  const long = "x".repeat(200);
+  const s = updateBannerState({ availableVersion: "9", error: long });
+  assert.ok(s.text.length < 140, `提示条被撑爆了（${s.text.length} 字）：${s.text}`);
+  assert.match(s.text, /…/, "超长的原因要截断并留省略号");
+  const line = updateInfoLine({ availableVersion: "9", error: long });
+  assert.ok(line.length < 140, `更新页那行也被撑爆了：${line}`);
+
+  // 真实报错长这样（`describeUpdateError` 的输出），括号在**中段**：截断容易把它切成一半。
+  // 半截括号看着像手滑；而调用处若再用括号把原因包起来，就成了 `（网络代理连不上（net::…`
+  // 这种嵌套。两条都拿真实字符串钉住。
+  const real = "网络代理连不上（net::ERR_PROXY_CONNECTION_FAILED），已尝试绕开代理但仍失败，请检查代理设置或稍后再试";
+  const bannerText = updateBannerState({ availableVersion: "9", error: real }).text;
+  assert.ok(!/（[^）]*$/.test(bannerText), `提示条里有没闭合的括号：${bannerText}`);
+  assert.ok(!/（[^（]*（/.test(bannerText), `提示条里括号套括号：${bannerText}`);
+  assert.match(bannerText, /网络代理连不上/, bannerText);
+});
+
+test("C3 没有 error 时不能凭空写出「没下载成功」", () => {
+  const s = updateBannerState({ currentVersion: "2.0.45", availableVersion: "2.0.46" });
+  assert.ok(!/没下载成功|失败/.test(s.text), s.text);
+  assert.ok(!/失败/.test(updateInfoLine({ availableVersion: "2.0.46" })));
+});
+
+test("C4 「软件更新」那行说明也要说出上次失败（否则用户只能自己猜）", () => {
+  const line = updateInfoLine({ currentVersion: "2.0.45", availableVersion: "2.0.46", error: "代理连不上" });
+  assert.match(line, /没成功/);
+  assert.match(line, /代理连不上/);
+  assert.match(line, /重试/);
+  // 失败原因优先级必须低于"正在下载"：又下起来了就该报进度，而不是还挂着旧错误
+  const again = updateInfoLine({ availableVersion: "2.0.46", percent: 7, error: "代理连不上" });
+  assert.match(again, /正在下载/);
+});
+
+test("C5 update:error 必须同时在 ipc-channels 与 preload 里（漏一边 = 主进程发了界面收不到且不报错）", () => {
+  const channels = read("electron/src/ipc-channels.js");
+  const preload = read("electron/preload.js");
+  assert.match(channels, /LISTENER_CHANNELS\s*=\s*\[[^\]]*"update:error"/,
+    "契约里没有 update:error");
+  assert.match(preload, /listenerChannels\s*=\s*new Set\(\[[^\]]*"update:error"/,
+    "preload 的 listenerChannels 没有 update:error —— 界面会永远停在某个下载百分比上（且不报错）");
+});
+
+test("C6 ★ 主进程失败时必须显式推 update:error，只清自己的状态是不够的", () => {
+  const src = stripComments(read("electron/app-context.js"));
+  // 区段 = 从 error 分支开始，到下一个真实代码标记（检查更新函数）为止。
+  const handler = section(src, "autoUpdater.on(\"error\"", "async function checkForUpdates({ download })");
+  assert.match(handler, /emit\("update:error",\s*\{/,
+    "error 分支只改了主进程的 downloading/downloadPercent，没通知界面 —— "
+    + "界面用的是自己那份 updateState，会永远停在「下载中 N%」");
+  assert.match(handler, /downloading = false/, "失败后主进程也要退出「下载中」状态");
+});
+
+test("C7 渲染端要订阅 update:error，并清掉 percent（只改文案不清状态 = 下次还会接着显示旧百分比）", () => {
+  const src = stripComments(read("electron/renderer/renderer.js"));
+  const handler = section(src, 'rpc.on("update:error"', '$("updateBanner").addEventListener');
+  assert.match(handler, /percent:\s*null/, "收到失败必须把 percent 清掉，否则提示条还停在「下载中 42%」");
+  assert.match(handler, /renderUpdateUi\(\)/, "收到失败要重画界面");
+});
+
+test("C8 新进度/新版本/已就绪都要把上一次的失败提示收掉（旧错误不能盖在新状态上）", () => {
+  const src = stripComments(read("electron/renderer/renderer.js"));
+  const zones = [
+    ['rpc.on("update:ready"', 'rpc.on("update:available"'],
+    ['rpc.on("update:available"', 'rpc.on("update:progress"'],
+    ['rpc.on("update:progress"', 'rpc.on("update:error"'],
+  ];
+  for (const [from, to] of zones) {
+    assert.match(section(src, from, to), /error:\s*""/, `${from} 这一段没有清掉 error`);
+  }
+  // 手动点「检查更新」失败时，上一次的"下载中"也必须清掉
+  const check = section(src, '$("checkUpdate").addEventListener', '$("installUpdate").addEventListener');
+  assert.match(check, /percent:\s*null/, "检查失败后 percent 没清 → 界面会一直显示上次的下载进度");
+});

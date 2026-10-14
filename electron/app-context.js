@@ -929,10 +929,16 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
         + "也可以直接关掉软件 —— 关闭时它会自动装上，下次打开就是新版。");
     });
     autoUpdater.on("error", (e) => {
-      // 失败也要把"下载中"清掉，否则界面会永远停在某个百分比上骗人
+      // 失败也要把"下载中"清掉，否则界面会永远停在某个百分比上骗人。
+      // ⚠️ 光清主进程这边的状态**不够**：界面用的是自己那份 updateState，只有收到推送才会重画
+      //（`update:info` 只在界面刷新时拉一次）。2.0.46 修完进度显示之后，这里就留下了一个新的
+      // "界面撒谎"口子：下载到 42% 撞上代理断了 → 主进程 downloading=false，界面仍写着
+      // "⬇️ 下载中 42%"，而且永远不动。所以必须显式推一条 `update:error`。
       downloading = false;
       downloadPercent = null;
-      logger.log(`⚠️ 更新失败：${describeUpdateError(e)}`);
+      const message = describeUpdateError(e);
+      emit("update:error", { message });
+      logger.log(`⚠️ 更新失败：${message}`);
       logger.log("可改用手动更新：拿到最新安装包直接覆盖安装即可（答题数据不受影响）。"
         + "若你已经在下载中途失败过，再点一次「检查更新」会接着重下。");
     });

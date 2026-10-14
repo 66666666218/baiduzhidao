@@ -88,8 +88,10 @@ const INVOKE_CHANNELS = [
 /** 主进程 → 渲染端的单向推送通道 */
 // `update:progress` 是后加的（2.0.46）：以前下载进度只写进运行日志（每 20% 一行），
 // 界面全程一动不动 —— 用户点完「检查更新」看着"当前版本 v2.0.44"不变，就会得出"点了没用"。
+// `update:error` 是 2.0.47 补的：主进程在 `autoUpdater.on("error")` 里清了 `downloading`，
+// 但**界面用的是自己那份状态**，没人通知就永远停在"⬇️ 下载中 42%"（同样是"界面撒谎"）。
 // ⚠️ 新增通道必须**同时**加在这里和 `preload.js` 的 listenerChannels（契约①-b），
 // 只加一边的表现是：主进程发了、渲染端收不到，而且**不报错**。
-const LISTENER_CHANNELS = ["task:log", "task:progress", "task:item", "update:ready", "update:available", "update:progress"];
+const LISTENER_CHANNELS = ["task:log", "task:progress", "task:item", "update:ready", "update:available", "update:progress", "update:error"];
 
 module.exports = { INVOKE_CHANNELS, LISTENER_CHANNELS };
