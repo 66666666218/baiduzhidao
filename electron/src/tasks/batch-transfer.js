@@ -23,7 +23,8 @@ const { detectColumns } = require("../netdisk/table-columns");
 // 转存台账（state.jsonl）的读写——原本五份，收敛到一处
 const { loadLedger, appendLedger } = require("../netdisk/state-ledger");
 // 重跑时「share_failed 的行要不要补分享 / 要不要彻底跳过」——只有这一处判断（见该文件头注释）
-const { planShareRetry, shareRetryFields } = require("../netdisk/share-retry");
+const shareRetry = require("../netdisk/share-retry");
+const { planShareRetry, shareRetryFields } = shareRetry;
 // 读 xlsx 统一走 storage/excel.js（本文件不再自己 XLSX.readFile）
 const excel = require("../storage/excel");
 const qaLib = require("../netdisk/qa-template-lib");
@@ -361,12 +362,23 @@ async function runBatchTransferTask(ctx, deps) {
   log(`去重键库载入：${seenKeys.size} 个（按规范化名称，跨写法/跨链接去重）`);
 
   const total = limit > 0 ? Math.min(limit, rows.length - startIdx) : rows.length - startIdx;
-  log(`开始纯协议批量转存：目标 ${total} 条 | 并发 ${cc}（${creds.length} 个账号） | 目标目录 ${destRoot}`);
+  log(`开始纯协议批量转存：目标 ${total} 条 | 并发 ${cc}（${creds.length} 个账号） | 目标目录 ${destRoot}`
+    + ` | 每条间隔 ${delayMin}~${delayMax}s | ${makeShare ? "建分享" : "只转存不建分享"}`);
   // 开工先回答用户一定会问的三个问题：这是不是批量、为什么一条一条走、这批能出多少条。
   // 这些数字全部能从本函数已有的变量算出来，以前只是**没有任何地方算**（见 transfer-progress.js 头注释）。
   for (const line of progress.batchScaleNotice({
     total, accounts: creds.length, cc, shareDailyLimit: SHARE_DAILY_LIMIT, destRoot,
   })) log(line);
+  if (!makeShare) {
+    log("ℹ️ 本批按设置**只转存、不建分享**：资源照常搬进网盘，但不建分享链接、也不生成问答行。"
+      + " 这样每条少一个写请求，也完全不受每日分享额度影响。"
+      + " 想要链接就把「建分享链接」勾回去再跑一次 —— 台账里已记下落盘路径，那一次只补分享、不重新转存。");
+  }
+  if (delayMax <= 0.5) {
+    // 0.5 秒是本项目允许的下限（再低没有意义：慢在网络往返，不在等待）。
+    log("⚠️ 每条间隔已压到下限 0.5 秒：会更快，但同一 IP 短时间写得太密更容易触发降级窗口"
+      + "（表现是「分享页取不到数据」）。撞上了就把它调回 1~2 秒，或给账号配互不相同的代理。");
+  }
   if (cc > 1) {
     log(`提示这里为什么安全：以前那条"并发 2 就 100% 失败"的实验结论，前提是**两个线程抢同一个账号**`
       + `（那时光标轮换下两者几乎必然同时拿到 creds[0]）——它验的是同 IP 并发，不是多账号并发。`);
@@ -625,6 +637,34 @@ async function runBatchTransferTask(ctx, deps) {
         // 下次又被重新转存（errno=4 重复）+ 再次建分享（继续被拒），形成"虚假失败"死循环。
         // 现在把 share 单独处理：转存成了就记「已转存（建分享失败）」，**不再重传、不再计失败**，
         // 但若判定是每日上限，则把该账号加入 shareBlocked，本批剩余项只转存不建分享，避免反复撞限。
+        // 「只转存、不建分享」模式（`payload.makeShare === false`）。
+        //
+        // 为什么单独一个分支、而不是让 runShareStep 直接返回空：这条路径**以前是坏的** ——
+        // `runShareStep` 在 `!makeShare` 时返回 `{ownLink:"", shareFailed:false}`，
+        // 于是流程会带着一个**空链接**继续往下生成问答行（用户拿到一张没有链接的表）。
+        // 选项一直都在（后端读了十几年、界面从来没暴露过），所以从没有人走到过这里。
+        //
+        // 记成 `share_failed` 是**有意为之**：这样下一轮 `planShareRetry` 会直接判 `share-only`
+        // —— 拿台账里的 `toPaths` 补建分享，**一步转存接口都不碰**。
+        // 也就是说"先只转存把资源全部搬完，之后再补分享拿链接"这条路是现成的，不用另写一套。
+        if (!makeShare) {
+          // 台账条目由 share-retry.js 的纯函数造（规则只有一个家）；
+          // 关键不变式：下一轮 planShareRetry 会判 share-only，只补分享、不重传。
+          const tfEntry = shareRetry.buildTransferOnlyEntry({ srcLink, name: rawName, toPaths, at: new Date().toISOString() });
+          state.set(srcLink, tfEntry);
+          saveState(tfEntry);
+          countDone();
+          transferredNoShare += 1;
+          ctx.emitItem({ ...itemBase, status: "已转存（只转存模式，未建分享）" });
+          ctx.report({ done, total, status: "running" });
+          if (transferredNoShare === 1) {
+            log("ℹ️ 本批是「只转存」模式：资源会全部搬进网盘，但不建分享链接、也不生成问答行。"
+              + " 每条因此少一个写请求，也不受每日分享额度限制。"
+              + " 想要链接的话，把「建分享链接」勾回去再跑一次即可 —— 台账里已记下落盘路径，"
+              + " 那一次会**只补分享、不重新转存**。");
+          }
+          continue;
+        }
         const share = await runShareStep({ makeShare, env: cred.env, bduss: cred.bduss, stoken: cred.stoken, toPaths, dispatcher, shareBlocked, sharesByEnv, warnedSoft, log });
         let ownLink = share.ownLink, ownPwd = share.ownPwd;
         if (share.shareFailed) {
@@ -788,9 +828,16 @@ async function runBatchTransferTask(ctx, deps) {
   const totalOk = [...state.values()].filter((s) => s.status === "done").length;
   log(`=== 批量转存完成 === 本轮转存成功 ${done}（其中分享未建成 ${transferredNoShare}）| 失败 ${failed} | 历史累计 ${totalOk}`);
   if (transferredNoShare) {
-    const blockedList = shareBlocked.size ? `（${[...shareBlocked].join("、")} 撞上每日 300 上限）` : "";
-    log(`（有 ${transferredNoShare} 条资源已转存进网盘但没建成分享链接${blockedList}—— 这些不会进上传专用表，`
-      + `可在网盘内手动生成分享，或次日额度恢复后再跑一次补足）`);
+    // 「只转存」模式和"撞上限/建分享失败"是**两件不同的事**，别用同一句话糊过去：
+    // 前者是用户主动选的，后者是百度拒的。混在一起用户会以为自己的设置出了问题。
+    if (!makeShare) {
+      log(`（本批是「只转存」模式：${transferredNoShare} 条资源已全部搬进网盘，按你的设置没有建分享、也没有生成问答行。`
+        + `需要链接时把「建分享链接」勾回去再跑一次 —— 台账里记了每条的落盘路径，那一次会**只补分享、不重新转存**。）`);
+    } else {
+      const blockedList = shareBlocked.size ? `（${[...shareBlocked].join("、")} 撞上每日 300 上限）` : "";
+      log(`（有 ${transferredNoShare} 条资源已转存进网盘但没建成分享链接${blockedList}—— 这些不会进上传专用表，`
+        + `可在网盘内手动生成分享，或次日额度恢复后再跑一次补足）`);
+    }
   }
   if (shareLimitPauses) {
     // 把"这批到底花了多少时间在等"摆出来 —— 长跑时用户看到进度慢，得知道慢在哪。

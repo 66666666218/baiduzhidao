@@ -469,7 +469,11 @@
             <div class="field"><label>数量上限（0=全部；从头数前 N 行，已跑过的秒跳过）</label><input type="number" id="batchLimit" min="0" value="20" /></div>
             <div class="field"><label>转存并发（0=自动）</label><input type="number" id="batchCc" min="0" max="8" value="0" /></div>
             <div class="field"><label>输出表格名称（可自定义）</label><input type="text" id="batchOutName" placeholder="上传专用表-已转存" /></div>
+            <div class="field"><label>每条间隔 最少（秒）</label><input type="number" id="batchDelayMin" min="0.5" step="0.5" value="1" /></div>
+            <div class="field"><label>每条间隔 最多（秒）</label><input type="number" id="batchDelayMax" min="0.5" step="0.5" value="2" /></div>
+            <div class="field"><label><input type="checkbox" id="batchMakeShare" checked /> 建分享链接（取消 = 只转存）</label><span class="hint">勾选：每条转存后再建一个分享，问答表里放的就是这个链接。<b>取消勾选 = 只把资源搬进网盘、不建分享</b>，每条省掉一个写请求，也完全不受每日分享额度影响；代价是本批不产出带链接的问答行。没关系 —— 台账里记了落盘路径，<b>之后正常跑一次就会自动只补分享、不重传</b>。</span></div>
           </div>
+          <p class="hint">⏱️ 关于间隔：每条之间<b>本来就有 1~2 秒的刻意等待</b>（防同一 IP 短时间写太密被降级），这是默认值、也是"为什么不是飞快"的一部分。想更快可以把它压到 0.5 秒（省约 1 秒/条，但更容易撞限流窗口）；想更稳可以照同类工具的做法调到 3~6 秒。⛔ 但把它设成 0 <b>不会</b>让请求变快 —— 慢在网络那几个往返，不在等待。</p>
           <p class="hint">ℹ️ 分享额度：百度对"每天能建多少分享链接"有服务端限制（代码里参考值是每账号 300/天，<b>但实测并不恰好是 300</b> —— 有一次 2 个账号各建 350 个都没被拦），所以别按它推算"只能出多少条"。额度真用完的那一刻，日志会明确告诉你"从此不再产出问答行"并给出两个选项，不会静默。想快就并行：给每个账号在设置页「账号代理」配一条<b>互不相同</b>的代理，就有几条链同时跑。</p>
           <p class="hint">🐢 为什么一条要几秒：每条都要走「验提取码 → 取分享页 → 建目录 → 转存 → 建分享」几个请求，一步都省不掉（百度没有"一次交一批链接"的接口）。跑起来之后日志会<b>每 25 条报一次</b>每一步的平均耗时与占比 —— 觉得慢的时候先看那一行，它会告诉你是网络、是限流等待、还是那几秒刻意留的间隔，而不是只能猜。</p>
           <div class="card-actions">

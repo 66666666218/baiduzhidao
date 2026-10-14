@@ -611,7 +611,7 @@ $("startBatchTransfer").addEventListener("click", async () => {
   const bitEnvs = $("batchBitEnvs").value.split(/\r?\n|[,，]/).map((x) => x.trim()).filter(Boolean);
   if (!bitEnvs.length) { appendLog("请填写至少一个比特环境名（多账号每行一个）。"); return; }
   try {
-    appendLog(`批量转存启动：环境 ${bitEnvs.join("、")}，并发 ${ Number($("batchCc").value) || 0 ? Number($("batchCc").value) : "自动" }，目标目录 ${$("batchDestDir").value || "/来自资源批量转存"}`);
+    appendLog(`批量转存启动：环境 ${bitEnvs.join("、")}，并发 ${ Number($("batchCc").value) || 0 ? Number($("batchCc").value) : "自动" }，目标目录 ${$("batchDestDir").value || "/来自资源批量转存"}${$("batchMakeShare").checked ? "" : "，只转存不建分享"}`);
     const result = await rpc.invoke("task:batch-transfer", {
       filePath,
       bitEnvs,
@@ -621,6 +621,15 @@ $("startBatchTransfer").addEventListener("click", async () => {
       // 0=自动：给每个账号配了互不相同的代理、且账号数≥2 时才并行（一线程一账号）
       cc: Number($("batchCc").value) || 0,
       outName: $("batchOutName").value.trim(),
+      // ⚠️ 这三个后端一直都支持，但**渲染端以前没把它们发出去** —— 于是界面上没有任何入口
+      // 能改它们（"功能在、入口没有"的又一例，2026-10-14 补上）。
+      //   makeShare=false → 只转存、不建分享：每条省一个写请求，也不受每日分享额度影响；
+      //                     代价是本批不产出带链接的问答行（台账记了落盘路径，下轮正常跑会自动补分享）。
+      //   delayMin/Max    → 每条之间的刻意等待（默认 1~2 秒）。压到 0.5 更快但更容易撞限流；
+      //                     调到 3~6 更稳（同类网盘拉新工具就是 3~6 秒）。
+      makeShare: $("batchMakeShare").checked,
+      delayMin: Math.max(0.5, Number($("batchDelayMin").value) || 1),
+      delayMax: Math.max(0.5, Number($("batchDelayMax").value) || 2),
     });
     appendLog(`批量转存结束：本轮成功 ${result.count} 条，失败 ${result.failed} 条，历史累计 ${result.totalOk} 条。`);
     if (result.outputPath) {

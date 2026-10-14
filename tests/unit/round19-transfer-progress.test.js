@@ -208,13 +208,15 @@ test("E1 batch-transfer 真的用了这个模块（不是自己又抄一份文�
   assert.match(code, /progress\.measurePace\(/);
 });
 
-test("E2 「成功一条」这件事被绑到 countDone 上：4 个计数点全走它，且只留 1 个 done+=1", () => {
+test("E2 「成功一条」这件事被绑到 countDone 上：5 个计数点全走它，且只留 1 个 done+=1", () => {
   const code = stripComments(read(BATCH_TRANSFER));
-  assert.equal((code.match(/countDone\(\);/g) || []).length, 4,
-    "有 4 条路径算成功（当日分享上限/乱码/名称不合规/正常），漏一条就少一次播报与落表");
+  // 5 条路径算成功：当日分享上限 / 落盘名乱码 / 名称不合规 / 正常 / **只转存不建分享**。
+  // （第 5 条是 2026-10-14 补的 —— 那条老路径以前根本走不到，因为渲染端从没把 makeShare 发出去。）
+  assert.equal((code.match(/countDone\(\);/g) || []).length, 5,
+    "有 5 条路径算成功，漏一条就少一次播报与落表");
   assert.equal((code.match(/done \+= 1;/g) || []).length, 1,
     "done += 1 只允许出现在 countDone 内部，否则进度与落表会漏");
-  // 定义必须在那 4 次调用之前
+  // 定义必须在这些调用之前
   assert.ok(code.indexOf("function countDone()") < code.indexOf("countDone();"));
 });
 
