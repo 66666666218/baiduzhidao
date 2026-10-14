@@ -28,7 +28,7 @@ const path = require("node:path");
 const ROOT = path.join(__dirname, "..", "..");
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
 
-const { normalizeSettings } = require("../../electron/src/config");
+const { normalizeSettings, AI_CONCURRENCY_MAX } = require("../../electron/src/config");
 const {
   shouldReportPace, progressLine, measurePace, generatePaceTail, PACE_EVERY,
 } = require("../../electron/src/netdisk/transfer-progress");
@@ -121,36 +121,41 @@ test("G4 收尾行带实测节奏，且文案归 transfer-progress（秒/条只�
   const src = read(GENERATE);
   const block = sliceBetween(src, "const stopped = ctx.shouldStop() || budgetExhausted;", "if (filePath) {");
   assert.match(block, /const paceAll = measurePace\(\{ done: finishedAll, elapsedMs: elapsedAll \}\)/);
+  // 收尾文案必须由 transfer-progress 出，generate.js 不自己拼（秒/条口径只有一个家）。
+  // 用 \s* 匹配多行调用，不许在 generate.js 里出现手写的"秒/条"。
   assert.match(
     block,
-    /generatePaceTail\(\{ concurrency: llm\.semaphore\.limit, perItemMs: paceAll, elapsedMs: elapsedAll \}\)/,
+    /generatePaceTail\(\{\s*concurrency: llm\.semaphore\.limit, perItemMs: paceAll, elapsedMs: elapsedAll, rateLimited,\s*\}\)/,
     "收尾文案必须由 transfer-progress 出，generate.js 不自己拼",
   );
+  assert.doesNotMatch(block, /秒\/条/, "generate.js 里不许出现秒/条文案");
   // 文案要接在总结论的那一行末尾，而不是另起一行（用户要的是一眼看完）
   assert.match(block, /失败 \$\{failed\} 条\$\{paceTail\}/);
 });
 
 // --------------------------------------------- H 组：并发数的默认值、提示与入口
 
-test("H1 并发数默认 6（不再是 2），并夹取在 1~8", () => {
+test("H1 并发数默认 6（不再是 2），且老设置不被覆盖", () => {
   // 依据：2026-10-09 真机实测 51 题 / 并发 2 / 135 秒 = 2.65 秒/题；
   // 同一条批在 6 条并发下约 45 秒。敢默认给 6 的理由是 429 有退避重试兜底（见 LlmClient）。
+  // ⚠️ 上限（AI_CONCURRENCY_MAX）在**第 24 轮**改过（8 → 64），那条归 round24 的 K1 守，
+  // 这里不再写死数字 —— 否则上限一改就出现"测试守着旧值、还全绿"的假象。
   const dflt = normalizeSettings({});
   assert.equal(dflt.aiConcurrency, 6, "新装/缺省应该是 6");
-  assert.equal(normalizeSettings({ aiConcurrency: 99 }).aiConcurrency, 8, "上限 8");
   assert.equal(normalizeSettings({ aiConcurrency: 0 }).aiConcurrency, 1, "下限 1");
   assert.equal(normalizeSettings({ aiConcurrency: -3 }).aiConcurrency, 1);
   // 已存在的用户设置不被默认值覆盖（他们 settings.json 里写着 2，就还是 2，要自己改）
   assert.equal(normalizeSettings({ aiConcurrency: 2 }).aiConcurrency, 2);
 });
 
-test("H2 设置页并发数输入框下面有解释（1~8、单条多久、429 会退避）", () => {
+test("H2 设置页并发数输入框下面有解释（可调范围、单条多久、429 会退避）", () => {
   // 这一条修的是"功能在、入口没有"的姊妹篇——"功能在、说明没有"：
   // 以前那个 number 输入框光秃秃一个数字，用户根本不知道它能调、调了会怎样。
+  // ⚠️ 范围文字（1~64）跟 config 的 AI_CONCURRENCY_MAX 是两处，round24 的 O2/K2 钉着它们一致。
   const html = read(INDEX_HTML);
   const block = sliceBetween(html, "<input type=\"number\" id=\"aiConcurrency\"", "</div>");
   assert.match(block, /class="hint"/, "并发数输入框下面必须跟一句解释");
-  assert.match(block, /1~8/, "要写清可调范围");
+  assert.match(block, new RegExp(`1~${AI_CONCURRENCY_MAX}`), "要写清可调范围，且与后端上限一致");
   assert.match(block, /429/, "要写清供应商限流时会怎样（这是用户唯一担心的事：调高会不会烧号）");
   assert.match(block, /退避重试/);
   // 界面文案不许出现 markdown 的 **（渲染层不会解析，会原样显示给用户）
@@ -178,8 +183,15 @@ test("I1 generate.js 不再宣称运行中改并发立即生效", () => {
 });
 
 test("I2 开工日志点明并发数可调 + 429 会退避", () => {
+  // 开工那一行是用户判断"要不要调并发数"的唯一现场提示，所以必须说清三件事：
+  // 现在跑的是几并发、上限是多少、撞 429 会怎样。
+  // ⚠️ 上限写的是模板变量 ${AI_CONCURRENCY_MAX}，所以这里按同一个常量拼正则
+  // —— 硬写 "1~8" 会出现"上限早就改了、测试还守着旧值"的假象（第 24 轮刚踩过）。
   const src = read(GENERATE);
-  assert.match(src, /设置页「AI 生成答案」里可调 1~8；供应商限流返 429 会自动退避重试，不会烧号/);
+  assert.match(src, /并发 \$\{llm\.semaphore\.limit\}（设置页「AI 生成答案」里可调 /);
+  assert.match(src, new RegExp(`1~\\$\\{AI_CONCURRENCY_MAX\\}；供应商限流返 429 会自动退避重试，不烧号`));
+  // 数字必须是模板引用，不许又落回硬编码（否则改了上限而日志不改 = 界面在骗人）
+  assert.doesNotMatch(src, /里可调 1~\d+；/, "上限不许写死，必须引用 AI_CONCURRENCY_MAX");
 });
 
 // --------------------------------------------- J 组：编译守卫（round13 D2）

@@ -1,10 +1,11 @@
 "use strict";
 
-const { nowText } = require("../config");
+const { nowText, AI_CONCURRENCY_MAX } = require("../config");
 const excel = require("../storage/excel");
 const { buildQualityGate } = require("../quality/gate");
-// 「秒/条」与 ETA 的口径全仓只有一处（netdisk/transfer-progress.js），生成阶段直接复用，
+// 节奏（每条多少秒 / 还剩多久）的口径全仓只有一处（netdisk/transfer-progress.js），生成阶段直接复用，
 // 不在本地另写一份 pace / formatDuration / 收尾文案 —— 两个"还剩多久"互相不一致比没有更糟。
+//（这行的字面量口径也要避开那个词：扫文本守卫按"全仓只许一处"判，注释里写一遍也算一处。）
 const { progressLine, measurePace, shouldReportPace, generatePaceTail } = require("../netdisk/transfer-progress");
 
 /** 质检重复度比对窗口大小（条） */
@@ -85,11 +86,11 @@ async function runGenerateTask(ctx, deps) {
   // estPerAnswer = 单条回答的 token 成本估计，先用一个**保守的**常量，第一次实测到真实值后顶上去。
   // 宁可高估：高估只会让我们早一点停手，低估则是真金白银的超支。
   const budgetState = { inFlight: 0, estPerAnswer: ESTIMATED_TOKENS_PER_ANSWER };
-  // 节奏播报的起点：只用于算"实测多少秒/条、这批还要多久"，不参与任何业务判断。
+  // 节奏播报的起点：只用于算"实测每条多少秒、这批还要多久"，不参与任何业务判断。
   const generateStartedAt = Date.now();
 const total = slots.length;
   log(`开始批量生成回答：共 ${total} 行（去重后 ${byKey.size} 题${duplicateCount ? `，重复行 ${duplicateCount}` : ""}），`
-    + `并发 ${llm.semaphore.limit}（设置页「AI 生成答案」里可调 1~8；供应商限流返 429 会自动退避重试，不会烧号）。`);
+    + `并发 ${llm.semaphore.limit}（设置页「AI 生成答案」里可调 1~${AI_CONCURRENCY_MAX}；供应商限流返 429 会自动退避重试，不烧号）。`);
   if (filePath) log(`生成结果将写回表格：${filePath}`);
 
   const results = new Array(total).fill(null);
@@ -218,7 +219,7 @@ const total = slots.length;
       ctx.report({ done: results.filter(Boolean).length, total, status: "running" });
       // 节奏播报：每 10 条（样本 ≥2）报一次「进度 / 秒条 / 还剩多久」。
       // 口径复用 transfer-progress 的 shouldReportPace + progressLine + measurePace
-      // —— 「秒/条」与 ETA 全仓只许那一处有，本地再算一份就会出现两个互相不一致的"还剩多久"。
+      // —— 每条耗时与 ETA 全仓只许那一处有，本地再算一份就会出现两个互相不一致的"还剩多久"。
       // 存在的理由：用户盯着 20 条一点点蹦，最想问的就是"还要多久"；以前这一段一个数字都不给。
       const finished = results.filter(Boolean).length;
       if (shouldReportPace({ done: finished })) {
@@ -257,12 +258,18 @@ const total = slots.length;
   const stopped = ctx.shouldStop() || budgetExhausted;
   ctx.report({ done: total, total, status: budgetExhausted ? "stopped" : stopped ? "stopped" : "done" });
   // 收尾带上实测节奏：用户问"生成怎么这么慢"时，这一行就是答案
-  //（并发几条、平均每条几秒、这批一共跑了多久）。文案（含「秒/条」口径）由
-  // transfer-progress 出，这里不自己拼；没有样本时它返回空串，不会显示"0 秒/条"。
+  //（并发几条、平均每条几秒、这批一共跑了多久、撞了几次供应商限流）。
+  // 文案（含每条耗时口径）由 transfer-progress 出，这里不自己拼；
+  // 没有样本时它返回空串，不会显示"每条 0 秒"。
   const finishedAll = results.filter(Boolean).length;
   const elapsedAll = Date.now() - generateStartedAt;
   const paceAll = measurePace({ done: finishedAll, elapsedMs: elapsedAll });
-  const paceTail = generatePaceTail({ concurrency: llm.semaphore.limit, perItemMs: paceAll, elapsedMs: elapsedAll });
+  // 撞限流的次数由 LlmClient 自己记（每撞一次 429 加一）。这个数字是用户调并发数的唯一依据：
+  // 撞了几十次 = 调过头了，一次没撞 = 还能再加。放在收尾行里，不用他翻日志数。
+  const rateLimited = Number(llm.usage && llm.usage.rateLimited) || 0;
+  const paceTail = generatePaceTail({
+    concurrency: llm.semaphore.limit, perItemMs: paceAll, elapsedMs: elapsedAll, rateLimited,
+  });
   log(`${budgetExhausted ? "生成暂停（日预算用尽）" : stopped ? "生成已停止" : "生成完成"}：新回答 ${generated} 条，`
     + `历史恢复 ${restored} 条，已有跳过 ${skippedExisting} 条，失败 ${failed} 条${paceTail}。`);
   if (filePath) {

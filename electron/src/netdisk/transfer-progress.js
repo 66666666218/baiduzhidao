@@ -155,21 +155,27 @@ function shouldReportPace({ done, every = PACE_EVERY } = {}) {
 
 /**
  * AI 生成阶段的收尾节奏文案：`（并发 6，实测 2.6 秒/条，共 2 分钟）`。
+ * 撞过供应商限流时追加一段：`（并发 6，实测 2.6 秒/条，共 2 分钟，撞限流 12 次 —— 调低并发数会更快）`。
  *
  * 为什么放在这里而不是 generate.js：那句里的「秒/条」口径**只许有一个家**
  * （round19 的 E7 守着这件事：全仓扫 "秒/条"，只允许本文件出现）。
  * generate.js 拿到的是别处算好的 pace，它确实不该再拼第二份文案 ——
  * 两个"秒/条"各自四舍五入，用户同一天看到 2.6 和 2.7，就会怀疑数字是编的。
  *
+ * 为什么要把"撞限流几次"也放进这一行：并发数调高之后，用户唯一想知道的就是
+ * "我是不是调过头了"。这个数字就是答案 —— 撞了几十次说明调过头，一次没撞说明还能再加。
+ *
  * 没有样本（pace <= 0）时返回空串：不说"0 秒/条"——0 的含义是"算不出来"，
  * 而显示 0 会被读成"瞬间跑完"。
  */
-function generatePaceTail({ concurrency, perItemMs, elapsedMs }) {
+function generatePaceTail({ concurrency, perItemMs, elapsedMs, rateLimited }) {
   const pace = Number(perItemMs);
   if (!Number.isFinite(pace) || pace <= 0) return "";
   const cc = Math.max(1, Math.floor(Number(concurrency) || 1));
   const total = formatDuration(elapsedMs);
-  return `（并发 ${cc}，实测 ${(pace / 1000).toFixed(1)} 秒/条${total ? `，共 ${total}` : ""}）`;
+  const limited = Math.max(0, Math.floor(Number(rateLimited) || 0));
+  const limitedTail = limited > 0 ? `，撞限流 ${limited} 次（调低并发数会更快）` : "";
+  return `（并发 ${cc}，实测 ${(pace / 1000).toFixed(1)} 秒/条${total ? `，共 ${total}` : ""}${limitedTail}）`;
 }
 
 /**

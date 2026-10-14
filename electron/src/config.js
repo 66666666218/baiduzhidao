@@ -11,6 +11,20 @@ const ALL_CATEGORY = "三类一起";
 /** 带链接答案的提交路由：strict=账号↔题材严格一对一；off=退回纯轮询（排查用） */
 const LINK_ROUTING_MODES = ["strict", "off"];
 
+/**
+ * AI 生成的并发上限（同时发几条请求）。
+ *
+ * 第 24 轮从 8 提到 64，因为**这个 8 是我们自己写的，不是任何技术上限**：
+ * 用户看到"API 可以几千次同时"是对的 —— LLM 供应商（硅基流动等）按速率计费、
+ * 按速率限流，并发多少是你的 Key 档位决定的，不是百度那条协议链。
+ * （对照：网盘转存那个 1 是真上限 —— 百度没有批量接口、同 IP 并发实测 9/9 失败。）
+ *
+ * 为什么还是夹在 64 而不是干脆放开：超过这个数之后，再多也不会更快，
+ * 只会把整套请求推进 429 限流里靠退避排队（LlmClient 对 429 有专门的重试梯），
+ * 日志会告诉你撞了几次 —— 真实上限由供应商回答，程序只负责不假装。
+ */
+const AI_CONCURRENCY_MAX = 64;
+
 const DEFAULTS = {
   apiUrl: "http://127.0.0.1:54345",
   bitEnvs: [],
@@ -169,7 +183,7 @@ function normalizeSettings(payload) {
   next.startPage = clampInt(next.startPage, 1, 100000, DEFAULTS.startPage);
   next.crawlStartPage = clampInt(next.crawlStartPage, 1, 100000, DEFAULTS.crawlStartPage);
   next.randomCount = clampInt(next.randomCount, 1, 100000, DEFAULTS.randomCount);
-  next.aiConcurrency = clampInt(next.aiConcurrency, 1, 8, DEFAULTS.aiConcurrency);
+  next.aiConcurrency = clampInt(next.aiConcurrency, 1, AI_CONCURRENCY_MAX, DEFAULTS.aiConcurrency);
   next.aiMaxTokens = clampInt(next.aiMaxTokens, 50, 4000, DEFAULTS.aiMaxTokens);
   next.aiTemperature = clampFloat(next.aiTemperature, 0, 2, DEFAULTS.aiTemperature);
   next.aiDailyTokenBudget = clampInt(next.aiDailyTokenBudget, 0, 100000000, DEFAULTS.aiDailyTokenBudget);
@@ -326,6 +340,7 @@ module.exports = {
   CATEGORIES,
   ALL_CATEGORY,
   LINK_ROUTING_MODES,
+  AI_CONCURRENCY_MAX,
   normalizeCategories,
   nowTimeText,
   normalizeCategory,

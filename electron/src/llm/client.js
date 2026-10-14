@@ -9,6 +9,29 @@ const RETRYABLE_ERROR = /fetch failed|network|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAI
 const MAX_ATTEMPTS = 3;
 const BASE_DELAY_MS = 2000;
 
+/**
+ * 429（供应商限流）单独一套重试策略 —— 它是"慢一点"，**不是"这一题废了"**。
+ *
+ * 为什么值得单独写（第 24 轮）：并发数从 8 提到 64 之后，撞 429 会从"偶尔"
+ * 变成"常态"（速率就那么多，并发高了必然限流）。如果还用普通策略
+ * （3 次尝试、2s/4s 退避），大批题目会在第三次之后彻底失败，
+ * 用户看到的现象是"**把并发调高了反而大面积失败**"，于是再也不敢调高 ——
+ * 而这恰恰是他要的速度。
+ *
+ * 退避梯 2/4/8/15/30/45 秒，共 6 次：限流通常在几秒到一分钟内恢复，
+ * 给足时间让它恢复，比早早就把题目判废更符合用户意图。
+ * ⚠️ 重试期间**一直占着信号量名额**（release 在最外层 finally）——
+ * 这是有意的：不占名额就等于"退避期间继续放新请求进去"，限流会永远不恢复。
+ */
+const RATE_LIMIT_STATUS = 429;
+/**
+ * 尝试次数 6 = 退避 5 档。⚠️ 梯子的长度必须正好 = 尝试次数 - 1：
+ * 第 n 次失败后等第 n 档，第 6 次失败不再等（直接放弃），所以只会有 5 次等待。
+ * （上一版给了 6 档，最后一档永远走不到 —— 守卫 `L4` 就是钉这条的。）
+ */
+const RATE_LIMIT_MAX_ATTEMPTS = 6;
+const RATE_LIMIT_DELAYS_MS = [2000, 4000, 8000, 15000, 30000];
+
 /** 简单信号量：限制并发数 */
 class Semaphore {
   constructor(limit) {
@@ -58,9 +81,15 @@ function defaultFetchImpl(url, options) {
 class LlmClient {
   constructor(options = {}) {
     this.fetchImpl = options.fetchImpl || defaultFetchImpl;
+    // 退避等待也做成可注入的（与 fetchImpl 同一套路）：429 的退避梯最长 45 秒，
+    // 不注入的话单测要么等几十秒、要么只能在测试里重抄一份梯子数字
+    // —— 而"实现改了、测试照旧绿"正是这个项目反复吃亏的那一类。
+    this.sleepImpl = typeof options.sleepImpl === "function"
+      ? options.sleepImpl
+      : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     this.onUsage = typeof options.onUsage === "function" ? options.onUsage : null;
     this.semaphore = new Semaphore(options.concurrency || 1);
-    this.usage = { calls: 0, promptTokens: 0, completionTokens: 0 };
+    this.usage = { calls: 0, promptTokens: 0, completionTokens: 0, rateLimited: 0 };
     this.strategy = createAnswerStrategy({
       systemPrompt: options.systemPrompt,
       titleTemplate: options.titleTemplate,
@@ -132,7 +161,12 @@ class LlmClient {
     await this.semaphore.acquire();
     try {
       let lastError = null;
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      // 先按普通错误的次数跑；真撞到 429 之后才在 catch 里把上限放宽到 6 次。
+      // ⚠️ 循环边界**必须是这个变量**而不是常量 MAX_ATTEMPTS ——
+      // 第一版就是改了 retryable 里的上限、忘了改这里的边界，结果 429 仍然只试 3 次，
+      // 而单测因为"没断言实际次数"照样全绿（守卫 `L3` 就是钉这条的）。
+      let maxAttempts = MAX_ATTEMPTS;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
           const provider = this.buildProvider();
           const { content, usage } = await provider.chat({
@@ -164,11 +198,28 @@ class LlmClient {
           return content;
         } catch (error) {
           lastError = normalizeError(error);
-          const retryable = attempt < MAX_ATTEMPTS && (lastError.status && RETRYABLE_STATUS.has(lastError.status) || RETRYABLE_ERROR.test(lastError.message));
+          const rateLimited = lastError.status === RATE_LIMIT_STATUS;
+          if (rateLimited) {
+            this.usage.rateLimited += 1;
+            // 撞到 429 才放宽：把循环上限顶到 RATE_LIMIT_MAX_ATTEMPTS。
+            maxAttempts = RATE_LIMIT_MAX_ATTEMPTS;
+          }
+          const retryable = attempt < maxAttempts
+            && ((lastError.status && RETRYABLE_STATUS.has(lastError.status)) || RETRYABLE_ERROR.test(lastError.message));
           if (!retryable) break;
-          const waitMs = BASE_DELAY_MS * attempt;
-          if (onLog) onLog(`AI 请求失败，${waitMs / 1000} 秒后重试 ${attempt + 1}/${MAX_ATTEMPTS}：${lastError.message}`);
-          await new Promise((resolve) => setTimeout(resolve, waitMs));
+          // 429 用更长的退避梯，并且**加最多 1 秒抖动**：不加抖动的话，
+          // 同批次几十个请求会在同一秒一起重试，制造出下一波同步的 429
+          // —— 齐步走退避比不退避更糟。
+          const waitMs = rateLimited
+            ? RATE_LIMIT_DELAYS_MS[Math.min(attempt - 1, RATE_LIMIT_DELAYS_MS.length - 1)] + Math.floor(Math.random() * 1000)
+            : BASE_DELAY_MS * attempt;
+          if (onLog) {
+            onLog(rateLimited
+              ? `⏳ 供应商限流（HTTP 429），${Math.round(waitMs / 1000)} 秒后重试 ${attempt + 1}/${maxAttempts}`
+                + "（这是速率限制，不是 Key 失效；把「并发数」调低一点会更快）"
+              : `AI 请求失败，${waitMs / 1000} 秒后重试 ${attempt + 1}/${maxAttempts}：${lastError.message}`);
+          }
+          await this.sleepImpl(waitMs);
         }
       }
       throw lastError || new Error("AI 请求失败。");
@@ -187,4 +238,14 @@ function normalizeError(error) {
   return error instanceof Error ? error : new Error(String(error || "AI 请求失败。"));
 }
 
-module.exports = { LlmClient, Semaphore, applyTemplate, cleanAnswer };
+module.exports = {
+  LlmClient,
+  Semaphore,
+  applyTemplate,
+  cleanAnswer,
+  // 导出 429 的策略常量：测试要拿它算"两次 429 之后第三次该等多久"，
+  // 在测试里重抄一份数字就会出现"实现改了、测试照旧绿"的假象。
+  RATE_LIMIT_STATUS,
+  RATE_LIMIT_MAX_ATTEMPTS,
+  RATE_LIMIT_DELAYS_MS,
+};

@@ -11,7 +11,9 @@ const excel = require("../../electron/src/storage/excel");
 const { randomPickQuestions } = require("../../electron/src/tasks/random-pick");
 const { allocateRowsToEnvs, TaskManager, randomDelayFactory } = require("../../electron/src/tasks/manager");
 const { LlmClient, applyTemplate, cleanAnswer, Semaphore } = require("../../electron/src/llm/client");
-const { normalizeSettings, normalizeBitEnvs, normalizeCategories } = require("../../electron/src/config");
+const {
+  normalizeSettings, normalizeBitEnvs, normalizeCategories, AI_CONCURRENCY_MAX,
+} = require("../../electron/src/config");
 const zhidao = require("../../electron/src/pages/zhidao");
 
 function tempDir() {
@@ -339,10 +341,13 @@ test("zhidao.listKey 归一化", () => {
 });
 
 test("config：normalizeSettings 数值夹取", () => {
+  // ⚠️ 夹取上限从 8 提到 64 是第 24 轮**有意的**改动（那个 8 是我们自己写死的，
+  // 不是任何技术上限；用户说得对：LLM 供应商按速率计费、并发几千是可能的）。
+  // 这里断言的是"上限 = AI_CONCURRENCY_MAX"，不再写死数字 —— 以后再调上限不用改测试。
   const settings = normalizeSettings({ timeoutMs: 1, delayMin: 30, delayMax: 5, aiConcurrency: 99 });
   assert.ok(settings.timeoutMs >= 5000);
   assert.equal(settings.delayMax, 30, "delayMax 不得小于 delayMin");
-  assert.equal(settings.aiConcurrency, 8);
+  assert.equal(settings.aiConcurrency, AI_CONCURRENCY_MAX);
 });
 
 test("config：normalizeBitEnvs 去重去空", () => {

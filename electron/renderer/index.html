@@ -358,8 +358,8 @@
             <div class="field"><label>API 地址（OpenAI 兼容）</label><input type="text" id="aiBaseUrl" /></div>
             <div class="field"><label>API Key</label><input type="password" id="aiApiKey" placeholder="sk-..." /></div>
             <div class="field"><label>模型</label><input type="text" id="aiModel" /></div>
-            <div class="field"><label>并发数</label><input type="number" id="aiConcurrency" min="1" max="8" />
-              <span class="hint">同时发几条 AI 请求（1~8）。单条约 5 秒：20 题在 2 条下约 1 分钟、6 条约 20 秒。供应商限流返 429 时会自动退避重试，调高不会烧号。</span>
+            <div class="field"><label>并发数</label><input type="number" id="aiConcurrency" min="1" max="64" />
+              <span class="hint">同时发几条 AI 请求（1~64）。单条约 5 秒：1000 题在 6 条下约 15 分钟、64 条下约 1.5 分钟。真实上限是供应商的速率限制，撞到 429 会自动退避重试（不烧号、不静默失败），日志会告诉你撞了几次。</span>
             </div>
             <div class="field"><label>今日 token 预算上限（0=不限）</label><input type="number" id="aiDailyTokenBudget" min="0" /></div>
             <div class="field"><label>回答最大 tokens（50~4000）</label><input type="number" id="aiMaxTokens" min="50" max="4000" placeholder="520" /></div>
