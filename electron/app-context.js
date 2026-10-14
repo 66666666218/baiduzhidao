@@ -827,10 +827,25 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     return { canceled: false, filePath: choice.filePath };
   });
   ipcMain.handle("path:pick-open-table", async (_event, payload) => {
+    // 允许调用方**追加**能选的文件类型（默认 xlsx/xls/csv）。
+    //
+    // 为什么需要（2026-10-14）：批量转存的「资源表格」其实**一直支持 txt（一行一个链接）**
+    // —— `tasks/batch-transfer.js` 里就有 `/\.txt$/i` 那一支。但选择框的 filters 只列了
+    // xlsx/xls/csv，于是用户在界面上**根本选不到 txt**：功能在、入口没有，他只能来问
+    // "能不能一行一个链接"。这里加的是入口，不是功能。
+    // 只给真正需要的调用方开（把 txt 塞进"上传专用表"那种选择框只会让人选错文件）。
+    //
+    // ⚠️ 合并规则**只许住在 `storage/excel.js` 的 `mergePickExtensions`**，这里只负责调它。
+    // 先前这里是内联的 `[...new Set(["xlsx","xls","csv", ...extra])]`：写死之后静态守卫照样全绿
+    //（扫文本只看得见"接线"，看不见逻辑）—— 提成纯函数后测试才能真的喂参数、看返回值。
+    const extraList = Array.isArray(payload && payload.extensions) ? payload.extensions : [];
+    const exts = excel.mergePickExtensions(extraList);
     const choice = await dialog.showOpenDialog(mainWindow, {
       title: (payload && payload.title) || "选择表格",
       properties: ["openFile"],
-      filters: [{ name: "表格文件", extensions: ["xlsx", "xls", "csv"] }],
+      filters: extraList.length
+        ? [{ name: "表格 / 链接清单（一行一个）", extensions: exts }]
+        : [{ name: "表格文件", extensions: exts }],
     });
     if (choice.canceled || !choice.filePaths?.[0]) return { canceled: true };
     return { canceled: false, filePath: choice.filePaths[0] };

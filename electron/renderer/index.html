@@ -455,12 +455,13 @@
         </div>
         <div class="card">
           <p class="hint">纯协议批量转存（优先用「账号凭证」里存的 Cookie，存过就完全不开窗口；只有没存过的账号才开窗口取一次）：把表格/链接清单里的资源批量转存到自己的网盘（无需窗口点击），转存成功后自动创建自己的永久分享，并生成可直接上传的上传专用表。仅启动时从指定窗口提取一次网盘登录凭证。</p>
-          <div class="field"><label>资源表格（xlsx，含 名称/链接/提取码 列，自动识别）</label>
+          <div class="field"><label>资源表格（xlsx 含 名称/链接/提取码 列；也可以直接选 txt，一行一个链接）</label>
             <div class="pair">
-              <input type="text" id="batchExcelPath" readonly placeholder="选择资源表格" />
+              <input type="text" id="batchExcelPath" readonly placeholder="选择资源表格，或一行一个链接的 txt" />
               <button class="btn soft" id="pickBatchExcel">选择</button>
             </div>
           </div>
+          <p class="hint">📄 一行一个链接也行：<b>直接选一个 txt</b>（每行「链接 提取码」或「链接 提取码:abcd」，链接后空格跟四位码也认；以 # 开头的行当注释忽略）。两种输入走的是同一条批量队列 —— 差别只在"怎么喂进去"，不在快慢：无论 txt 还是表格，每条都要单独走「验提取码 → 取分享页 → 建目录 → 转存 → 建分享」几个请求，百度没有"一次交一批链接"的接口。同类开源工具（BaiduPanFilesTransfers）自己的说明也写着「总转存速度不要超过每分钟 60 条链接」「想加快可多开程序，分批同时转存」—— 也就是 1 条/秒上下，想更快只能靠<b>换出口 IP / 多账号配代理并行</b>。</p>
           <div class="field-grid">
             <div class="field"><label>比特环境名（多账号每行一个，自动轮换）</label><textarea id="batchBitEnvs" rows="3" placeholder="账号1&#10;账号2"></textarea></div>
             <div class="field"><label>每窗口连续条数（轮换粒度）</label><input type="number" id="batchPerEnv" min="1" value="50" /></div>

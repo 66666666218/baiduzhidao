@@ -571,7 +571,9 @@ $("startSearchResources").addEventListener("click", async () => {
 });
 
 $("pickBatchExcel").addEventListener("click", async () => {
-  const result = await call("选择资源表格", "path:pick-open-table", { title: "选择资源表格" });
+  // extensions: ["txt"] —— 批量转存本来就支持「txt，一行一个链接」，但选择框以前不列 txt，
+  // 用户在界面上根本选不到那个文件（功能在、入口没有）。见 app-context.js 的注释。
+  const result = await call("选择资源表格", "path:pick-open-table", { title: "选择资源表格（xlsx 表格，或 txt 一行一个链接）", extensions: ["txt"] });
   if (result && !result.canceled) $("batchExcelPath").value = result.filePath;
 });
 

@@ -26,6 +26,23 @@ const QA_FLUSH_MIN_GAP_MS = 15 * 1000;
 const QA_FLUSH_MAX_GAP_MS = 5 * 60 * 1000;
 
 /**
+ * 「连续转存大约 1000 条之后，百度会在 **IP 层**收紧」—— 到达这个条数时提醒一次。
+ *
+ * 出处（**第三方记录，不是我实测的**）：开源批量转存工具 `hakureiholo/BaiduPanFilesTransfers`
+ * （GPL-3.0，就是同类里最常被推荐的那个）的 FAQ 有一条「转存次数到达 1000 上限」：
+ *   「连续转存 1000 个链接，再多 1 个都会报错，报错码千奇百怪。甚至网页端都无法再转存……
+ *     原因：百度网盘基于 IP 地址层面的封锁，禁止用户大量转存。
+ *     解决：可以重启拨号路由器，更换对外 IP 地址。」
+ * 同一个 FAQ 还有一条「链接错误尝试次数过多」：短时间内对**同一个**链接访问 3 次以上就会弹验证码
+ *   —— 这正是我们分享页重试 3 次的形状，所以那 3 次必须带着退避（SHARE_RETRY_DELAYS）。
+ *
+ * ⚠️ 按本项目的规矩，这**不是**能拿来推算的常量（同族教训：`SHARE_DAILY_LIMIT` 那个 300
+ * 就被用户台账实测推翻了）。它只做一件事：**在快跑到那个坎之前提醒一次**，
+ * 让用户自己决定换 IP / 配代理 / 分批。**绝不自动停，也绝不说"你只能跑 1000 条"。**
+ */
+const IP_BURST_WARN_AT = 900;
+
+/**
  * 把毫秒说成人话。负数/NaN 返回空串（**不要**抛，也不要说"0 秒"，
  * 因为那意味着"已经跑完"，而实际含义是"算不出来"）。
  */
@@ -137,6 +154,9 @@ function batchScaleNotice({ total, accounts, cc, shareDailyLimit, destRoot = "" 
   }
   lines.push(shareQuotaNotice({ accounts: acc, shareDailyLimit }));
   if (destRoot) lines.push(`转存目标目录：${destRoot}`);
+  // 大批量（≥900 条）时**提前**把"1000 条那道 IP 坎"说出来：
+  // 等他真跑到 900 条才说，前面那几百条已经白跑了。
+  if (all >= IP_BURST_WARN_AT) lines.push(ipBurstNotice({ done: all, cc: threads, accounts: acc }));
   return lines;
 }
 
@@ -194,6 +214,37 @@ function shareExhaustedNotice({ remaining, accounts, shareDailyLimit }) {
     + "　· 如果你要的就是问答表：**现在点「停止」不亏**，明天额度恢复后再跑后面这批"
     + "（已完成的台账不会丢，重跑会从那之后接着走）。"
     + "　· 如果你要的是把资源存进自己网盘：不用管它，让它跑完即可。";
+}
+
+/** 「跑到 900 条」时提醒一次（`shouldWarnIpBurst` 的判据 / 只喊一次的开关由调用方管） */
+function shouldWarnIpBurst({ done, announced, warnAt = IP_BURST_WARN_AT } = {}) {
+  if (announced) return false;
+  const n = Number(done);
+  const w = Number(warnAt);
+  if (!Number.isFinite(n) || !Number.isFinite(w)) return false;
+  return n >= w;
+}
+
+/**
+ * 那句提醒要说什么：说清**出处**（第三方的经验记录，不是硬结论）、**症状**、**动作**，
+ * 并且点明一个最容易搞错的点 —— `账号数` 和 `出口 IP 数` 不是一回事：换账号不换 IP 是没用的。
+ */
+function ipBurstNotice({ done, cc, accounts }) {
+  const n = Math.max(0, Math.floor(Number(done) || 0));
+  const chains = Math.max(1, Math.floor(Number(cc) || 1));
+  const acc = Math.max(0, Math.floor(Number(accounts) || 0));
+  const sameIp = chains <= 1 && acc > 1;
+  return `⚠️ 已经转存 ${n} 条。有同类开源工具（BaiduPanFilesTransfers）记过一条经验：`
+    + `**连续转存大约 1000 条之后，百度会在 IP 层面收紧** —— 之后多转 1 个都可能报出各种奇怪的错误码，`
+    + `甚至网页端也转不动；它给出的解法是**换一个出口 IP**（重启拨号路由器，或走代理）。`
+    + `这条**不是硬结论**（本项目的"每天 300 个分享"那个常量就被实测推翻过），所以程序**不会自己停**。`
+    + `但如果你从这里开始突然大面积报错，先想这一条：`
+    + (sameIp
+      ? `注意「换账号」不等于「换 IP」—— 你现在的 ${acc} 个账号是同一个出口，换账号没用，要换的是 IP。`
+      : "换出口 IP 就能继续。")
+    + (chains <= 1
+      ? "（不想反复重启路由器，就在设置页「账号代理」给每个账号配一条**互不相同**的代理，有几条出口就有几条链并行。）"
+      : "");
 }
 
 /**
@@ -260,6 +311,9 @@ module.exports = {
   emptyPhases,
   addPhases,
   phaseLine,
+  IP_BURST_WARN_AT,
+  shouldWarnIpBurst,
+  ipBurstNotice,
   formatDuration,
   measurePace,
   estimateRemaining,

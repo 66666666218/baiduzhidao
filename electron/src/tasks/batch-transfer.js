@@ -378,6 +378,10 @@ async function runBatchTransferTask(ctx, deps) {
   ctx.report({ done: 0, total, status: "running" });
 
   let done = 0, failed = 0, fatalStop = false;
+  // 「没找到链接 / 只有链接没有提取码」两类跳过分开计数：用户要做的动作不同
+  // （前者多半是表选错了，后者是要把提取码补上），而且一万行的表里必须给出汇总。
+  let skippedNoLink = 0, skippedNoPwd = 0;
+  let ipBurstAnnounced = false;   // "1000 条那道 IP 坎"的提醒只喊一次
   // 分享相关的本批状态：转存成功但分享没建成（常见原因是百度单账号每日 300 分享上限）
   // 不能当成"整条失败"重传 —— 文件已在网盘，重传只会 errno=4 重复 + 再撞分享上限。
   let transferredNoShare = 0;
@@ -468,6 +472,13 @@ async function runBatchTransferTask(ctx, deps) {
       shareExhaustedAnnounced = true;
       log(progress.shareExhaustedNotice({ remaining: total - done, accounts: creds.length, shareDailyLimit: SHARE_DAILY_LIMIT }));
     }
+    // 「连续转存约 1000 条之后百度会在 IP 层收紧」（第三方开源工具记录的经验）——
+    // 跑到 900 条时提醒一次，让用户能在**大面积报错之前**决定换 IP / 配代理 / 分批。
+    // 同样是**只提醒、不自动停**：它不是我们能确证的硬结论，见 transfer-progress.js 的常量注释。
+    if (progress.shouldWarnIpBurst({ done, announced: ipBurstAnnounced })) {
+      ipBurstAnnounced = true;
+      log(progress.ipBurstNotice({ done, cc, accounts: creds.length }));
+    }
   }
 
   // 每条完整链（独立 Jar 会话，并发安全）；窗口按轮换粒度切换
@@ -543,7 +554,12 @@ async function runBatchTransferTask(ctx, deps) {
       const rawName = String(rows[i][nameKey] || "").trim();
       const { link, pwd: cellPwd } = parseLinkCell(String(rows[i][linkKey] || "") + (pwdKey ? ` 提取码:${rows[i][pwdKey]}` : ""));
       const srcLink = link + (link.includes("pwd=") ? "" : `?pwd=${cellPwd}`);
-      if (!link || !cellPwd) { log(`⏭ 行 ${i + 1} 缺链接或提取码，跳过`); continue; }
+      if (!link || !cellPwd) {
+        if (link) skippedNoPwd += 1; else skippedNoLink += 1;
+        log(`⏭ 行 ${i + 1} 跳过：${link ? "只有链接、没有提取码" : "没找到网盘链接"}`
+          + "（一行一个链接时写成「链接 提取码」或「链接 提取码:abcd」都认）");
+        continue;
+      }
 
       const prev = state.get(srcLink);
       if (prev && prev.status === "done" && prev.ownLink) { if (prev.qaRow) qaRows.push(prev.qaRow); continue; }
@@ -785,6 +801,13 @@ async function runBatchTransferTask(ctx, deps) {
   // 以后要优化，看这一行就够了，不用再拿用户的账号和额度去做实验。
   const finalSteps = progress.phaseLine(phaseAcc);
   if (finalSteps) log(finalSteps);
+  // 跳过的那两类必须汇总：单行日志在一万行的表里等于没有，而这两类的处理动作完全不同。
+  if (skippedNoLink || skippedNoPwd) {
+    log(`（另有 ${skippedNoLink} 行「没找到网盘链接」、${skippedNoPwd} 行「只有链接没有提取码」被跳过 —— 都没计入失败。`
+      + "没提取码的**免密分享**目前也会落进第二类：把该行的提取码补上即可；"
+      + "如果你手上就是一批免密链接，告诉我，我单独验一次再放开（不验就直接放开的话，"
+      + "会把「提取码错」误判成「免密」从而多发一堆无效请求）。）");
+  }
   if (outputPath) log(`上传专用表已生成：${outputPath}（${qaRows.length} 条，可在 Excel 修改后直接上传）`);
   return { count: done, failed, totalOk, outputPath, shareFailures: transferredNoShare };
 }

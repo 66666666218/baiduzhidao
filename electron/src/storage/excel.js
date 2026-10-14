@@ -7,8 +7,34 @@ const XLSX = require("xlsx");
 const ANSWER_HEADERS = ["题库分类", "一级分类", "二级分类", "标题", "问题内容", "回答内容", "复制用答案", "题目地址", "比特环境", "状态", "质检", "生成时间"];
 const BANK_HEADERS = ["题库分类", "一级分类", "二级分类", "标题", "问题内容", "题目地址", "比特环境", "状态", "采集时间"];
 
+/** 「表格类」文件：这些扩展名是**唯一一份**定义（`isTableFile` 与选择框都从它来） */
+const TABLE_EXTENSIONS = ["xlsx", "xls", "csv"];
+/** 批量转存还能吃「一行一个链接」的纯文本清单（`tasks/batch-transfer.js` 的 txt 分支） */
+const LINK_LIST_EXTENSIONS = ["txt"];
+
 function isTableFile(filePath) {
-  return [".xlsx", ".xls", ".csv"].includes(path.extname(String(filePath || "")).toLowerCase());
+  const ext = path.extname(String(filePath || "")).replace(/^\./, "").toLowerCase();
+  return TABLE_EXTENSIONS.includes(ext);
+}
+
+/**
+ * 文件选择框要列的类型 = 表格三种 + 调用方追加的（去重、去点、小写）。
+ *
+ * 为什么要有这个函数（2026-10-14，用户第二次追问「一行一个链接」）：
+ * `tasks/batch-transfer.js` **一直支持 txt**（每行一条链接），但选择框的 filters 写死了
+ * xlsx/xls/csv —— 于是**功能在、入口没有**：用户在界面上根本选不到那个 txt 文件，
+ * 只能来问"能不能按一行一个链接批量转存"。
+ *
+ * 规则提到这里（而不是写在 `app-context.js` 里）是照本项目的规矩办：
+ * `app-context.js` 第一行就 `require("electron")`，测试加载不起来，规则写在那里只能"扫文本"，
+ * **而扫文本读不出逻辑**（本轮就先踩了一次：把"追加类型"改成写死，守卫照样全绿）。
+ * 放成纯函数，测试就能**真的调用**它、喂两种入参看结果。
+ */
+function mergePickExtensions(extra) {
+  const list = (Array.isArray(extra) ? extra : [])
+    .map((x) => String(x || "").replace(/^\./, "").toLowerCase())
+    .filter(Boolean);
+  return [...new Set([...TABLE_EXTENSIONS, ...list])];
 }
 
 function collectTableFiles(targetPath) {
@@ -209,6 +235,9 @@ function uniqueFilePath(filePath) {
 module.exports = {
   ANSWER_HEADERS,
   BANK_HEADERS,
+  TABLE_EXTENSIONS,
+  LINK_LIST_EXTENSIONS,
+  mergePickExtensions,
   isTableFile,
   collectTableFiles,
   firstSheetName,
