@@ -270,26 +270,50 @@ $("refreshAccountOverview").addEventListener("click", async () => {
 });
 
 // ---------- 软件更新（GitHub Releases） ----------
-let currentVersion = "";
+// 全部状态集中在一个对象里，界面由它推导 —— 文案与"点了干什么"的唯一一份规则在
+// `src/update-banner.js`（纯函数，单测直接打；文件和 index.html 里都挂上了）。
+const U = window.UpdateBanner;
+let updateSupported = false;
+// ready 是主进程的权威布尔值（"已下载好"这件事只有它知道），readyVersion 只用来显示版本号。
+let updateState = { currentVersion: "", availableVersion: "", ready: false, readyVersion: "", percent: null, transferred: 0, total: 0 };
 
-/** 顶部提示条：启动静默检查发现新版时出现，点了就走「检查并下载」 */
-function showUpdateBanner(version) {
+/**
+ * 按当前状态重画"与更新有关的一切"。任何一处状态变化都只调它，
+ * 不再各写各的 textContent（以前下载中那整段时间是空白的，就是"各写各的"漏掉了）。
+ */
+function renderUpdateUi() {
   const banner = $("updateBanner");
-  if (!banner || !version) return;
-  banner.textContent = `🔔 发现新版本 v${version}（当前 v${currentVersion}）——点这里下载安装`;
-  banner.hidden = false;
+  if (banner && U) {
+    const view = U.updateBannerState(updateState);
+    banner.hidden = !view.visible;
+    if (view.visible) {
+      banner.textContent = view.text;
+      // 点了要干什么由规则决定，不在这里 if 一堆条件
+      banner.dataset.action = U.bannerAction(view.mode);
+    }
+  }
+  $("updateInfo").textContent = U.updateInfoLine(updateState, { supported: updateSupported });
+  $("checkUpdate").disabled = !updateSupported;
+  // 只有主进程说"已下载好"才允许安装。状态走结构化字段，不匹配日志文本——
+  // 此前是靠 includes("下载完成。重启软件即自动安装") 判断的，日志改一个字按钮就静默失效。
+  $("installUpdate").disabled = !updateState.ready;
 }
 
 function applyUpdateInfo(info) {
-  currentVersion = info.version;
-  $("updateInfo").textContent = `当前版本 v${info.version}`;
-  $("checkUpdate").disabled = !info.supported;
-  if (!info.supported) $("updateInfo").textContent += "（开发模式不支持在线更新）";
-  // 只有主进程说"已下载好"才允许安装。状态走结构化字段，不匹配日志文本——
-  // 此前是靠 includes("下载完成。重启软件即自动安装") 判断的，日志改一个字按钮就静默失效。
-  $("installUpdate").disabled = !info.ready;
-  // 启动静默检查可能早于界面就绪，那条推送收不到——用查询结果兜底
-  if (info.available) showUpdateBanner(info.available);
+  const i = info || {};
+  updateSupported = Boolean(i.supported);
+  const downloading = Boolean(i.downloading);
+  updateState = {
+    currentVersion: i.version || "",
+    // 下载完成后主进程会把 available 清空并置 ready —— 两者互斥，界面不会自相矛盾
+    availableVersion: i.available || "",
+    ready: Boolean(i.ready),
+    readyVersion: i.readyVersion || "",
+    percent: downloading && Number.isFinite(i.percent) ? i.percent : null,
+    transferred: 0,
+    total: 0,
+  };
+  renderUpdateUi();
 }
 
 (async () => {
@@ -298,18 +322,57 @@ function applyUpdateInfo(info) {
   } catch { /* 通道异常不影响其他功能 */ }
 })();
 
-// 下载完成时主进程主动推：立刻点亮按钮，不必等到下一次查询
+// 下载完成时主进程主动推：点亮按钮 + **把顶部提示条重新显示出来**。
+// 用户是从提示条点进去下载的，而那个条在点击时就隐藏了；以前下载完成只在
+// 「使用教程 → 软件更新」那一页改两个字 —— 用户没在那页，就以为什么都没发生。
 rpc.on("update:ready", (info) => {
-  $("installUpdate").disabled = false;
-  $("updateInfo").textContent = `新版 v${(info && info.version) || ""} 已下载完成，点「重启并安装新版」即可`;
+  updateState = {
+    ...updateState,
+    ready: true,
+    readyVersion: (info && info.version) || updateState.readyVersion,
+    availableVersion: "",
+    percent: null,
+  };
+  renderUpdateUi();
 });
 
 // 启动静默检查（只查不下载）发现新版时推过来
-rpc.on("update:available", (info) => showUpdateBanner(info && info.version));
+rpc.on("update:available", (info) => {
+  const version = info && info.version;
+  if (!version) return;
+  // 又发现了一个新版本：之前那个"已下载好"的就不再是最新的了，状态一并复位
+  updateState = { ...updateState, availableVersion: version, ready: false, readyVersion: "", percent: null };
+  renderUpdateUi();
+});
+
+// 下载进度（以前这段界面完全空白）
+rpc.on("update:progress", (p) => {
+  const progress = p || {};
+  updateState = {
+    ...updateState,
+    availableVersion: progress.version || updateState.availableVersion,
+    percent: Number.isFinite(progress.percent) ? progress.percent : updateState.percent,
+    transferred: Number(progress.transferred) || 0,
+    total: Number(progress.total) || 0,
+  };
+  renderUpdateUi();
+});
 
 $("updateBanner").addEventListener("click", () => {
-  $("updateBanner").hidden = true; // 用户已看到，收起；失败信息在运行日志里
-  $("checkUpdate").click();
+  const action = $("updateBanner").dataset.action || "none";
+  if (action === "install") {
+    // 下载好了：直接装。"再点一次检查更新"是以前的行为，用户点了会觉得毫无反应。
+    $("installUpdate").click();
+    return;
+  }
+  if (action === "check") {
+    // 收起提示条（下载期间它会以进度形态回来）+ 走一次「检查并下载」。
+    // 失败信息在运行日志里，同时 renderUpdateUi 会把状态画回正确样子。
+    $("checkUpdate").click();
+    return;
+  }
+  // action === "none"（正在下载）：这一刻点它本来就没有可做的事。
+  // 文案里也**故意没写"点这里"** —— 写了却点不动，就是又一次"界面在撒谎"。
 });
 
 $("checkUpdate").addEventListener("click", async () => {
@@ -317,12 +380,15 @@ $("checkUpdate").addEventListener("click", async () => {
   $("updateInfo").textContent = "检查更新中…";
   try {
     const r = await rpc.invoke("update:check");
-    $("updateInfo").textContent = `当前版本 v${r.currentVersion}`;
+    // 不能用返回值直接覆盖状态：下载是异步进行的，这时主进程刚进入"下载中"，
+    // 状态要靠 update:progress / update:ready 推过来。这里只补一下当前版本号。
+    updateState = { ...updateState, currentVersion: (r && r.currentVersion) || updateState.currentVersion };
+    renderUpdateUi();
   } catch (error) {
     $("updateInfo").textContent = "检查失败，详见运行日志";
     appendLog(`检查更新失败：${error.message}`);
   } finally {
-    $("checkUpdate").disabled = false;
+    $("checkUpdate").disabled = !updateSupported;
   }
 });
 

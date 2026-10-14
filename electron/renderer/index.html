@@ -726,6 +726,10 @@
       </section>
     </main>
   </div>
+  <!-- 更新提示条/说明文字的规则放在 src/update-banner.js（主进程与单测也用同一份；纯函数）：
+       放在渲染端手抄一遍的话，"下载中该显示什么、点了该干什么"就会有两份实现，
+       而这类"界面该说什么"的规则恰恰是本轮 bug 的现场。必须排在 renderer.js 之前。 -->
+  <script src="../src/update-banner.js"></script>
   <script src="renderer.js"></script>
     <script src="netdisk-manager-view.js"></script>
 </body>

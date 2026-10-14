@@ -128,7 +128,9 @@ function main() {
     "electron/src/workflows/pipeline-guard.js",
     "electron/src/tasks/manager.js",
     "electron/src/netdisk/proxy.js",
+    "electron/src/update-banner.js",
     "electron/renderer/renderer.js",
+    "electron/renderer/index.html",
   ];
   const missingSrc = requiredSources.filter((rel) => !entries.has(normAsarPath(rel)));
   if (missingSrc.length) problems.push(`产物缺少源码文件：${missingSrc.join("、")}`);

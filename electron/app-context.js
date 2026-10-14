@@ -861,42 +861,80 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
   // 需要自动更新能工作时，仓库名仍然只在包内的 `resources/app-update.yml` 里（那是更新源配置，
   // 不是日志）—— 想连这个也不留，就得把在线更新整条关掉。
   let updateReady = false; // 新版已下载完成
+  let updateReadyVersion = ""; // 已下载好的版本号（界面要显示它，不能只给个布尔值）
   let updateAvailable = ""; // 已知有新版的版本号（尚未下载）
   let wantDownload = false; // 本次检查是否顺带下载
+  // 下载中状态也留一份：界面刷新（或刚启动）时要能靠 `update:info` 复原出
+  // "正在下载 42%" 这个状态，否则界面又会退回"当前版本 v2.0.44"那种什么都没发生的样子。
+  let downloading = false;
+  let downloadPercent = null;
   let lastProgressLog = 0;
+  let lastProgressEmit = 0;
   try {
     const { autoUpdater } = require("electron-updater");
     autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.on("checking-for-update", () => emit("task:log", "检查更新中…"));
+    // ⚠️ 这一整段里所有"要给人看"的文案都必须走 `logger.log`，**不能**用 `emit("task:log", …)`。
+    // 两者看起来都能进界面的日志面板，但只有 `logger.log` 同时落进**日志文件**
+    //（`logger.onLog` 会把同一行转给渲染端）。2026-10-14 用户报「点击检查更新并不能更新」时，
+    // 我打开他的日志文件发现**一个字都没有更新记录** —— 只能去翻 electron-updater 的下载缓存，
+    // 才看清它其实下载成功了。诊断信息进不了文件，等于没有。
+    autoUpdater.on("checking-for-update", () => logger.log("检查更新中…"));
     autoUpdater.on("update-available", (info) => {
       updateAvailable = info.version;
+      // 又发现了一个新版本：之前那个"已下载好"的就不再是最新的了，状态一并复位
+      updateReady = false;
+      updateReadyVersion = "";
+      downloading = wantDownload; // 启动静默检查只查不下，不能显示成"下载中"
+      downloadPercent = wantDownload ? 0 : null;
       // 结构化推送：界面顶部的更新提示靠这个，不靠解析下面的日志文本
       emit("update:available", { version: info.version, current: app.getVersion() });
-      emit("task:log", wantDownload
+      logger.log(wantDownload
         ? `发现新版本 v${info.version}，开始下载（约 85MB）…`
         : `发现新版本 v${info.version}（当前 v${app.getVersion()}），点界面顶部的提示即可下载安装。`);
     });
     autoUpdater.on("update-not-available", (info) => {
       updateAvailable = "";
-      emit("task:log", `已是最新版本（v${info.version}），无需更新。`);
+      logger.log(`已是最新版本（v${info.version}），无需更新。`);
     });
     autoUpdater.on("download-progress", (p) => {
+      downloadPercent = p.percent;
       if (p.percent - lastProgressLog >= 20 || p.percent >= 100) {
         lastProgressLog = p.percent;
-        emit("task:log", `新版本下载中：${Math.round(p.percent)}%（${(p.transferred / 1048576).toFixed(0)}/${(p.total / 1048576).toFixed(0)} MB）`);
+        logger.log(`新版本下载中：${Math.round(p.percent)}%（${(p.transferred / 1048576).toFixed(0)}/${(p.total / 1048576).toFixed(0)} MB）`);
+      }
+      // 结构化进度推给界面：以前只有"每 20% 一行日志"，而下载 85MB 要好几分钟 ——
+      // 用户点完检查更新之后界面上什么都不动，看起来就是"点了没用"。
+      // 节流到 ~500ms 一次：下载事件很密，每来一个就发一次 IPC 是浪费。
+      const now = Date.now();
+      if (now - lastProgressEmit >= 500 || p.percent >= 100) {
+        lastProgressEmit = now;
+        emit("update:progress", {
+          version: updateAvailable,
+          percent: p.percent,
+          transferred: p.transferred,
+          total: p.total,
+        });
       }
     });
     autoUpdater.on("update-downloaded", (info) => {
       updateReady = true;
+      updateReadyVersion = info.version;
       updateAvailable = "";
+      downloading = false;
+      downloadPercent = null;
       // 主动推给界面。此前界面是靠匹配下面这行日志文本来启用「重启并安装新版」按钮的，
       // 改一个字按钮就永远不亮且不报错——状态必须走结构化事件，不能走日志文本。
       emit("update:ready", { version: info.version });
-      emit("task:log", `✅ 新版本 v${info.version} 下载完成。重启软件即自动安装；也可在「使用教程 → 软件更新」点「重启并安装新版」立即完成。`);
+      logger.log(`✅ 新版本 v${info.version} 下载完成。界面顶部的提示现在会变成「点这里立即重启并安装」；`
+        + "也可以直接关掉软件 —— 关闭时它会自动装上，下次打开就是新版。");
     });
     autoUpdater.on("error", (e) => {
-      emit("task:log", `⚠️ 更新失败：${describeUpdateError(e)}`);
-      emit("task:log", `可改用手动更新：拿到最新安装包直接覆盖安装即可（答题数据不受影响）。`);
+      // 失败也要把"下载中"清掉，否则界面会永远停在某个百分比上骗人
+      downloading = false;
+      downloadPercent = null;
+      logger.log(`⚠️ 更新失败：${describeUpdateError(e)}`);
+      logger.log("可改用手动更新：拿到最新安装包直接覆盖安装即可（答题数据不受影响）。"
+        + "若你已经在下载中途失败过，再点一次「检查更新」会接着重下。");
     });
   } catch (e) {
     logger.log(`更新模块初始化失败（不影响其他功能）：${e.message}`);
@@ -944,10 +982,10 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       const { session } = require("electron");
       await session.defaultSession.setProxy({ mode: "direct" });
       switched = true;
-      emit("task:log", "⚠️ 系统代理连不上，已临时改为**直连**重试一次（用完会还原成你原来的代理设置）…");
+      logger.log("⚠️ 系统代理连不上，已临时改为**直连**重试一次（用完会还原成你原来的代理设置）…");
       const { autoUpdater } = require("electron-updater");
       await autoUpdater.checkForUpdates();
-      emit("task:log", "✅ 直连重试成功。");
+      logger.log("✅ 直连重试成功。");
       return true;
     } catch {
       return false;
@@ -967,7 +1005,12 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     throw new Error(`${describeUpdateError(e)}（详细原因见运行日志）`);
   }));
   ipcMain.handle("update:install", () => {
-    if (!updateReady) throw new Error("新版尚未下载完成，请先「检查更新」并等待下载完成。");
+    if (!updateReady) {
+      // 这句要说清"还有什么别的办法"：用户点了安装却没反应时，最有用的一句是
+      //「你什么都不用做，关掉软件它自己会装上」。
+      throw new Error("新版尚未下载完成。请先点「检查更新」并等下载完成；"
+        + "若你已经下过一轮，可以直接关闭软件 —— 关闭时它会自动装上，下次打开就是新版。");
+    }
     const { autoUpdater } = require("electron-updater");
     autoUpdater.quitAndInstall();
     return { ok: true };
@@ -976,7 +1019,10 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
     version: app.getVersion(),
     supported: Boolean(app.isPackaged),
     ready: updateReady, // 新版是否已下载好（界面据此启用「重启并安装新版」）
+    readyVersion: updateReadyVersion, // 已下载好的版本号（界面要显示，不能只给布尔值）
     available: updateAvailable, // 有新版但还没下载时的版本号（界面据此显示顶部提示）
+    downloading, // 是否正在下载（界面据此把顶部提示条显示成进度）
+    percent: downloadPercent, // 已下载百分比（null = 还不知道）
     // 以前这里还返回 `releasesUrl`（仓库发布页地址），渲染端靠它开浏览器 —— 已移除，
     // 连按钮一起删（见上面那段说明）：留着字段就是"地址还在包里，只是不显示"。
   }));
@@ -992,9 +1038,11 @@ function registerIpc(ipcMain, dialog, clipboard, shell) {
       // 以前这里还有一句 `原始错误：${raw}`，等于把地址又印了一遍。现在只留抹过地址的摘要。
       const raw = String((e && e.message) || e);
       const brief = scrubUrl(String(raw)).slice(0, 120);
-      emit("task:log", `启动检查更新失败（不影响使用）：${describeUpdateError(raw)}`);
-      if (brief) emit("task:log", `  原因摘要：${brief}`);
-      emit("task:log", `可稍后在「使用教程 → 软件更新」手动重试；或拿到最新安装包直接覆盖安装（答题数据不受影响）。`);
+      // 同样走 logger.log：这是"启动时静默检查失败"，用户八成不会主动说，
+      // 而排查时这三行往往是唯一的线索 —— 只发界面不进文件，等于事后查不到。
+      logger.log(`启动检查更新失败（不影响使用）：${describeUpdateError(raw)}`);
+      if (brief) logger.log(`  原因摘要：${brief}`);
+      logger.log("可稍后在「使用教程 → 软件更新」手动重试；或拿到最新安装包直接覆盖安装（答题数据不受影响）。");
     });
   }, 20000).unref?.();
 

@@ -68,7 +68,9 @@ const invokeChannels = new Set([
   "update:info",
 ]);
 
-const listenerChannels = new Set(["task:log", "task:progress", "task:item", "update:ready", "update:available"]);
+// ⚠️ 必须与 src/ipc-channels.js 的 LISTENER_CHANNELS 完全一致（契约①-b）。
+// 漏一个的表现是"主进程发了、界面收不到"，而且两边都不报错。
+const listenerChannels = new Set(["task:log", "task:progress", "task:item", "update:ready", "update:available", "update:progress"]);
 
 contextBridge.exposeInMainWorld("api", {
   invoke: (channel, payload) => {
