@@ -75,16 +75,26 @@ function estimateRemaining({ done, total, perItemMs }) {
 }
 
 /**
- * 本批**最多**能产出多少条带分享链接的问答行。
+ * 本批分享额度还剩多少余量 —— 只在**有实测依据**时给结论。
  *
- * 依据：百度限制单账号每日最多 300 个分享链接（netdisk/share.js 的 SHARE_DAILY_LIMIT）。
- * 超出的部分**照样会转存进网盘**，但建不了分享 → 不进上传专用表。
- * 所以 11164 条的批次里，只有前 `账号数 × 300` 条是有效产出，其余是白转（还占网盘空间）。
+ * ⚠️ 这里踩过一次坑，写下来免得后人再踩（2026-10-14）：
+ * 代码里有个常量 `SHARE_DAILY_LIMIT = 300`，于是"开工告知"直接推出"这批 11164 条里只有前 600 条
+ * 能拿到分享链接"。**这个结论是错的。** 用户那天真实跑批的台账实测：681 条里 667 条都建成了分享，
+ * 按每 50 条轮换推算，两个账号各建了约 **350 / 334 个**分享链接，而**一条"每日上限"错误都没有**
+ * （全表 `errno=120` / "分享次数已达上限" 出现次数 = 0）。也就是说 300 这个数字**不是**当前的真实天花板。
+ *
+ * 教训：**常量不等于事实**。真实上限只有百度的服务端知道（且可能随账号、时间变化），
+ * 所以这里不再推算一个"天花板数字"去吓用户，只做两件事：
+ *   ① 开工时说明"分享可能有每日额度，到顶时本程序会明确告诉你，不会静默"；
+ *   ② 只在**真的撞到**额度错误之后（`shareBlocked` 有值）才说"从此不再产出问答行"。
+ * 判据与文案都在这一处，别再在别处推算上限。
  */
-function shareCeiling({ accounts, shareDailyLimit }) {
-  const a = Math.max(0, Math.floor(Number(accounts) || 0));
+function shareQuotaNotice({ accounts, shareDailyLimit }) {
+  const acc = Math.max(0, Math.floor(Number(accounts) || 0));
   const lim = Math.max(0, Math.floor(Number(shareDailyLimit) || 0));
-  return a * lim;
+  return `分享额度：百度对"每天能建多少分享链接"有服务端限制（代码里参考值是每账号 ${lim}/天，`
+    + `但实测并不恰好是这个数 —— 有一次 2 个账号各建了 350 个都没被拦），所以**不要在开工时按它推算"只能出 N 条"**。`
+    + `这批会用 ${acc} 个账号轮换；额度真用完的那一刻，程序会在日志里明确告诉你"从此不再产出问答行"并给出两个选项，不会静默。`;
 }
 
 /** 进度行：`📈 进度 300/11164（9.2 秒/条，剩余约 27 小时 53 分钟）` */
@@ -114,7 +124,6 @@ function batchScaleNotice({ total, accounts, cc, shareDailyLimit, destRoot = "" 
   const all = Math.max(0, Math.floor(Number(total) || 0));
   const acc = Math.max(0, Math.floor(Number(accounts) || 0));
   const threads = Math.max(1, Math.floor(Number(cc) || 1));
-  const cap = shareCeiling({ accounts: acc, shareDailyLimit });
   const lines = [];
   lines.push(`本批是**一次性排队的批量任务**：共 ${all} 条已入队，逐条推进、断点可续跑`
     + `（进度台账见数据目录「批量转存」下对应文件夹）。日志里每条一行 ✅/⚠️ 是**进度播报**，不是"手动一条一条点"。`);
@@ -126,15 +135,7 @@ function batchScaleNotice({ total, accounts, cc, shareDailyLimit, destRoot = "" 
         + "线程数被硬性限制为不超过互不相同的出口 IP 数，否则两个线程同 IP 同时发请求会被百度降级（实测 cc=2 时 9/9 失败）。"
       : "当前**串行**（只有 1 个可用账号，无法并行）。");
   }
-  if (cap > 0) {
-    if (all > cap) {
-      lines.push(`⚠️ 本批 ${all} 条里，**只有前约 ${cap} 条能拿到分享链接**（${acc} 个账号 × 每日 ${shareDailyLimit} 个分享上限），`
-        + `其余 ${all - cap} 条会照常转存进网盘但建不了分享、也不会进上传专用表。`
-        + "想不白转：把「数量上限」设成 600 之类的值，分批多天跑。");
-    } else {
-      lines.push(`本批 ${all} 条都在分享额度内（上限 ${cap} = ${acc} 账号 × ${shareDailyLimit}/天），可全部产出分享链接。`);
-    }
-  }
+  lines.push(shareQuotaNotice({ accounts: acc, shareDailyLimit }));
   if (destRoot) lines.push(`转存目标目录：${destRoot}`);
   return lines;
 }
@@ -188,11 +189,66 @@ function shouldAnnounceShareExhausted({ blockedAccounts, accounts, announced } =
 function shareExhaustedNotice({ remaining, accounts, shareDailyLimit }) {
   const n = Math.max(0, Math.floor(Number(remaining) || 0));
   const acc = Math.max(0, Math.floor(Number(accounts) || 0));
-  return `🛑 ${acc} 个账号的每日 ${shareDailyLimit} 个分享额度**全部用尽**：从这一条开始，`
+  return `🛑 ${acc} 个账号的分享额度**真的用完了**（百度服务端拒绝建分享）：从这一条开始，`
     + `本批剩余 ${n} 条只会**转存进网盘**、不再产出任何问答行（没有分享链接，也就进不了上传专用表）。`
     + "　· 如果你要的就是问答表：**现在点「停止」不亏**，明天额度恢复后再跑后面这批"
     + "（已完成的台账不会丢，重跑会从那之后接着走）。"
     + "　· 如果你要的是把资源存进自己网盘：不用管它，让它跑完即可。";
+}
+
+/**
+ * 阶段的展示顺序与中文名 —— **全仓唯一一份**。
+ * 与 `protocol.js` 的 `phaseDurations` 是配套的：那边负责量，这边负责累加与排版。
+ */
+const PHASE_LABELS = [
+  ["verify", "① 解析分享页 verify"],
+  ["page", "② 取分享页 /s/<code>"],
+  ["list", "③ 列分享内文件 /share/list"],
+  ["create", "④ 建目录 /api/create"],
+  ["transfer", "⑤ 转存 /share/transfer"],
+];
+
+/** 空累加器（{verify:{ms,n}, …}） */
+function emptyPhases() {
+  const o = {};
+  for (const [k] of PHASE_LABELS) o[k] = { ms: 0, n: 0 };
+  return o;
+}
+
+/** 累加一条链的分段耗时（`protocol.processOne` 返回的 `timings`）。负数/NaN 一律忽略。 */
+function addPhases(acc, timings) {
+  const out = acc || emptyPhases();
+  if (!timings) return out;
+  for (const [k] of PHASE_LABELS) {
+    const v = Number(timings[k]);
+    if (Number.isFinite(v) && v >= 0) { out[k].ms += v; out[k].n += 1; }
+  }
+  return out;
+}
+
+/**
+ * 一行报出"每一步平均花了多久、占多少"。
+ *
+ * 存在的理由（2026-10-14）：用户问「为什么一条要 9 秒」。在此之前的唯一数字是"9.18 秒/条"——
+ * 那是**总量**，不是分解，任何优化都只能靠猜（而本项目在"凭直觉改"上踩过太多次）。
+ * 现在每一步的平均值由**真实跑批**自己报出来：看完这一行就知道该往哪儿使劲。
+ * 样本为 0 时返回空串（= 不知道，**不许**显示 0）。
+ */
+function phaseLine(acc) {
+  if (!acc) return "";
+  let total = 0;
+  for (const [k] of PHASE_LABELS) total += (acc[k] && acc[k].ms) || 0;
+  const samples = (acc.verify && acc.verify.n) || 0;
+  if (!total || !samples) return "";
+  const parts = [];
+  for (const [k, label] of PHASE_LABELS) {
+    const v = acc[k] || { ms: 0, n: 0 };
+    // 累计 0 毫秒 = 这一步这批**一次都没走到**（例如"根就是文件"的分享永远不打 /share/list）
+    // → 不列出来，免得日志里出现一排 "0.00s(0%)" 让人误以为这些步骤是免费的
+    if (!v.n || v.ms <= 0) continue;
+    parts.push(`${label} ${(v.ms / v.n / 1000).toFixed(2)}s(${Math.round(v.ms / total * 100)}%)`);
+  }
+  return `🧭 每步平均耗时（样本 ${samples} 条，合计 ${(total / samples / 1000).toFixed(2)}s/条）：${parts.join(" · ")}`;
 }
 
 module.exports = {
@@ -200,12 +256,16 @@ module.exports = {
   QA_FLUSH_EVERY,
   QA_FLUSH_MIN_GAP_MS,
   QA_FLUSH_MAX_GAP_MS,
+  PHASE_LABELS,
+  emptyPhases,
+  addPhases,
+  phaseLine,
   formatDuration,
   measurePace,
   estimateRemaining,
-  shareCeiling,
   progressLine,
   batchScaleNotice,
+  shareQuotaNotice,
   shouldFlushQa,
   shouldAnnounceShareExhausted,
   shareExhaustedNotice,

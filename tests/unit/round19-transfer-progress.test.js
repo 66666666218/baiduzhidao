@@ -33,14 +33,15 @@ const ROOT = path.join(__dirname, "..", "..");
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
 
 const {
-  formatDuration, measurePace, estimateRemaining, shareCeiling,
-  progressLine, batchScaleNotice, shouldFlushQa,
+  formatDuration, measurePace, estimateRemaining,
+  progressLine, batchScaleNotice, shareQuotaNotice, shouldFlushQa,
   shouldAnnounceShareExhausted, shareExhaustedNotice,
   PROGRESS_EVERY, QA_FLUSH_EVERY, QA_FLUSH_MIN_GAP_MS, QA_FLUSH_MAX_GAP_MS,
 } = require("../../electron/src/netdisk/transfer-progress");
 
 const BATCH_TRANSFER = "electron/src/tasks/batch-transfer.js";
 const MODULE = "electron/src/netdisk/transfer-progress.js";
+const PROTOCOL = "electron/src/netdisk/protocol.js";
 
 /**
  * 剥注释（保字符串）。⚠️ 必须先剥行注释、再剥块注释 —— 被扫文件里若有
@@ -91,11 +92,16 @@ test("A4 剩余时间 = (总数-已完成) × 实测节奏；已完成/未知节
   assert.equal(estimateRemaining({ done: 0, total: 11164, perItemMs: 0 }), null);
 });
 
-test("A5 分享额度天花板 = 账号数 × 每日上限（11164 条里只有前 600 条有产出）", () => {
-  assert.equal(shareCeiling({ accounts: 2, shareDailyLimit: 300 }), 600);
-  assert.equal(shareCeiling({ accounts: 0, shareDailyLimit: 300 }), 0);
-  assert.equal(shareCeiling({ accounts: 4, shareDailyLimit: 300 }), 1200);
-  assert.equal(shareCeiling({}), 0);
+test("A5 不许再推算分享额度天花板 —— 常量不等于事实（「300/账号」已被实测推翻）", () => {
+  const text = shareQuotaNotice({ accounts: 2, shareDailyLimit: 300 });
+  // 必须承认"实测并不恰好是 300"，而不是拿常量当事实去吓用户
+  assert.match(text, /实测并不恰好是这个数/);
+  assert.match(text, /各建了 350 个都没被拦/);
+  assert.match(text, /不要在开工时按它推算/);
+  assert.match(text, /不会静默/);
+  assert.match(text, /2 个账号/);
+  // 关键：文案里不许再出现一个"只能出 N 条"式的推算结论
+  assert.doesNotMatch(text, /只有前约|上限s*d+s*条|账号数 ×/);
 });
 
 test("A6 「额度全部用尽」只在那一刻喊一次，而且只认『全部账号都满了』", () => {
@@ -108,7 +114,7 @@ test("A6 「额度全部用尽」只在那一刻喊一次，而且只认『全�
 
 test("A7 「不再产出问答行」这句话必须同时给停止和不停两种选择（不许替用户做决定）", () => {
   const text = shareExhaustedNotice({ remaining: 10564, accounts: 2, shareDailyLimit: 300 });
-  assert.match(text, /全部用尽/);
+  assert.match(text, /分享额度\*\*真的用完了\*\*/);
   assert.match(text, /剩余 10564 条/);
   assert.match(text, /不再产出任何问答行/);
   assert.match(text, /现在点「停止」不亏/);      // 选项一：止损
@@ -118,27 +124,28 @@ test("A7 「不再产出问答行」这句话必须同时给停止和不停两�
 
 // ------------------------------------------------------ B 组：开工告知
 
-test("B1 开工告知必须回答「是不是批量」「为什么串行」「能出多少条」", () => {
+test("B1 开工告知必须回答「是不是批量」「为什么串行」「额度这件事会怎么告知」", () => {
   const lines = batchScaleNotice({ total: 11164, accounts: 2, cc: 1, shareDailyLimit: 300, destRoot: "/来自资源批量转存" });
   const text = lines.join("\n");
   assert.match(text, /一次性排队的批量任务.*11164 条/);
   assert.match(text, /进度播报/);
   assert.match(text, /串行/);
-  assert.match(text, /账号代理/);          // 必须给出"怎么变快"的出口
-  assert.match(text, /只有前约 600 条能拿到分享链接/);
-  assert.match(text, /其余 10564 条/);
-  assert.match(text, /数量上限/);           // 必须给出可执行的止损动作
+  assert.match(text, /账号代理/);            // 必须给出"怎么变快"的出口
+  assert.match(text, /不会静默/);            // 额度到顶会明确告知
+  assert.match(text, /不要在开工时按它推算/); // 不许再推算"只能出 N 条"
   assert.match(text, /\/来自资源批量转存/);
+  // ⚠️ 这一条是血的教训：上一版这里推算过"只有前 600 条有产出"，而实测是 667/681 都有产出。
+  assert.doesNotMatch(text, /只有前约|其余 \d+ 条会照常转存/);
 });
 
 test("B2 配了互不相同的代理走并行时，告知改成说并行倍数而不是劝人配代理", () => {
-  const lines = batchScaleNotice({ total: 500, accounts: 4, cc: 4, shareDailyLimit: 300 });
-  const text = lines.join("\n");
+  const text = batchScaleNotice({ total: 500, accounts: 4, cc: 4, shareDailyLimit: 300 }).join("\n");
   assert.match(text, /并行 4 条链/);
   assert.doesNotMatch(text, /当前\*\*串行\*\*/);
-  // 500 条在 4×300=1200 额度内 → 不要说"白转"
-  assert.match(text, /都在分享额度内/);
-  assert.doesNotMatch(text, /建不了分享/);
+  assert.doesNotMatch(text, /没有配「互不相同的账号代理」/);
+  // 额度那段要照说，但不许由它推出"能出多少条"
+  assert.match(text, /服务端限制/);
+  assert.doesNotMatch(text, /都在分享额度内|只有前约/);
 });
 
 test("B3 单账号（只有 1 个号）时不能把「串行」说成「你没配代理」", () => {
@@ -233,15 +240,33 @@ test("E5 死绑定清理：本文件不再自己 require(\"xlsx\")（那个 XLSX
   assert.doesNotMatch(code, /\bXLSX\b/);
 });
 
-test("E6 旧的「本次要转存 N 条、每条都会建分享」文案已收敛进模块（不许两处各写一份）", () => {
+test("E6 分享额度那套文案的家在模块里，而且不许再写成「常量推算」", () => {
   const transferOnly = stripComments(read(BATCH_TRANSFER));
-  const moduleOnly = stripComments(read(MODULE));
+  const moduleCode = stripComments(read(MODULE));
+  const moduleRaw = read(MODULE);
   // 旧文案不许再留在任务文件里
   assert.equal((transferOnly.match(/每条都会建分享/g) || []).length, 0);
   assert.equal((transferOnly.match(/每日最多/g) || []).length, 0);
-  // 新文案的家在模块里，而且必须说清"进不了上传专用表"这个后果
-  assert.match(moduleOnly, /分享上限/);
-  assert.match(moduleOnly, /不会进上传专用表/);
+  // 常量本身留在任务文件（它是「配置」，值从 share.js 来）；被搬到模块的是**推算上限的结论**
+  assert.match(transferOnly, /SHARE_DAILY_LIMIT/);
+  // ⚠️「常量不等于事实」这句写在**注释**里（要有来龙去脉），所以查原文而不是剥注释后的代码
+  assert.match(moduleRaw, /常量不等于事实/);
+  // 到顶会告知 + 说明后果
+  assert.match(moduleCode, /不会静默/);
+  assert.match(moduleCode, /进不了上传专用表/);
+  // 模块里不许再有"账号数 × 上限"这种推算（就是上一版错的来源）
+  assert.doesNotMatch(moduleCode, /acc\s*\*\s*lim|lim\s*\*\s*acc/);
+});
+
+test("E6b protocol 的 /share/list 必须翻页（以前写死 page=1&num=100 = 超 100 条静默漏文件）", () => {
+  const src = stripComments(read(PROTOCOL));
+  assert.match(src, /const SHARE_LIST_PAGE = \d+/);
+  assert.match(src, /const SHARE_LIST_MAX_PAGES = \d+/);
+  assert.match(src, /list.length < SHARE_LIST_PAGE/);   // 终止判据：这一页没取满才停
+  // 不许再有写死的 num: "100" 或 page 恒为 1 的旧写法
+  assert.doesNotMatch(src, /num: "100"/);
+  // 必须能翻页：page 是变量而不是常量 1
+  assert.match(src, /page: String\(page\)/);
 });
 
 test("E7 「秒/条」这个口径只允许出现在 transfer-progress.js（防止别处再算一份 ETA）", () => {
@@ -275,13 +300,16 @@ test("E8 「额度用尽」的那句话必须挂在 countDone 里（唯一漏斗
   assert.doesNotMatch(body, /fatalStop = true/);
 });
 
-test("E9 界面必须说清「数量上限」到底是前 N 行，并写明 300/账号 的额度上限", () => {
+test("E9 界面必须说清「数量上限」到底是前 N 行，且额度那段不许再写死「300/账号」", () => {
   const html = read("electron/renderer/index.html");
   // 「数量上限」原来的说明只有"0=全部"，用户会读成"本次跑 N 条"，而多天递增跑靠的正是这个语义
   assert.match(html, /数量上限（0=全部；从头数前 N 行，已跑过的秒跳过）/);
-  // 额度这个最关键的操作事实必须出现在转存卡片里（只在日志里说等于没说）
-  assert.match(html, /每个账号每日最多创建 300 个分享链接/);
-  assert.match(html, /最多创建 300 个分享链接<\/b>[\s\S]{0,200}账号数 × 300/);
+  // 额度这件事要在界面上说，但**不许**写成"每个账号每日最多 300 个"这种被实测推翻的硬结论
+  assert.match(html, /每天能建多少分享链接/);
+  assert.match(html, /实测并不恰好是 300/);
+  assert.match(html, /别按它推算/);
+  assert.doesNotMatch(html, /每个账号每日最多创建 300 个分享链接/);
+  assert.doesNotMatch(html, /账号数 × 300/);
   // ⚠️ index.html 不渲染 markdown：加了 ** 会原样显示出来（本轮差点犯）
   assert.doesNotMatch(html, /\*\*/);
 });

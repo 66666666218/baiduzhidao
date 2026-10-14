@@ -424,6 +424,10 @@ async function runBatchTransferTask(ctx, deps) {
   let flushedQaRows = 0;           // 上次落盘时表里有多少行（qaRows.length 会随续跑瞬间跳变，所以单独记）
   let qaFlushDisabled = false;     // 表被 Excel 打开 → 只保留结束时的备份写入，避免刷出一堆"_备份_时间戳"文件
   let shareExhaustedAnnounced = false;  // "所有账号分享额度都用尽了"只喊一次（那一刻之后本批不再产出问答行）
+  // 每一步各花了多少（verify / 分享页 / 列目录 / 建目录 / 转存）——由 protocol 每条约回一份 timings。
+  // 这是"为什么一条要 9 秒"的唯一可信来源：探针量不到写请求（一碰就污染用户网盘），
+  // 而真实跑批本来就在做这些写请求，顺手把耗时带回来几乎零成本。见 transfer-progress.js 的 phaseLine。
+  let phaseAcc = progress.emptyPhases();
   function flushQaTable(why) {
     if (qaFlushDisabled || !qaRows.length) return;
     try {
@@ -451,6 +455,10 @@ async function runBatchTransferTask(ctx, deps) {
     }
     if (done % progress.PROGRESS_EVERY === 0) {
       log(progress.progressLine({ done, total, perItemMs: progress.measurePace({ done, elapsedMs: now - startedAt }) }));
+      // 紧跟着把"这 25 条的时间都花在哪一步"报出来。慢的时候用户能立刻知道是网络、
+      // 是限流等待、还是那 1~2 秒的刻意间隔，而不是只能看着一行行 ✅ 干着急。
+      const steps = progress.phaseLine(phaseAcc);
+      if (steps) log(steps);
     }
     // 分享额度全部用尽的那一刻，必须说一次：从这儿起本批不再产出问答行。
     // **不自动停** —— 用户要的可能本来就是"把资源存进自己网盘"，替他把决定做了反而更糟。
@@ -592,6 +600,8 @@ async function runBatchTransferTask(ctx, deps) {
           }
           toPaths = oneResult.toPaths;
         }
+        // 顺手收下这一条的分段耗时（"为什么慢"的证据，每 25 条汇总报一次）
+        phaseAcc = progress.addPhases(phaseAcc, oneResult && oneResult.timings);
 
         // 建分享（可选）。**关键修正**：转存成功 ≠ 分享成功。
         // 百度限制单账号每日最多 300 个分享链接；超额后再建分享会被拒。
@@ -771,6 +781,10 @@ async function runBatchTransferTask(ctx, deps) {
     log(`（本批因限流暂停 ${shareLimitPauses} 次，合计等待约 ${shareLimitPauses * Math.round(SHARE_LIMIT_COOLDOWN_MS / 60000)} 分钟；`
       + `单 IP 下这是硬成本，想快只能给账号配代理分摊出口 IP）`);
   }
+  // 收尾再报一次整批的"每步平均耗时"：这是"为什么慢"的最终答案。
+  // 以后要优化，看这一行就够了，不用再拿用户的账号和额度去做实验。
+  const finalSteps = progress.phaseLine(phaseAcc);
+  if (finalSteps) log(finalSteps);
   if (outputPath) log(`上传专用表已生成：${outputPath}（${qaRows.length} 条，可在 Excel 修改后直接上传）`);
   return { count: done, failed, totalOk, outputPath, shareFailures: transferredNoShare };
 }

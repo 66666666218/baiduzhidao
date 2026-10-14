@@ -26,6 +26,77 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TIMEOUT_MS = 20000;
 
 /**
+ * 显式 0 字节的**文件** = 占位垃圾（文件夹的 size 也是 0，不能误伤，所以必须先判 isdir）。
+ * 放在模块级是因为它同时被 `collect`（慢路径）和 `planFastPath`（快路径）用到 —— 只许一份。
+ */
+const isZeroSizePlaceholder = (f) => Number(f.isdir) !== 1
+  && f.size !== undefined && f.size !== null && f.size !== ""
+  && Number(f.size) === 0;
+
+/**
+ * 「这条分享能不能走快路径」—— **纯函数**，判据写在这里而不是写在 processOne 的条件里。
+ *
+ * 为什么非得提出来（2026-10-14 当场撞到的教训）：判据一开始是写在 `processOne` 里的一行
+ * `if (...)`。守卫只能扫文本，于是"把闸门去掉"这个突变竟然**测试全绿** —— 因为被删掉的
+ * `hasDirAtRoot` 这个名字在文件里还有别的出现处，扫文本看不出来。也就是说那条守卫守的是
+ * **接线**（这个变量还在不在），不是**逻辑**（这条闸门还在不在）。
+ * 项目里已经为同一件事吃过一次亏（见 CHANGELOG 第 16-E 轮），所以按老规矩办：
+ * 规则提到纯函数里，让测试能**真的调用**它、喂进两种分享形状看结果。
+ *
+ * 三条判据（缺一条都不许启用）：
+ *   ① `entries` 非空且**没取满一页**（取满 = 可能被截断，宁可慢也不能静默漏文件）；
+ *   ② 根目录里**真的有文件夹** —— 没有文件夹的分享，老路径本来就一次 /share/list 都不打，
+ *      省不到的场合必须保持老行为逐字节不变（实测表尾那批小说分享就是这种形状）；
+ *   ③ 不是诊断模式的强制慢路径（`dryRun === "slow"`，只给测速探针做对照用）。
+ *
+ * @returns {{enabled:boolean, hasDirAtRoot:boolean, complete:boolean, ids:number[], paths:string[]}}
+ */
+function planFastPath({ entries, dryRun } = {}) {
+  const list = Array.isArray(entries) ? entries : [];
+  const hasDirAtRoot = list.some((f) => f && Number(f.isdir) === 1);
+  const complete = list.length > 0 && list.length < FILE_LIST_PAGE_CAP;
+  const allowed = dryRun !== "slow" && complete && hasDirAtRoot;
+  const usable = allowed ? list.filter((f) => f && f.fs_id && !isZeroSizePlaceholder(f)) : [];
+  return {
+    enabled: usable.length > 0,
+    hasDirAtRoot,
+    complete,
+    ids: usable.map((f) => Number(f.fs_id)),
+    // 相对路径仍从分享页条目里取：errno=4（已转存）时百度偶发不给 duplicated.list，
+    // 那时要靠「目标目录 + 分享内相对路径」拼出落盘路径（见 processOne 的 outcome.dup 分支）。
+    paths: allowed ? list.map((f) => String((f && f.path) || "")).filter(Boolean) : [],
+  };
+}
+
+/**
+ * 每一阶段各花了多少毫秒 —— **这是"为什么这么慢"唯一的可信来源**。
+ *
+ * 为什么必须由程序自己量（2026-10-14）：
+ * 用户问「为什么一条要 9 秒、不能一秒几十个」。我最初写了个测速脚本（scripts/probe-transfer-speed.js），
+ * 但它有三个先天缺陷：① 要在**别人正在跑批**的账号上抢请求，本身就会把限流窗口打出来
+ * （实测：表头那批链接在探针下全部拿到 ~50KB 无 mset 的页面，而同一时刻正在跑批的任务是好的）；
+ * ② 只能量到**只读**那几步（verify / 分享页 / 列目录），而最可疑的建目录、转存、建分享全是**写**请求，
+ *    探针一碰就污染用户网盘；③ 它挑的链接形状和被跑批的完全可能不是一回事（实测表尾是"单文件分享"，
+ *    表头是"文件夹分享"，两种形状的耗时差得远）。
+ * 所以：**让生产路径自己把每一步的耗时带回来**，每 25 条在日志里报一次平均值与占比。
+ * 下一次真跑批之后，日志里就有答案，不用再猜、也不用再拿用户的额度去做实验。
+ */
+function phaseMarks() {
+  const t = { start: Date.now(), afterVerify: 0, afterPage: 0, afterList: 0, afterCreate: 0, afterTransfer: 0 };
+  return t;
+}
+/** 把 5 段标记折成 {verify,page,list,create,transfer}（单位毫秒） */
+function phaseDurations(t) {
+  return {
+    verify: (t.afterVerify || t.start) - t.start,
+    page: (t.afterPage || t.afterVerify) - t.afterVerify,
+    list: (t.afterList || t.afterPage) - t.afterPage,
+    create: (t.afterCreate || t.afterList) - t.afterList,
+    transfer: (t.afterTransfer || t.afterCreate) - t.afterCreate,
+  };
+}
+
+/**
  * 网盘侧统一的 fetch。三件事以前散在 7 个调用点，漏一个就出问题：
  *   1) **UA / Cookie**：漏了会被当成未登录或机器人；
  *   2) **dispatcher（代理）**：漏了这一条请求就走直连 —— 同一批操作从两个 IP 发出，
@@ -107,7 +178,20 @@ function nameFromShare(data) {
 }
 
 // ---------- 单条完整链（纯协议） ----------
-async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, fallbackName, createdDirs, bduss, stoken, makeShare }) {
+/** /share/list 一页取多少条（实测多看不少时间），以及最多翻几页（防异常分享把循环拖死） */
+const SHARE_LIST_PAGE = 1000;
+const SHARE_LIST_MAX_PAGES = 50;
+/**
+ * 「快路径」的判据常量：分享页 `file_list` 的一页上限（经验值 100）。
+ *
+ * 为什么需要它：**取满一页 = 可能被截断**。这时绝对不许走快路径 —— 否则会变成
+ * "只转存了前 100 个，这一条还记成成功"，正是最难被发现的部分成功（同一族问题
+ * 刚在 /share/list 上修过一次，见 listDir 的注释）。取不满（< 100）才认为它列全了根目录。
+ */
+const FILE_LIST_PAGE_CAP = 100;
+
+async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, fallbackName, createdDirs, bduss, stoken, makeShare, dryRun }) {
+  const tMark = phaseMarks();   // 每一步各花多久（见 phaseMarks 的注释：这是"为什么慢"的唯一可信来源）
   const m = String(link || "").match(/\/s\/(1[\w-]+)/);
   if (!m) throw new Error(`不认识的分享链接，已跳过：${link}`);
   const fullCode = m[1];
@@ -130,6 +214,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
       + "请回资源表把该行的提取码补上（或删掉这一行）再跑；已转存的不会重复。");
   }
   if (vBody.errno !== 0 || !vBody.randsk) throw new Error(`verify errno=${vBody.errno}`);
+  tMark.afterVerify = Date.now();
 
   // 2) 分享页 → mset
   // 分享页偶发返回不含 mset 的响应（限流 / 半渲染）。一次拿不到就整条判死太脆：
@@ -144,7 +229,10 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
   const SHARE_DATA_RE = /(?:yunData\.setData|locals\.mset)\(([\s\S]+?)\);/;
   let html = "";
   let data = null;
+  let sharePageAttempts = 0;   // 这条实际打了几次分享页（dryRun 会把它带出来，见下面的诊断口）
+  let listCalls = 0;           // 这条打了几次 /share/list（快路径应当为 0 —— 这是"提速了吗"的硬证据）
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    sharePageAttempts = attempt;
     const pResp = await panFetch(jar, `${PAN}/s/${fullCode}`);
     html = await pResp.text();
     const mm = html.match(SHARE_DATA_RE);
@@ -165,37 +253,64 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
     throw err;
   }
   if (Number(data.errno) !== 0) throw new Error(`分享数据 errno=${data.errno}`);
+  tMark.afterPage = Date.now();
   const uk = String(data.share_uk || data.uk || "");
   const shareid = String(data.shareid || "");
   const bdstoken = String(data.bdstoken || "");
   const rawList = Array.isArray(data.file_list) ? data.file_list : (data.file_list && data.file_list.list) || [];
 
-  // 3) 递归收集 fs_id（root 空时走 /share/list）
+  // 3) 收集要转存的 fs_id（默认走快路径；快路径不成立时才 BFS 完整枚举）
   let fsIds = [];
   let dirPaths = [];
   // 与 fsIds 平行收集**分享内的真实相对路径**（/子目录/文件.mp4）。
   // 用途：errno=4（全部重复转存）时百度偶发不返回 duplicated.list，
   // 但文件其实早就在网盘里 —— 落盘路径是可以直接推出来的（转存目标目录 + 这个相对路径）。
   // 参考实现（本机 wangpan baidu provider）在 duplicated 为空时同样按 target_dir+文件名 拼。
-  const filePaths = [];
+  let filePaths = [];
   let zeroSize = 0;
   const collect = (entries) => {
     for (const f of entries) {
       if (Number(f.isdir) === 1) dirPaths.push(f.path);
       else if (f.fs_id) {
         if (f.path) filePaths.push(String(f.path));
-        const hasSize = f.size !== undefined && f.size !== null && f.size !== "";
-        if (hasSize && Number(f.size) === 0) { zeroSize += 1; continue; }  // 显式 0 字节=占位垃圾
-        fsIds.push(Number(f.fs_id));                                        // 缺 size 字段按未知保留
+        if (isZeroSizePlaceholder(f)) { zeroSize += 1; continue; }  // 显式 0 字节=占位垃圾
+        fsIds.push(Number(f.fs_id));                                 // 缺 size 字段按未知保留
       }
     }
   };
-  collect(rawList);
-  const listDir = async (dir) => {
-    const qs = new URLSearchParams({ web: "5", app_id: "250528", desc: "1", showempty: "0", page: "1", num: "100", order: "time", view_mode: "1", channel: "chunlei", clienttype: "0", shorturl: surl, dir });
+  /**
+   * 取一次 /share/list（某一页）。
+   *
+   * num 从 100 提到 1000：2026-10-14 实测百度对 num **不敏感** —— 同一个分享
+   * `num=100 / 1000 / 10000` 分别 1504 / 1802 / 1154 毫秒，换句话说"要多一点"是免费的。
+   */
+  const listDirOnce = async ({ dir = "", page = 1, root = false } = {}) => {
+    listCalls += 1;   // 只用于诊断（dryRun），生产路径不看它
+    const qs = new URLSearchParams({ web: "5", app_id: "250528", desc: "1", showempty: "0", page: String(page), num: String(SHARE_LIST_PAGE), order: "time", view_mode: "1", channel: "chunlei", clienttype: "0", shorturl: surl });
+    if (root) qs.set("root", "1"); else qs.set("dir", dir);
     if (bdstoken) qs.set("bdstoken", bdstoken);
-    const j = await panFetch(jar, `${PAN}/share/list?${qs}`, { referer: rawUrl }).then((r) => r.json()).catch(() => ({}));
-    return j;
+    return panFetch(jar, `${PAN}/share/list?${qs}`, { referer: rawUrl }).then((r) => r.json()).catch(() => ({}));
+  };
+  /**
+   * 取一个目录的**全部**条目（自动翻页）。
+   *
+   * 为什么要翻页：以前写死 `page=1&num=100`，**既不翻页也不检查是否取满** ——
+   * 分享里某个目录一旦超过 100 条，多出来的文件会被**静默漏掉**：不报错、这一条还记成"转存成功"，
+   * 但网盘里少文件、问答行指向的资源也不完整。这种"部分成功"最难被发现，所以必须修。
+   * 终止判据用"这一页取满了才继续下一页"，而不是相信 num 一定够大；`SHARE_LIST_MAX_PAGES`
+   * 只是防止异常分享把循环拖死。
+   */
+  const listDir = async (dir) => {
+    const all = [];
+    let errno = 0;
+    for (let page = 1; page <= SHARE_LIST_MAX_PAGES; page += 1) {
+      const j = await listDirOnce({ dir, page });
+      if (j.errno !== undefined) errno = j.errno;
+      const list = Array.isArray(j.list) ? j.list : [];
+      all.push(...list);
+      if (list.length < SHARE_LIST_PAGE) break;
+    }
+    return { errno, list: all };
   };
   // BFS 递归展开全部子目录（上限 100 个目录，超限告警防异常分享）
   const walkDirs = async (seedDirs) => {
@@ -215,17 +330,80 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
       }
     }
   };
-  await walkDirs(dirPaths);
-  if (!fsIds.length) {
-    const root = await panFetch(jar, `${PAN}/share/list?web=5&app_id=250528&desc=1&showempty=0&page=1&num=100&order=time&view_mode=1&channel=chunlei&clienttype=0${bdstoken ? "&bdstoken=" + bdstoken : ""}&shorturl=${encodeURIComponent(surl)}&root=1`, { referer: rawUrl }).then((r) => r.json()).catch(() => ({}));
-    if (root.errno === 0 && Array.isArray(root.list)) {
-      dirPaths = [];
-      collect(root.list);
-      await walkDirs(dirPaths.slice());
+  /** root=1 的根目录列表（分享页 file_list 为空时才用），同样翻页 */
+  const rootListAll = async () => {
+    const root = { errno: 0, list: [] };
+    for (let page = 1; page <= SHARE_LIST_MAX_PAGES; page += 1) {
+      const j = await listDirOnce({ page, root: true });
+      if (j.errno !== undefined) root.errno = j.errno;
+      const list = Array.isArray(j.list) ? j.list : [];
+      root.list.push(...list);
+      if (list.length < SHARE_LIST_PAGE) break;
     }
+    return root;
+  };
+
+  /**
+   * 慢路径：**完整枚举**分享里的每一个文件（老行为，保留下来当兜底）。
+   * 它会 BFS 展开整棵目录树，每个目录一次 /share/list —— 而它是单条链里最贵的一环
+   * （实测平均 2.90 秒，占"解析阶段"的 72%）。能走快路径时就不会到这里。
+   */
+  const fullCollect = async () => {
+    fsIds = []; filePaths = []; zeroSize = 0; dirPaths = [];
+    collect(rawList);
+    await walkDirs(dirPaths);
+    if (!fsIds.length) {
+      // 分享页里的 file_list 有时是空的，这时必须问 root=1 要根目录列表（也翻页）
+      const root = await rootListAll();
+      if (root.errno === 0 && root.list.length) {
+        dirPaths = [];
+        collect(root.list);
+        await walkDirs(dirPaths.slice());
+      }
+    }
+    return { fsIds, filePaths, zeroSize };
+  };
+
+  // ─────── 快路径：直接拿分享页的根目录条目去转存，**一次 /share/list 都不打** ───────
+  //
+  // 依据（2026-10-14 从用户自己机器上那份参考实现读出来的，不是推测）：
+  //   本机 `C:\Users\周万鹏\wangpan` 的 `backend/app/providers/baidu/provider.py`，
+  //   `transfer()` 用的就是分享页 `file_list` 里的条目：
+  //       `fs_ids = [int(f["fs_id"]) for f in files]`   ← **没有任何 isdir 过滤**
+  //   而且那个文件**从头到尾没有调用过 /share/list**。
+  //   也就是说：把**文件夹**的 fs_id 放进 fsidlist，百度会在服务端递归复制整个文件夹。
+  //   我们原来为了"收集文件的 fs_id"把整棵目录树 BFS 展开一遍，**那份数据 /share/transfer 根本不需要**。
+  //
+  // 判据本身在 `planFastPath`（纯函数、可单测）；万一百度真的拒绝了快路径，
+  // 下面转存那一步之后会自动退回完整枚举再试一次（只回退一次）。
+  const fast = planFastPath({ entries: rawList, dryRun });
+  let usedFastPath = false;
+  if (fast.enabled) {
+    usedFastPath = true;
+    fsIds = fast.ids;
+    filePaths = fast.paths;
+  } else {
+    await fullCollect();
   }
   if (!fsIds.length) {
     throw new Error(zeroSize > 0 ? `分享仅含 ${zeroSize} 个空文件（占位垃圾），已跳过` : "分享里没有文件");
+  }
+  tMark.afterList = Date.now();
+
+  // ── 只读诊断口：到"解析完成"为止就返回 ──
+  //
+  // 为什么要有它（2026-10-14）：用户问"为什么一条要 9 秒、不能一秒几十个吗"。查下来的第一件事
+  // 就是**得知道那 9 秒花在哪一步**，而在此之前这一步根本没法单独测 —— 想测它就必须真的转存一次，
+  // 于是只能拿"总耗时减掉别的"去倒推，等于猜。开了这个口子，`scripts/probe-transfer-speed.js`
+  // 就能用**已转存过的链接**把 verify / 分享页 / 列目录 三段的耗时和三段重试次数直接量出来，
+  // **不建目录、不转存、不建分享 —— 对网盘零副作用**。
+  //
+  // 它不是给生产路径用的：批量转存永远不传 dryRun。默认 undefined = 老行为，完全不变。
+  //
+  // `usedFastPath` / `listCalls` 是给"快路径到底省了多少"准备的硬证据：快路径成立时
+  // listCalls 必须是 0（一次 /share/list 都没打），否则说明又退回慢路径了。
+  if (dryRun) {
+    return { dryRun: true, shareid, uk, bdstoken, fsIds, filePaths, zeroSize, sharePageAttempts, usedFastPath, listCalls, rootEntries: rawList.length, timings: phaseDurations(tMark) };
   }
 
   // 4) 建目录 + 转存
@@ -267,6 +445,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
     // 别在失败时也缓存：那样后面的资源会跳过建目录，直接以 errno=2「目的路径不存在」失败。
     if (createdDirs && (Number(cBody.errno) === 0 || Number(cBody.errno) === -8)) createdDirs.add(acc);
   }
+  tMark.afterCreate = Date.now();
 
   const transferTo = async (target) => {
     const resp = await panFetch(jar, `${PAN}/share/transfer?shareid=${shareid}&from=${uk}&bdstoken=${encodeURIComponent(bdstoken)}&channel=chunlei&clienttype=0&web=1`, {
@@ -284,6 +463,21 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
   // 那段判断的另外两份拷贝（transfer.js / pan-transfer-ui.js）已经因为没跟上而把
   // errno=4（已转存）、异步转存中、info 层真实错误都误判成失败，见该文件头注释。
   let outcome = normalizeTransferBody(tBody);
+  // 快路径被百度拒了 → **自动退回完整枚举再试一次**（只回退一次，不会循环）。
+  //
+  // 为什么必须有这条兜底：快路径的依据是"参考实现从来不过滤 isdir，也从不用 /share/list"，
+  // 那是间接证据。万一百度对某个分享拒绝整目录转存，没有这条兜底就会把一条本来能成的资源
+  // 记成失败 —— 而"改快了却开始失败"比"慢"严重得多。排除掉"已转存 / 异步中 / 容量不足 /
+  // info 层其实成功"这四种**不是拒绝**的形态，剩下的才触发回退。
+  if (usedFastPath && !outcome.dup && !outcome.pending && !outcome.capacityFull
+    && outcome.errno !== 0 && !outcome.infoSucceeded) {
+    await fullCollect();
+    if (fsIds.length) {
+      usedFastPath = false;
+      tBody = await transferTo(usedDir);
+      outcome = normalizeTransferBody(tBody);
+    }
+  }
   // errno=2：目的路径不存在。子目录建不出来时，回落到顶层目录再试一次——
   // 顶层（如 /来自资源批量转存）通常是早就存在的，能传进去。
   if (outcome.pathMissing) {
@@ -300,6 +494,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
       }
     }
   }
+  tMark.afterTransfer = Date.now();
   const fellBack = usedDir !== finalDir;
   if (outcome.capacityFull) throw Object.assign(new Error("网盘容量不足"), { fatal: true });
 
@@ -314,7 +509,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
       to = filePaths.map((p) => `${usedDir}${String(p).startsWith("/") ? p : `/${p}`}`);
     }
     if (!to.length) throw new Error("重复转存但未取得已有文件路径");
-    return { toPaths: to, dup: true, usedDir, fellBack };
+    return { toPaths: to, dup: true, usedDir, fellBack, usedFastPath, timings: phaseDurations(tMark) };
   }
   const createHint = createLog.length ? `（建目录返回：${createLog.join(", ")}）` : "";
   // info[0].errno === 0 是「文件其实成功了」的形态 —— 此时顶层 errno 非 0 也**不许**报错，
@@ -329,7 +524,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
   // 返回 pending 让调用方**按"待确认"处理**：不计失败、不进黑名单，下次运行再来看
   //（到那时文件已在网盘里，百度会返回 errno=4「已转存」并给出路径）。
   if (outcome.pending) {
-    return { toPaths: [], pending: true, usedDir, fellBack: false, raw: tBody };
+    return { toPaths: [], pending: true, usedDir, fellBack: false, raw: tBody, usedFastPath, timings: phaseDurations(tMark) };
   }
 
   // 把响应本体带一点出来：光说"extra/duplicated 均为空"没法判断是接口改了、
@@ -339,7 +534,7 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
     throw new Error("转存返回成功但未取得落盘路径（extra/duplicated 均为空）。"
       + `原始响应：${JSON.stringify(tBody).slice(0, 300)}${createHint}`);
   }
-  return { toPaths, fsIds, usedDir, fellBack };
+  return { toPaths, fsIds, usedDir, fellBack, usedFastPath, timings: phaseDurations(tMark) };
 }
 
-module.exports = { PAN, UA, TIMEOUT_MS, Jar, panFetch, makeClient, processOne, nameFromShare };
+module.exports = { PAN, UA, TIMEOUT_MS, Jar, panFetch, makeClient, processOne, nameFromShare, phaseMarks, phaseDurations, planFastPath, FILE_LIST_PAGE_CAP };
