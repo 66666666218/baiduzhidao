@@ -613,7 +613,15 @@ async function runBatchTransferTask(ctx, deps) {
           log(`🔁 ${rawName.slice(0, 26)} 上次已转存、只是分享没建成 → 直接补分享（第 ${retry.shareAttempts + 1} 次）`);
         } else {
           const oneResult = await processOne(jar, {
-            link: srcLink, pwd: cellPwd, destParent, fallbackName: idx, createdDirs: createdOf(cred.env),
+            link: srcLink,
+            pwd: cellPwd,
+            destParent,
+            // ⚠️ 这一行是本轮修的核心：`processOne` 的签名里一直有 `rawName`，
+          //  但批量转存**从来没传过**，于是命名只能退回"分享里第一个文件"（常常是广告 txt）。
+          //  资源表里本来就写着作品名（"求分享中国式网游_游戏…"），传进来就能用上。
+            rawName,
+            fallbackName: idx,
+            createdDirs: createdOf(cred.env),
           });
           // 大文件异步转存中：百度收下了但还没给落盘路径（show_msg=文件转存中）。
           // **不能当失败**：文件确实在转，把它记成 failed 会虚报失败数、还可能进黑名单，

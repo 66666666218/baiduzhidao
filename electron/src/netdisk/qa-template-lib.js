@@ -126,12 +126,73 @@ function isGarbledName(name) {
   return false;
 }
 
-// ---------- 规范化去重键 ----------
 const TECH_WORDS = /(1080p|720p|2160p|4k|hdr|web[-_.]?dl|blu-?ray|bd|hdtv|hd|dvdrip|remux|x26[45]|hevc|aac|ac3|dts|中字|中英双字|国语|粤语|双语|无删减|未删减|高清|超清|蓝光|完整版|全集)/gi;
 const NOISE_WORDS = ["电影", "电视剧", "动漫", "纪录片", "资源", "下载", "在线观看", "百度云", "网盘"]
   .concat(GENRE_DESC ? Object.keys(GENRE_DESC) : [])
   .concat(REGIONS);
 const NOISE_RE = new RegExp(NOISE_WORDS.join("|"), "g");
+
+/**
+ * 从百度知道的**提问标题**里抽出「作品名」，用来命名网盘文件夹。
+ *
+ * 为什么单独写一条（第 24 轮）：用户问「转存的名字为什么文件夹全是批量转存，
+ * 应该是作品名对应的」。查下来根因是 —— 批量转存手里**本来就拿着作品名**
+ * （资源表那一列 `rawName`），但压根没传给转存链，于是文件夹名只能退回
+ * 「分享里的第一个文件」，而百度网盘的分享里**头一个文件常常是广告 txt**
+ * （实测样本：`先存网盘再下载 在线解压查看.txt`、`每天都会有大量资源更新…txt`），
+ * 于是满屏都是这种垃圾名字。
+ *
+ * ⚠️ 判据的关键取舍：**只在有明确标记时才算抽中了作品名**。
+ *    书名号《》是提问者主动给作品打的标记，可信；`作品名_类别` 这种格式也有明确分隔符。
+ *    其余情况（纯描述句）**一律返回空串**，让调用方退回「分享里的真实名字」——
+ *    因为像「求英语小说百度网盘完整资源分享」这种泛需求里**本来就没有具体作品**，
+ *    硬洗只能洗出「英语小说」这种更没用的残句。
+ *
+ *    实测：4691 个真实资源名里，书名号 166 条（3.5%）+ 下划线 6 条（0.1%）能抽干净；
+ *    其余 96.4% 是泛需求，本来就没有作品名，用分享真名反而更贴近内容。
+ *
+ * 为什么不用 `parseName` 兜底：`parseName` 是给影视文件名（`[电影]片名[2020][剧情]`）写的，
+ * 对着提问句只会原样返回 —— 实测确认过，拿它当"作品名"会得到「求英语小说百度网盘完整资源分享」。
+ */
+function extractWorkName(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return { name: "", how: "空" };
+  // ① 书名号：最可靠的标记
+  const book = s.match(/《([^》]+)》/);
+  if (book) {
+    const name = sanitizeFolderName(book[1]);
+    if (name.length >= 2) return { name, how: "书名号" };
+  }
+  // ② 「作品名_类别…」：下划线是明确分隔符，前半段是作品名
+  const under = s.match(/^([^_]{2,40})_[^\s_]{1,8}(百度|网盘|云盘|资源|链接|完整版|下载|游戏|电影|电视|动漫|小说|软件)/);
+  if (under) {
+    const name = sanitizeFolderName(under[1]);
+    if (name.length >= 2) return { name, how: "下划线" };
+  }
+  return { name: "", how: "抽不出" };
+}
+
+/**
+ * 把任意一段文字洗成**能直接当目录名**的字符串。
+ * 清洗规则全仓库只此一份，命名与兜底都从这儿出。
+ *
+ * 顺序有讲究：先去技术词/噪声词，再去括号残留，最后去非法字符 ——
+ * 反过来会把「《混乱》」的括号连内容一起削掉（中文作品名常在括号里）。
+ */
+function sanitizeFolderName(text) {
+  let n = String(text || "")
+    .replace(TECH_WORDS, " ")
+    .replace(NOISE_RE, " ")
+    .replace(/[（(][^）)]*[）)]/g, " ")
+    .replace(/^[的了和与在吧呢嘛就都也还又]+/, "")
+    .replace(/[的了和与在吧呢嘛就都也还又]+$/, "");
+  // 客套前缀（"求分享""急需""谁有"…）：这些不是作品名的一部分
+  n = n.replace(/^[\s]*(求分享|求推荐|求资源|求|急需|急求|跪求|谁有|有无|有没有|请问|大佬|帮帮我|帮我|给我|谢谢|感谢|拜托)[\s]*/, "");
+  // 路径非法字符（Windows / 百度都不接受）
+  n = n.replace(/[/:*?"<>|]/g, " ").replace(/\s{2,}/g, " ").trim();
+  return n.slice(0, 60) || "资源";
+}
+
 function normalizeName(name) {
   let n = String(name || "");
   n = n.replace(TECH_WORDS, " ");
@@ -247,6 +308,6 @@ function buildAnswerHtml(link, intro) {
 
 module.exports = {
   GENRE_DESC, KNOWN_GENRES, REGIONS,
-  detectKind, parseName, isGarbledName, normalizeName, reject,
+  detectKind, parseName, isGarbledName, normalizeName, extractWorkName, sanitizeFolderName, reject,
   buildTitle, buildIntro, buildAnswerHtml, TITLE_PATTERNS,
 };

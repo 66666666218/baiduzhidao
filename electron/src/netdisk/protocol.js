@@ -19,6 +19,10 @@ const PAN = "https://pan.baidu.com";
 // 容量不足 / errno=2 路径不存在 / 异步转存中。三处调用方（本文件、transfer.js、
 // scripts/pan-transfer-ui.js）共用它，别再各写一份判断。
 const { normalizeTransferBody, DUP_ERRNO } = require("./transfer-outcome");
+// 作品名抽取 + 目录名清洗：批量转存会把资源表那一列原样传进来，
+// 这里负责把它洗成能当目录名的作品名。**清洗规则只有 qa-template-lib 一份**，
+// 这里只是复用（以前各写一份，两边迟早不一致）。
+const { extractWorkName, sanitizeFolderName } = require("./qa-template-lib");
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 网盘单次 API 调用的超时。以前这里**一个超时都没有** —— 网络卡住时整条链就永久吊在那儿，
@@ -165,6 +169,30 @@ function makeClient(jar) {
  * 目标文件夹 —— 既不用转存完再改名（那要多一次写请求，而写请求正是限流的触发点），
  * 也不会出现"序号_表里的问题标题"这种名字。
  */
+/**
+ * 命名优先级是**这一层唯一该待的地方** —— 以前它散在 `processOne` 的一行里，
+ * 于是"要不要用资源表名字"这种判断只能靠扫文本查，而扫文本读不出逻辑。
+ *
+ * ⚠️ 关键取舍：**抽不出作品名时返回空串，绝不退回资源表的原始标题。**
+ *   理由：原始标题是百度知道的一整句提问（「求英语小说百度网盘完整资源分享」），
+ *   拿它当目录名会得到一万个长得很像、又都认不出是什么的垃圾名字 ——
+ *   这正是用户抱怨"文件夹全是批量转存"的另一半原因。
+ *   抽不出就往下退化（分享真名 → 序号 → 资源），宁可用真名也不用残句。
+ *
+ * @param {{ rawName?: string, data?: object, destParent?: string, fallbackName?: string, shareName?: string }} input
+ * @returns {string} 可以直接当目录名的字符串
+ */
+function planFolderName(input = {}) {
+  const extracted = extractWorkName(input.rawName).name;
+  if (extracted) return sanitizeFolderName(extracted);
+  // 没给 destParent 时走旧的 destDir 语义（脚本/老调用方兼容），此时不追加真名
+  const shareName = input.shareName !== undefined
+    ? input.shareName
+    : (input.destParent ? nameFromShare(input.data) : "");
+  if (shareName) return sanitizeFolderName(shareName);
+  return sanitizeFolderName(input.fallbackName || "资源");
+}
+
 function nameFromShare(data) {
   const list = Array.isArray(data && data.file_list) ? data.file_list : [];
   const seg = (p) => String(p || "").split("/").filter(Boolean).pop() || "";
@@ -420,9 +448,14 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
   //   于是下文 errno=2「目的路径不存在」时，完全看不出是建目录那步没成。
   //   现在把每层 errno 收进 createLog，跟着错误信息一起冒出来。
   const createLog = [];
-  // 目标文件夹 = 父目录（账号/资源表）+ **分享里的真实名字**；
-  // 没给 destParent 时退回旧的 destDir 语义（脚本/老调用方兼容）。
-  const folder = (destParent ? nameFromShare(data) : "") || fallbackName || "资源";
+  // 目标文件夹 = 父目录（账号/资源表）+ **这一层叫什么**。名字按可信度依次退化：
+  //   ① 资源表里抽得出的**干净作品名**（`extractWorkName` —— 书名号/下划线这类明确标记）
+  //   ② 分享里的真实文件/文件夹名（`nameFromShare`）
+  //   ③ 序号兜底（`fallbackName`）
+  // ⚠️ **不许拿资源表的原始标题兜底**：那是一整句提问（「求英语小说百度网盘完整资源分享」），
+  //   当目录名只会得到一万个长得很像的垃圾名字 —— 这正是用户抱怨"全是批量转存"的另一半原因。
+  //  抽不出作品名就老老实实退回 ②/③，宁可用真名也不要用残句。
+  const folder = planFolderName({ rawName, data, destParent, fallbackName });
   const finalDir = destParent ? `${String(destParent).replace(/\/+$/, "")}/${folder}` : String(destDir || "");
   const segments = finalDir.split("/").filter(Boolean);
   let acc = "";
@@ -537,4 +570,9 @@ async function processOne(jar, { link, pwd, rawName, idx, destDir, destParent, f
   return { toPaths, fsIds, usedDir, fellBack, usedFastPath, timings: phaseDurations(tMark) };
 }
 
-module.exports = { PAN, UA, TIMEOUT_MS, Jar, panFetch, makeClient, processOne, nameFromShare, phaseMarks, phaseDurations, planFastPath, FILE_LIST_PAGE_CAP };
+module.exports = {
+  PAN, UA, TIMEOUT_MS, Jar, panFetch, makeClient, processOne,
+  // 命名规则的两个家：`nameFromShare` 取分享里的真名，`planFolderName` 定优先级
+  nameFromShare, planFolderName, sanitizeFolderName,
+  phaseMarks, phaseDurations, planFastPath, FILE_LIST_PAGE_CAP,
+};
